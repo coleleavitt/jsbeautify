@@ -402,8 +402,9 @@ fn compute_reachability(
         for case in &info.cases {
             let succs = match &case.transition {
                 StateTransition::Sequential(next) => vec![next.as_str()],
+                StateTransition::Conditional(a, b) => vec![a.as_str(), b.as_str()],
                 StateTransition::LoopExit | StateTransition::Return => vec![],
-                StateTransition::Conditional | StateTransition::Unknown => {
+                StateTransition::Unknown => {
                     // Conservative: all other case labels are potential targets
                     info.cases
                         .iter()
@@ -552,5 +553,80 @@ mod tests {
         "#;
         let (_, pruned) = run(code);
         assert_eq!(pruned, 3, "should prune 3 dead cases (B, C, D)");
+    }
+
+    #[test]
+    fn prunes_with_conditional_edges() {
+        // A→B (sequential), B→C or D (conditional), entry=A → A,B,C,D reachable. E is dead.
+        let code = r#"
+            var F = function G(s, a) {
+                do {
+                    switch (s) {
+                        case A: { s = B; } break;
+                        case B: { if (a[0]) { s = C; } else { s = D; } } break;
+                        case C: { s = EXIT; } break;
+                        case D: { s = EXIT; } break;
+                        case E: { s = EXIT; } break;
+                    }
+                } while (s != EXIT);
+            };
+            F(A, []);
+        "#;
+        let (out, pruned) = run(code);
+        assert_eq!(pruned, 1, "should prune 1 dead case (E): {out}");
+        assert!(out.contains("case A:"), "A reachable: {out}");
+        assert!(out.contains("case B:"), "B reachable: {out}");
+        assert!(out.contains("case C:"), "C reachable via conditional: {out}");
+        assert!(out.contains("case D:"), "D reachable via conditional: {out}");
+        assert!(!out.contains("case E:"), "E unreachable: {out}");
+    }
+
+    #[test]
+    fn unknown_preserves_all() {
+        // A has Unknown transition (complex body), B and C exist. Entry=A.
+        // Unknown conservatively reaches all → nothing pruned.
+        let code = r#"
+            var F = function G(s, a) {
+                do {
+                    switch (s) {
+                        case A: { foo(); } break;
+                        case B: { s = EXIT; } break;
+                        case C: { s = EXIT; } break;
+                    }
+                } while (s != EXIT);
+            };
+            F(A, []);
+        "#;
+        let (out, pruned) = run(code);
+        assert_eq!(pruned, 0, "Unknown transition should preserve all: {out}");
+        assert!(out.contains("case A:"), "A kept: {out}");
+        assert!(out.contains("case B:"), "B kept (reachable via Unknown): {out}");
+        assert!(out.contains("case C:"), "C kept (reachable via Unknown): {out}");
+    }
+
+    #[test]
+    fn bfs_follows_chain() {
+        // A→B→C→D→EXIT, entry=A, E is dead.
+        let code = r#"
+            var F = function G(s, a) {
+                do {
+                    switch (s) {
+                        case A: { s = B; } break;
+                        case B: { s = C; } break;
+                        case C: { s = D; } break;
+                        case D: { s = EXIT; } break;
+                        case E: { s = EXIT; } break;
+                    }
+                } while (s != EXIT);
+            };
+            F(A, []);
+        "#;
+        let (out, pruned) = run(code);
+        assert_eq!(pruned, 1, "should prune 1 dead case (E): {out}");
+        assert!(out.contains("case A:"), "A reachable: {out}");
+        assert!(out.contains("case B:"), "B reachable: {out}");
+        assert!(out.contains("case C:"), "C reachable: {out}");
+        assert!(out.contains("case D:"), "D reachable: {out}");
+        assert!(!out.contains("case E:"), "E unreachable: {out}");
     }
 }

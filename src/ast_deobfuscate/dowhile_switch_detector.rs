@@ -46,7 +46,7 @@ pub struct DoWhileCaseInfo {
 #[derive(Debug, PartialEq, Eq)]
 pub enum StateTransition {
     Sequential(String),
-    Conditional,
+    Conditional(String, String),
     Return,
     LoopExit,
     Unknown,
@@ -472,27 +472,30 @@ fn check_if_conditional(stmt: &Statement<'_>, state_param: &str) -> Option<State
         return None;
     };
 
-    let has_consequent_assign = has_state_assignment_in_branch(&ifs.consequent, state_param);
-    let has_alternate_assign = ifs
+    let consequent_state = extract_state_from_branch(&ifs.consequent, state_param);
+    let alternate_state = ifs
         .alternate
         .as_ref()
-        .is_some_and(|alt| has_state_assignment_in_branch(alt, state_param));
+        .and_then(|alt| extract_state_from_branch(alt, state_param));
 
-    if has_consequent_assign && has_alternate_assign {
-        Some(StateTransition::Conditional)
-    } else {
-        None
+    match (consequent_state, alternate_state) {
+        (Some(a), Some(b)) => Some(StateTransition::Conditional(a, b)),
+        _ => None,
     }
 }
 
-fn has_state_assignment_in_branch(stmt: &Statement<'_>, state_param: &str) -> bool {
+fn extract_state_from_branch(stmt: &Statement<'_>, state_param: &str) -> Option<String> {
     match stmt {
-        Statement::ExpressionStatement(_) => extract_state_assignment(stmt, state_param).is_some(),
-        Statement::BlockStatement(block) => block
-            .body
-            .iter()
-            .any(|s| extract_state_assignment(s, state_param).is_some()),
-        _ => false,
+        Statement::ExpressionStatement(_) => extract_state_assignment(stmt, state_param),
+        Statement::BlockStatement(block) => {
+            for s in block.body.iter().rev() {
+                if let Some(name) = extract_state_assignment(s, state_param) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -594,5 +597,31 @@ mod tests {
         let info = map.get("F").expect("should detect F");
         assert_eq!(info.cases.len(), 1);
         assert_eq!(info.cases[0].transition, StateTransition::Return);
+    }
+
+    #[test]
+    fn classifies_conditional_with_both_labels() {
+        let code = r#"
+            function F(s, a) {
+                do {
+                    switch (s) {
+                        case X: {
+                            if (a[0]) { s = A; } else { s = B; }
+                        } break;
+                    }
+                } while (s != Z);
+            }
+        "#;
+        let allocator = Allocator::default();
+        let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+        let detector = DoWhileSwitchDetector::new();
+        let map = detector.detect(&ret.program);
+
+        let info = map.get("F").expect("should detect F");
+        assert_eq!(info.cases.len(), 1);
+        assert_eq!(
+            info.cases[0].transition,
+            StateTransition::Conditional("A".to_string(), "B".to_string())
+        );
     }
 }
