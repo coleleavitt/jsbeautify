@@ -116,6 +116,7 @@ pub struct DispatchInlinerCollector {
     factories: FxHashMap<String, Vec<String>>,
     constants: FxHashMap<String, usize>,
     unresolved: Vec<(String, ConstExpr)>,
+    hoisted_arrays: FxHashMap<String, Vec<String>>,
 }
 
 impl DispatchInlinerCollector {
@@ -125,6 +126,7 @@ impl DispatchInlinerCollector {
             factories: FxHashMap::default(),
             constants: FxHashMap::default(),
             unresolved: Vec::new(),
+            hoisted_arrays: FxHashMap::default(),
         }
     }
 
@@ -242,6 +244,20 @@ impl DispatchInlinerCollector {
     fn try_extract_factory(func: &Function<'_>) -> Option<Vec<String>> {
         Self::try_direct_return(func).or_else(|| Self::try_self_init_accessor(func))
     }
+
+    fn try_return_ident(func: &Function<'_>) -> Option<String> {
+        let body = func.body.as_ref()?;
+        if body.statements.len() != 1 {
+            return None;
+        }
+        let Statement::ReturnStatement(ret) = &body.statements[0] else {
+            return None;
+        };
+        let Some(Expression::Identifier(ident)) = &ret.argument else {
+            return None;
+        };
+        Some(ident.name.as_str().to_string())
+    }
 }
 
 impl Default for DispatchInlinerCollector {
@@ -252,16 +268,20 @@ impl Default for DispatchInlinerCollector {
 
 impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
     fn enter_function(&mut self, func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
-        if let Some(id) = &func.id
-            && let Some(strings) = Self::try_extract_factory(func)
-        {
+        if let Some(id) = &func.id {
             let name = id.name.as_str().to_string();
-            eprintln!(
-                "[AST/dispatch-inline] found string-array factory {}() with {} elements",
-                name,
-                strings.len()
-            );
-            self.factories.insert(name, strings);
+            let strings = Self::try_extract_factory(func).or_else(|| {
+                let ident = Self::try_return_ident(func)?;
+                self.hoisted_arrays.get(&ident).cloned()
+            });
+            if let Some(strings) = strings {
+                eprintln!(
+                    "[AST/dispatch-inline] found string-array factory {}() with {} elements",
+                    name,
+                    strings.len()
+                );
+                self.factories.insert(name, strings);
+            }
         }
     }
 
@@ -273,6 +293,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
             return;
         };
         let name = id.name.as_str().to_string();
+        if let Some(strings) = Self::extract_string_array(init) {
+            self.hoisted_arrays.insert(name.clone(), strings);
+        }
         if let Some(val) = try_eval_as_usize(init, &self.constants) {
             self.constants.insert(name, val);
         } else if let Some(ce) = ConstExpr::from_ast(init) {
@@ -523,5 +546,28 @@ mod tests {
             "chained constant Z=5 should resolve to index 5: {out}"
         );
         assert!(!out.contains("f()[Z]"), "call site should be replaced: {out}");
+    }
+
+    #[test]
+    fn detects_flattened_factory() {
+        let code = r#"var __cache = ["a","b","c"]; function F() { return __cache; } var r = F()[1];"#;
+        let out = run(code);
+        assert!(out.contains("\"b\""), "got: {out}");
+        assert!(!out.contains("F()[1]"), "call site should be replaced: {out}");
+    }
+
+    #[test]
+    fn detects_flattened_with_constant_index() {
+        let code = r#"var I = 2; var __cache = ["x","y","z"]; function F() { return __cache; } var r = F()[I];"#;
+        let out = run(code);
+        assert!(out.contains("\"z\""), "got: {out}");
+        assert!(!out.contains("F()[I]"), "call site should be replaced: {out}");
+    }
+
+    #[test]
+    fn preserves_non_array_return() {
+        let code = r#"var __cache = compute(); function F() { return __cache; } var r = F()[0];"#;
+        let out = run(code);
+        assert!(out.contains("F()[0]"), "non-array return must be preserved: {out}");
     }
 }
