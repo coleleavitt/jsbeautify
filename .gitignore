@@ -2,3 +2,6 @@
 core.*
 *.core
 core.[0-9]*
+
+# Sisyphus: exclude regenerable pipeline logs (rebuild via jsbeautify --deobfuscate)
+.sisyphus/evidence/*-pipeline.log
