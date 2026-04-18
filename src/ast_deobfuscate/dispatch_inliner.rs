@@ -182,6 +182,26 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
         }
         self.constants.insert(id.name.as_str().to_string(), val as usize);
     }
+
+    fn enter_statement(&mut self, stmt: &mut Statement<'a>, _ctx: &mut Ctx<'a>) {
+        let Statement::ExpressionStatement(es) = stmt else {
+            return;
+        };
+        let Expression::AssignmentExpression(assign) = &es.expression else {
+            return;
+        };
+        let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left else {
+            return;
+        };
+        let Expression::NumericLiteral(num) = &assign.right else {
+            return;
+        };
+        let val = num.value;
+        if val.fract() != 0.0 || val < 0.0 || val > u32::MAX as f64 {
+            return;
+        }
+        self.constants.insert(target.name.as_str().to_string(), val as usize);
+    }
 }
 
 pub struct DispatchInlinerRewriter {
@@ -380,5 +400,21 @@ mod tests {
         let code = r#"function f(){return ["a","b"];} var r = f(1)[0];"#;
         let out = run(code);
         assert!(out.contains("f(1)"), "call with args must be preserved: {out}");
+    }
+
+    #[test]
+    fn resolves_bare_assignment_constant() {
+        let code = r#"NF = 0; function f(){return ["a","b"];} var r = f()[NF];"#;
+        let out = run(code);
+        assert!(out.contains("\"a\""), "bare assignment constant should resolve: {out}");
+        assert!(!out.contains("f()[NF]"), "call site should be replaced: {out}");
+    }
+
+    #[test]
+    fn resolves_mixed_var_and_bare() {
+        let code = r#"var I = 1; J = 2; function f(){return ["a","b","c"];} var r = f()[J];"#;
+        let out = run(code);
+        assert!(out.contains("\"c\""), "bare assignment constant should resolve: {out}");
+        assert!(!out.contains("f()[J]"), "call site should be replaced: {out}");
     }
 }
