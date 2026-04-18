@@ -10,6 +10,7 @@
 pub mod akamai;
 pub mod algebraic_simplify;
 pub mod apply_call_simplifier;
+pub mod array_coerce_fold;
 pub mod array_unpack;
 pub mod boolean_literals;
 pub mod bun_alphabet;
@@ -68,6 +69,7 @@ pub use akamai::{
 };
 pub use algebraic_simplify::AlgebraicSimplifier;
 pub use apply_call_simplifier::ApplyCallSimplifier;
+pub use array_coerce_fold::ArrayCoerceFold;
 pub use array_unpack::ArrayUnpacker;
 pub use boolean_literals::BooleanLiteralConverter;
 pub use bun_module_annotator::annotate_bun_modules;
@@ -138,6 +140,7 @@ pub struct AstDeobfuscator {
     constant_folder: ConstantFolder,
     expression_simplifier: ExpressionSimplifier,
     algebraic_simplifier: AlgebraicSimplifier,
+    array_coerce_fold: ArrayCoerceFold,
     strength_reducer: StrengthReducer,
     dead_code_eliminator: DeadCodeEliminator,
     array_unpacker: ArrayUnpacker,
@@ -175,6 +178,7 @@ impl AstDeobfuscator {
             constant_folder: ConstantFolder::new(),
             expression_simplifier: ExpressionSimplifier::new(),
             algebraic_simplifier: AlgebraicSimplifier::new(),
+            array_coerce_fold: ArrayCoerceFold::new(),
             strength_reducer: StrengthReducer::new(),
             dead_code_eliminator: DeadCodeEliminator::new(),
             array_unpacker: ArrayUnpacker::new(),
@@ -505,6 +509,12 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.algebraic_simplifier, &mut program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 6: Running strength_reducer");
         traverse_mut_with_ctx(&mut self.strength_reducer, &mut program, &mut ctx);
+        eprintln!("[DEOBFUSCATE] Phase 6: Running array_coerce_fold");
+        traverse_mut_with_ctx(&mut self.array_coerce_fold, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 6: Folded {} array-coercion expressions",
+            self.array_coerce_fold.folded()
+        );
         eprintln!("[DEOBFUSCATE] Phase 6: DONE");
 
         eprintln!("[DEOBFUSCATE] Phase 7: SemanticBuilder for dead_code_eliminator");
