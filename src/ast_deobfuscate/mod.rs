@@ -33,6 +33,7 @@ pub mod function_inline;
 pub mod iife_unwrap;
 pub mod json_parse_eval;
 pub mod lookup_forwarder;
+pub mod method_call_forwarder;
 pub mod multi_var_split;
 pub mod nullish_coalescing_simplifier;
 pub mod object_sparsing;
@@ -82,6 +83,7 @@ pub use function_inline::{FunctionCollector, FunctionInliner};
 pub use iife_unwrap::IifeUnwrap;
 pub use json_parse_eval::JsonParseEvaluator;
 pub use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
+pub use method_call_forwarder::{MethodCallForwarderCollector, MethodCallForwarderInliner};
 pub use multi_var_split::MultiVarSplitter;
 pub use nullish_coalescing_simplifier::NullishCoalescingSimplifier;
 pub use object_sparsing::ObjectSparsingConsolidator;
@@ -320,6 +322,27 @@ impl AstDeobfuscator {
                 traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.5e: Inlined {} lookup-forwarder call sites",
+                    inliner.inlined()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5e2: Akamai 2-arg method-call forwarder inliner");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut mc_collector = MethodCallForwarderCollector::new();
+            traverse_mut_with_ctx(&mut mc_collector, &mut program, &mut ctx);
+            let mc_forwarders = mc_collector.into_forwarders();
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.5e2: Found {} method-call forwarders",
+                mc_forwarders.len()
+            );
+            if !mc_forwarders.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = MethodCallForwarderInliner::new(mc_forwarders);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5e2: Inlined {} method-call-forwarder call sites",
                     inliner.inlined()
                 );
             }
