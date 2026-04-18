@@ -18,6 +18,7 @@ pub mod bun_module_annotator;
 pub mod call_proxy;
 pub mod call_this_simplifier;
 pub mod cff_unflattener;
+pub mod comma_return_simplifier;
 pub mod concat_canonicaliser;
 pub mod constant_folding;
 pub mod control_flow_unflatten;
@@ -76,6 +77,7 @@ pub use bun_module_annotator::annotate_bun_modules;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub use call_this_simplifier::CallThisSimplifier;
 pub use cff_unflattener::{CffUnflattener, collect_case_bodies};
+pub use comma_return_simplifier::CommaReturnSimplifier;
 pub use concat_canonicaliser::ConcatCanonicaliser;
 pub use constant_folding::ConstantFolder;
 pub use control_flow_unflatten::ControlFlowUnflattener;
@@ -142,6 +144,7 @@ pub struct AstDeobfuscator {
     algebraic_simplifier: AlgebraicSimplifier,
     array_coerce_fold: ArrayCoerceFold,
     strength_reducer: StrengthReducer,
+    comma_return_simplifier: CommaReturnSimplifier,
     dead_code_eliminator: DeadCodeEliminator,
     array_unpacker: ArrayUnpacker,
     dynamic_property_converter: DynamicPropertyConverter,
@@ -180,6 +183,7 @@ impl AstDeobfuscator {
             algebraic_simplifier: AlgebraicSimplifier::new(),
             array_coerce_fold: ArrayCoerceFold::new(),
             strength_reducer: StrengthReducer::new(),
+            comma_return_simplifier: CommaReturnSimplifier::new(),
             dead_code_eliminator: DeadCodeEliminator::new(),
             array_unpacker: ArrayUnpacker::new(),
             dynamic_property_converter: DynamicPropertyConverter::new(),
@@ -516,6 +520,13 @@ impl AstDeobfuscator {
             self.array_coerce_fold.folded()
         );
         eprintln!("[DEOBFUSCATE] Phase 6: DONE");
+
+        eprintln!("[DEOBFUSCATE] Phase 6.5: comma-return simplifier");
+        traverse_mut_with_ctx(&mut self.comma_return_simplifier, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 6.5: Simplified {} redundant trailing identifiers",
+            self.comma_return_simplifier.simplified()
+        );
 
         eprintln!("[DEOBFUSCATE] Phase 7: SemanticBuilder for dead_code_eliminator");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
