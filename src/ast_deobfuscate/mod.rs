@@ -27,6 +27,7 @@ pub mod deterministic_rename;
 pub mod dispatch_inliner;
 pub mod dispatcher_detector;
 pub mod dispatcher_inline;
+pub mod dowhile_switch_detector;
 pub mod dynamic_property;
 pub mod empty_statement_cleanup;
 pub mod encrypted_eval;
@@ -82,6 +83,9 @@ pub use deterministic_rename::DeterministicRenamer;
 pub use dispatch_inliner::{DispatchInlinerCollector, DispatchInlinerRewriter};
 pub use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, DispatcherMap};
 pub use dispatcher_inline::DispatcherInliner;
+pub use dowhile_switch_detector::{
+    DoWhileCaseInfo, DoWhileDispatcherInfo, DoWhileDispatcherMap, DoWhileSwitchDetector, StateTransition,
+};
 pub use dynamic_property::DynamicPropertyConverter;
 pub use empty_statement_cleanup::EmptyStatementCleanup;
 pub use esbuild_helper::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esbuild_modules};
@@ -535,6 +539,20 @@ impl AstDeobfuscator {
             eprintln!(
                 "[DEOBFUSCATE] Phase 8.5: Inlined {} CFF call sites",
                 unflattener.inlined()
+            );
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 8.7: do-while-switch detector");
+        let dowhile_detector = DoWhileSwitchDetector::new();
+        let dowhile_dispatchers = dowhile_detector.detect(&program);
+        for (name, info) in &dowhile_dispatchers {
+            eprintln!(
+                "[DOWHILE] found {}({}, {}) with {} cases, exit_sentinel={}",
+                name,
+                info.state_param,
+                info.args_param,
+                info.cases.len(),
+                info.exit_sentinel
             );
         }
 
