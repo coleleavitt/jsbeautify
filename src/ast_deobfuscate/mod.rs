@@ -63,6 +63,7 @@ pub mod unary_proxy;
 pub mod unicode_mangling;
 pub mod variable_rename;
 pub mod void_replacer;
+pub mod window_alias_propagator;
 
 pub use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,
@@ -124,6 +125,7 @@ pub use unary_proxy::{UnaryProxyCollector, UnaryProxyInliner};
 pub use unicode_mangling::UnicodeNormalizer;
 pub use variable_rename::VariableRenamer;
 pub use void_replacer::VoidReplacer;
+pub use window_alias_propagator::{WindowAliasCollector, WindowAliasPropagator};
 
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
@@ -245,6 +247,30 @@ impl AstDeobfuscator {
         }
 
         let mut program = parse_result.program;
+
+        eprintln!("[DEOBFUSCATE] Phase 0.4: Window-alias propagation");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = WindowAliasCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let aliases = collector.aliases();
+            if !aliases.is_empty() {
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.4: Found {} window alias(es): {:?}",
+                    aliases.len(),
+                    aliases
+                );
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut propagator = WindowAliasPropagator::new(aliases);
+                traverse_mut_with_ctx(&mut propagator, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.4: Propagated {} window-alias accesses",
+                    propagator.rewrites()
+                );
+            }
+        }
 
         eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP detection");
         let mut akamai = AkamaiDeobfuscator::new();
