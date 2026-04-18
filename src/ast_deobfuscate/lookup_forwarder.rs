@@ -53,7 +53,7 @@ impl LookupForwarderCollector {
         self.forwarders
     }
 
-    fn extract_info(func: &Function<'_>) -> Option<LookupForwarderInfo> {
+    pub fn extract_info(func: &Function<'_>) -> Option<LookupForwarderInfo> {
         if func.r#async || func.generator {
             return None;
         }
@@ -224,10 +224,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for LookupForwarderInliner {
                     let BindingPattern::BindingIdentifier(id) = &d.id else {
                         return false;
                     };
-                    let Some(Expression::FunctionExpression(_)) = &d.init else {
+                    let Some(Expression::FunctionExpression(func)) = &d.init else {
                         return false;
                     };
                     self.forwarders.contains_key(id.name.as_str())
+                        && LookupForwarderCollector::extract_info(func).is_some()
                 });
             if all_are_forwarders {
                 eprintln!("[AST/lookup-fwd] remove var declaration");
@@ -299,5 +300,24 @@ mod tests {
     fn leaves_accessor_with_args_alone() {
         let out = run("function f(x) { return acc(1)[x]; } f(5);");
         assert!(out.contains("function f"), "must keep (accessor takes args): {out}");
+    }
+
+    #[test]
+    fn does_not_remove_same_name_var_with_different_shape() {
+        // Inner function Xt is a lookup forwarder; outer var Xt is a 2-arg operator proxy.
+        // The inliner must NOT remove the outer var Xt declaration.
+        let code = r#"
+            var Xt = function(a, b) { return a + b; };
+            (function Ql() {
+                function Xt(x) { return Tl()[x]; }
+                var r = Xt(5);
+            })();
+            var z = Xt(1, 2);
+        "#;
+        let out = run(code);
+        assert!(
+            out.contains("var Xt"),
+            "outer var Xt (operator proxy) must be preserved: {out}"
+        );
     }
 }
