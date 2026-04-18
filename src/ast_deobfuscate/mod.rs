@@ -34,6 +34,7 @@ pub mod iife_unwrap;
 pub mod json_parse_eval;
 pub mod lookup_forwarder;
 pub mod multi_var_split;
+pub mod nullish_coalescing_simplifier;
 pub mod object_sparsing;
 pub mod operator_proxy;
 pub mod optional_chaining_normalizer;
@@ -82,6 +83,7 @@ pub use iife_unwrap::IifeUnwrap;
 pub use json_parse_eval::JsonParseEvaluator;
 pub use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
 pub use multi_var_split::MultiVarSplitter;
+pub use nullish_coalescing_simplifier::NullishCoalescingSimplifier;
 pub use object_sparsing::ObjectSparsingConsolidator;
 pub use operator_proxy::{OperatorProxyCollector, OperatorProxyInliner};
 pub use optional_chaining_normalizer::OptionalChainingNormalizer;
@@ -141,6 +143,7 @@ pub struct AstDeobfuscator {
     iife_unwrap: IifeUnwrap,
     json_parse_evaluator: JsonParseEvaluator,
     optional_chaining_normalizer: OptionalChainingNormalizer,
+    nullish_coalescing_simplifier: NullishCoalescingSimplifier,
     skip_annotations: bool,
 }
 
@@ -177,6 +180,7 @@ impl AstDeobfuscator {
             iife_unwrap: IifeUnwrap::new(),
             json_parse_evaluator: JsonParseEvaluator::new(),
             optional_chaining_normalizer: OptionalChainingNormalizer::new(),
+            nullish_coalescing_simplifier: NullishCoalescingSimplifier::new(),
             skip_annotations: false,
         }
     }
@@ -603,6 +607,16 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 16.9: Detected {} optional chaining expressions",
             self.optional_chaining_normalizer.detected_count()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 17.1: SemanticBuilder for nullish_coalescing_simplifier");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        eprintln!("[DEOBFUSCATE] Phase 17.1: Running nullish_coalescing_simplifier");
+        traverse_mut_with_ctx(&mut self.nullish_coalescing_simplifier, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 17.1: Detected {} nullish coalescing chains",
+            self.nullish_coalescing_simplifier.detected_count()
         );
         eprintln!("[DEOBFUSCATE] Phase 17: SemanticBuilder for short_circuit_to_if");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();

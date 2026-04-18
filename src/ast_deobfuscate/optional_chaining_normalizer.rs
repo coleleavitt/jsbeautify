@@ -15,7 +15,7 @@
 //! Full normalization requires semantic analysis to determine if
 //! the optional chaining is necessary.
 
-use oxc_ast::ast::{ChainElement, ChainExpression, Expression};
+use oxc_ast::ast::{ChainExpression, Expression};
 use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
