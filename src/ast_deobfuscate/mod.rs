@@ -16,6 +16,7 @@ pub mod bun_alphabet;
 pub mod bun_module_annotator;
 pub mod call_proxy;
 pub mod call_this_simplifier;
+pub mod cff_unflattener;
 pub mod concat_canonicaliser;
 pub mod constant_folding;
 pub mod control_flow_unflatten;
@@ -23,6 +24,7 @@ pub mod dead_code;
 pub mod dead_var_elimination;
 pub mod decoder_inline;
 pub mod deterministic_rename;
+pub mod dispatcher_detector;
 pub mod dispatcher_inline;
 pub mod dynamic_property;
 pub mod empty_statement_cleanup;
@@ -68,6 +70,7 @@ pub use boolean_literals::BooleanLiteralConverter;
 pub use bun_module_annotator::annotate_bun_modules;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub use call_this_simplifier::CallThisSimplifier;
+pub use cff_unflattener::{CffUnflattener, collect_case_bodies};
 pub use concat_canonicaliser::ConcatCanonicaliser;
 pub use constant_folding::ConstantFolder;
 pub use control_flow_unflatten::ControlFlowUnflattener;
@@ -75,6 +78,7 @@ pub use dead_code::DeadCodeEliminator;
 pub use dead_var_elimination::{DeadVarCollector, DeadVarEliminator};
 pub use decoder_inline::DecoderInliner;
 pub use deterministic_rename::DeterministicRenamer;
+pub use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, DispatcherMap};
 pub use dispatcher_inline::DispatcherInliner;
 pub use dynamic_property::DynamicPropertyConverter;
 pub use empty_statement_cleanup::EmptyStatementCleanup;
@@ -514,6 +518,22 @@ impl AstDeobfuscator {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             let mut eliminator = DeadVarEliminator::new(dead_vars);
             traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 8.5: CFF unflattener");
+        let detector = DispatcherDetector::new();
+        let dispatchers = detector.detect(&program);
+        eprintln!("[DEOBFUSCATE] Phase 8.5: Found {} dispatchers", dispatchers.len());
+        if !dispatchers.is_empty() {
+            let case_bodies = collect_case_bodies(&program, &dispatchers, &allocator);
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);
+            traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 8.5: Inlined {} CFF call sites",
+                unflattener.inlined()
+            );
         }
 
         eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
