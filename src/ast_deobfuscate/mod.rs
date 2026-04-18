@@ -90,7 +90,8 @@ pub use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, Disp
 pub use dispatcher_inline::DispatcherInliner;
 pub use dowhile_switch_cleaner::DoWhileSwitchCleaner;
 pub use dowhile_switch_detector::{
-    DoWhileCaseInfo, DoWhileDispatcherInfo, DoWhileDispatcherMap, DoWhileSwitchDetector, StateTransition,
+    CompoundOp, DoWhileCaseInfo, DoWhileDispatcherInfo, DoWhileDispatcherMap, DoWhileSwitchDetector, StateTransition,
+    collect_constants, resolve_compound_transitions,
 };
 pub use dynamic_property::DynamicPropertyConverter;
 pub use empty_statement_cleanup::EmptyStatementCleanup;
@@ -130,6 +131,7 @@ use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
+use rustc_hash::FxHashMap;
 
 use crate::Result;
 
@@ -567,7 +569,7 @@ impl AstDeobfuscator {
 
         eprintln!("[DEOBFUSCATE] Phase 8.7: do-while-switch detector");
         let dowhile_detector = DoWhileSwitchDetector::new();
-        let dowhile_dispatchers = dowhile_detector.detect(&program);
+        let mut dowhile_dispatchers = dowhile_detector.detect(&program);
         for (name, info) in &dowhile_dispatchers {
             eprintln!(
                 "[DOWHILE] found {}({}, {}) with {} cases, exit_sentinel={}",
@@ -577,15 +579,6 @@ impl AstDeobfuscator {
                 info.cases.len(),
                 info.exit_sentinel
             );
-        }
-
-        if !dowhile_dispatchers.is_empty() {
-            eprintln!("[DEOBFUSCATE] Phase 8.8: do-while-switch dead-case pruner");
-            let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, &program);
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
-            eprintln!("[DEOBFUSCATE] Phase 8.8: Pruned {} dead cases", cleaner.pruned_cases());
         }
 
         eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
@@ -613,6 +606,8 @@ impl AstDeobfuscator {
             di_factories.len(),
             di_constants.len()
         );
+        let di_constants_i64: FxHashMap<String, i64> =
+            di_constants.iter().map(|(k, &v)| (k.clone(), v as i64)).collect();
         if !di_factories.is_empty() {
             let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
@@ -622,6 +617,29 @@ impl AstDeobfuscator {
                 "[DEOBFUSCATE] Phase 9.5: Inlined {} dispatch call sites",
                 di_rewriter.inlined()
             );
+        }
+
+        if !dowhile_dispatchers.is_empty() {
+            let own_constants = collect_constants(&program);
+            let mut merged = di_constants_i64;
+            for (k, v) in own_constants {
+                merged.entry(k).or_insert(v);
+            }
+            let mut total_resolved = 0;
+            for info in dowhile_dispatchers.values_mut() {
+                total_resolved += resolve_compound_transitions(info, &merged);
+            }
+            eprintln!(
+                "[DEOBFUSCATE] Phase 9.6: Resolved {} compound transitions to sequential",
+                total_resolved
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
+            let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, &program);
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 9.7: Pruned {} dead cases", cleaner.pruned_cases());
         }
 
         eprintln!("[DEOBFUSCATE] Phase 10: SemanticBuilder for array/dynamic/ternary/try_catch");

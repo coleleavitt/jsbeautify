@@ -403,7 +403,7 @@ fn compute_reachability(
             let succs = match &case.transition {
                 StateTransition::Sequential(next) => vec![next.as_str()],
                 StateTransition::Conditional(a, b) => vec![a.as_str(), b.as_str()],
-                StateTransition::LoopExit | StateTransition::Return => vec![],
+                StateTransition::LoopExit | StateTransition::Return | StateTransition::Compound { .. } => vec![],
                 StateTransition::Unknown => {
                     // Conservative: all other case labels are potential targets
                     info.cases
@@ -437,7 +437,9 @@ fn compute_reachability(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast_deobfuscate::dowhile_switch_detector::DoWhileSwitchDetector;
+    use crate::ast_deobfuscate::dowhile_switch_detector::{
+        DoWhileSwitchDetector, collect_constants, resolve_compound_transitions,
+    };
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
@@ -628,5 +630,59 @@ mod tests {
         assert!(out.contains("case C:"), "C reachable: {out}");
         assert!(out.contains("case D:"), "D reachable: {out}");
         assert!(!out.contains("case E:"), "E unreachable: {out}");
+    }
+
+    fn run_with_compounds(code: &str) -> (String, usize) {
+        let allocator = Allocator::default();
+        let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+        let mut program = ret.program;
+
+        let detector = DoWhileSwitchDetector::new();
+        let mut dispatchers = detector.detect(&program);
+        if dispatchers.is_empty() {
+            return (Codegen::new().build(&program).code, 0);
+        }
+
+        let constants = collect_constants(&program);
+        for info in dispatchers.values_mut() {
+            resolve_compound_transitions(info, &constants);
+        }
+
+        let mut cleaner = DoWhileSwitchCleaner::new(dispatchers, &program);
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
+
+        let pruned = cleaner.pruned_cases();
+        (Codegen::new().build(&program).code, pruned)
+    }
+
+    #[test]
+    fn pruning_with_resolved_compounds() {
+        let code = r#"
+            var X = 10;
+            var C = 3;
+            var Y = 13;
+            var EXIT = 99;
+            var DEAD1 = 50;
+            var DEAD2 = 60;
+            var F = function G(s, a) {
+                do {
+                    switch (s) {
+                        case X: { foo(); s += C; } break;
+                        case Y: { bar(); s = EXIT; } break;
+                        case DEAD1: { s = EXIT; } break;
+                        case DEAD2: { s = EXIT; } break;
+                    }
+                } while (s != EXIT);
+            };
+            F(X, []);
+        "#;
+        let (out, pruned) = run_with_compounds(code);
+        assert_eq!(pruned, 2, "should prune 2 dead cases (DEAD1, DEAD2): {out}");
+        assert!(out.contains("case X:"), "X reachable (entry): {out}");
+        assert!(out.contains("case Y:"), "Y reachable via compound X+=C: {out}");
+        assert!(!out.contains("case DEAD1:"), "DEAD1 unreachable: {out}");
+        assert!(!out.contains("case DEAD2:"), "DEAD2 unreachable: {out}");
     }
 }
