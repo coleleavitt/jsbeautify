@@ -27,6 +27,7 @@ pub mod deterministic_rename;
 pub mod dispatch_inliner;
 pub mod dispatcher_detector;
 pub mod dispatcher_inline;
+pub mod dowhile_switch_cleaner;
 pub mod dowhile_switch_detector;
 pub mod dynamic_property;
 pub mod empty_statement_cleanup;
@@ -83,6 +84,7 @@ pub use deterministic_rename::DeterministicRenamer;
 pub use dispatch_inliner::{DispatchInlinerCollector, DispatchInlinerRewriter};
 pub use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, DispatcherMap};
 pub use dispatcher_inline::DispatcherInliner;
+pub use dowhile_switch_cleaner::DoWhileSwitchCleaner;
 pub use dowhile_switch_detector::{
     DoWhileCaseInfo, DoWhileDispatcherInfo, DoWhileDispatcherMap, DoWhileSwitchDetector, StateTransition,
 };
@@ -554,6 +556,15 @@ impl AstDeobfuscator {
                 info.cases.len(),
                 info.exit_sentinel
             );
+        }
+
+        if !dowhile_dispatchers.is_empty() {
+            eprintln!("[DEOBFUSCATE] Phase 8.8: do-while-switch dead-case pruner");
+            let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, &program);
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 8.8: Pruned {} dead cases", cleaner.pruned_cases());
         }
 
         eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
