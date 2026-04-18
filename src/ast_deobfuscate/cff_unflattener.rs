@@ -1,32 +1,21 @@
 //! CFF (Control-Flow-Flattening) unflattener.
 //!
 //! Consumes a [`DispatcherMap`] (from [`super::dispatcher_detector`]) and inlines
-//! dispatcher call sites by replacing them with IIFEs containing the cloned
-//! case body.
+//! dispatcher call sites by replacing them with the cloned case body.
 //!
-//! ```text
-//! // Before:
-//! P6(LN, [kA])
-//!
-//! // After:
-//! (function(pE) {
-//!   var dY = pE[NF];
-//!   dY[dY[JF](rb)] = function() { ... };
-//!   P6(LN, [dY]);
-//! }([kA]))
-//! ```
-//!
-//! The IIFE approach preserves scoping, `break` semantics, and `return`
-//! semantics without needing to resolve `args[INDEX]` references.
+//! Statement-level calls emit bare statements (or a block with `var` binding when
+//! the body references the dispatcher's args parameter). Expression-level calls
+//! fall back to a zero-param IIFE.
 
 use oxc_allocator::{CloneIn, Vec as OxcVec};
 use oxc_ast::ast::{
-    Argument, BindingIdentifier, BindingPattern, CallExpression, Expression, FormalParameter, FormalParameterKind,
-    FormalParameters, Function, FunctionBody, FunctionType, Program, Statement, VariableDeclarator,
+    BindingIdentifier, BindingPattern, BlockStatement, CallExpression, Expression, FormalParameterKind,
+    FormalParameters, Function, FunctionBody, FunctionType, Program, Statement, VariableDeclaration,
+    VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
 
@@ -266,6 +255,115 @@ fn extract_case_bodies<'a>(
     }
 }
 
+fn body_references_param(stmts: &[Statement<'_>], param_name: &str) -> bool {
+    stmts.iter().any(|s| stmt_references(s, param_name))
+}
+
+fn stmt_references(stmt: &Statement<'_>, name: &str) -> bool {
+    match stmt {
+        Statement::ExpressionStatement(es) => expr_references(&es.expression, name),
+        Statement::ReturnStatement(r) => r.argument.as_ref().is_some_and(|e| expr_references(e, name)),
+        Statement::VariableDeclaration(d) => d
+            .declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().is_some_and(|e| expr_references(e, name))),
+        Statement::BlockStatement(b) => b.body.iter().any(|s| stmt_references(s, name)),
+        Statement::IfStatement(i) => {
+            expr_references(&i.test, name)
+                || stmt_references(&i.consequent, name)
+                || i.alternate.as_ref().is_some_and(|a| stmt_references(a, name))
+        }
+        Statement::ForStatement(f) => {
+            f.test.as_ref().is_some_and(|e| expr_references(e, name))
+                || f.update.as_ref().is_some_and(|e| expr_references(e, name))
+                || stmt_references(&f.body, name)
+        }
+        Statement::ForInStatement(f) => expr_references(&f.right, name) || stmt_references(&f.body, name),
+        Statement::ForOfStatement(f) => expr_references(&f.right, name) || stmt_references(&f.body, name),
+        Statement::WhileStatement(w) => expr_references(&w.test, name) || stmt_references(&w.body, name),
+        Statement::DoWhileStatement(d) => stmt_references(&d.body, name) || expr_references(&d.test, name),
+        Statement::SwitchStatement(s) => {
+            expr_references(&s.discriminant, name)
+                || s.cases.iter().any(|c| {
+                    c.test.as_ref().is_some_and(|e| expr_references(e, name))
+                        || c.consequent.iter().any(|st| stmt_references(st, name))
+                })
+        }
+        Statement::TryStatement(t) => {
+            t.block.body.iter().any(|s| stmt_references(s, name))
+                || t.handler
+                    .as_ref()
+                    .is_some_and(|h| h.body.body.iter().any(|s| stmt_references(s, name)))
+                || t.finalizer
+                    .as_ref()
+                    .is_some_and(|f| f.body.iter().any(|s| stmt_references(s, name)))
+        }
+        Statement::ThrowStatement(t) => expr_references(&t.argument, name),
+        Statement::LabeledStatement(l) => stmt_references(&l.body, name),
+        _ => false,
+    }
+}
+
+fn expr_references(expr: &Expression<'_>, name: &str) -> bool {
+    match expr {
+        Expression::Identifier(id) => id.name.as_str() == name,
+        Expression::CallExpression(c) => {
+            expr_references(&c.callee, name)
+                || c.arguments
+                    .iter()
+                    .any(|a| a.as_expression().is_some_and(|e| expr_references(e, name)))
+        }
+        Expression::NewExpression(n) => {
+            expr_references(&n.callee, name)
+                || n.arguments
+                    .iter()
+                    .any(|a| a.as_expression().is_some_and(|e| expr_references(e, name)))
+        }
+        Expression::StaticMemberExpression(s) => expr_references(&s.object, name),
+        Expression::ComputedMemberExpression(c) => {
+            expr_references(&c.object, name) || expr_references(&c.expression, name)
+        }
+        Expression::AssignmentExpression(a) => expr_references(&a.right, name),
+        Expression::BinaryExpression(b) => expr_references(&b.left, name) || expr_references(&b.right, name),
+        Expression::LogicalExpression(l) => expr_references(&l.left, name) || expr_references(&l.right, name),
+        Expression::UnaryExpression(u) => expr_references(&u.argument, name),
+        Expression::UpdateExpression(u) => matches!(
+            &u.argument,
+            oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) if id.name.as_str() == name
+        ),
+        Expression::ConditionalExpression(c) => {
+            expr_references(&c.test, name)
+                || expr_references(&c.consequent, name)
+                || expr_references(&c.alternate, name)
+        }
+        Expression::SequenceExpression(s) => s.expressions.iter().any(|e| expr_references(e, name)),
+        Expression::ParenthesizedExpression(p) => expr_references(&p.expression, name),
+        Expression::ArrayExpression(a) => a
+            .elements
+            .iter()
+            .any(|el| el.as_expression().is_some_and(|e| expr_references(e, name))),
+        Expression::ObjectExpression(o) => o.properties.iter().any(|prop| {
+            if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+                expr_references(&p.value, name)
+            } else {
+                false
+            }
+        }),
+        Expression::FunctionExpression(f) => f
+            .body
+            .as_ref()
+            .is_some_and(|b| b.statements.iter().any(|s| stmt_references(s, name))),
+        Expression::ArrowFunctionExpression(a) => a.body.statements.iter().any(|s| stmt_references(s, name)),
+        Expression::TemplateLiteral(t) => t.expressions.iter().any(|e| expr_references(e, name)),
+        Expression::TaggedTemplateExpression(t) => {
+            expr_references(&t.tag, name) || t.quasi.expressions.iter().any(|e| expr_references(e, name))
+        }
+        Expression::YieldExpression(y) => y.argument.as_ref().is_some_and(|e| expr_references(e, name)),
+        Expression::AwaitExpression(a) => expr_references(&a.argument, name),
+        _ => false,
+    }
+}
+
 pub struct CffUnflattener<'a> {
     dispatchers: DispatcherMap,
     case_bodies: CaseBodyMap<'a>,
@@ -307,8 +405,37 @@ impl<'a> CffUnflattener<'a> {
         ctx: &Ctx<'a>,
     ) -> Expression<'a> {
         let alloc = ctx.ast.allocator;
+        let uses_args = body_references_param(body_stmts.as_slice(), args_param_name);
 
         let mut stmts: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
+
+        if uses_args {
+            let binding_id = BindingIdentifier {
+                node_id: Cell::new(NodeId::DUMMY),
+                span: SPAN,
+                name: ctx.ast.ident(args_param_name),
+                symbol_id: Cell::default(),
+            };
+            let declarator = VariableDeclarator {
+                node_id: Cell::new(NodeId::DUMMY),
+                span: SPAN,
+                kind: VariableDeclarationKind::Var,
+                id: BindingPattern::BindingIdentifier(ctx.ast.alloc(binding_id)),
+                type_annotation: None,
+                init: Some(call_site_arg.clone_in_with_semantic_ids(alloc)),
+                definite: false,
+            };
+            let mut declarations = ctx.ast.vec();
+            declarations.push(declarator);
+            stmts.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
+                node_id: Cell::new(NodeId::DUMMY),
+                span: SPAN,
+                kind: VariableDeclarationKind::Var,
+                declarations,
+                declare: false,
+            })));
+        }
+
         for s in body_stmts {
             stmts.push(s.clone_in_with_semantic_ids(alloc));
         }
@@ -320,31 +447,11 @@ impl<'a> CffUnflattener<'a> {
             statements: stmts,
         };
 
-        let binding_id = BindingIdentifier {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident(args_param_name),
-            symbol_id: Cell::default(),
-        };
-        let param = FormalParameter {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            decorators: ctx.ast.vec(),
-            pattern: BindingPattern::BindingIdentifier(ctx.ast.alloc(binding_id)),
-            type_annotation: None,
-            initializer: None,
-            optional: false,
-            accessibility: None,
-            readonly: false,
-            r#override: false,
-        };
-        let mut items: OxcVec<'a, FormalParameter<'a>> = ctx.ast.vec();
-        items.push(param);
         let params = FormalParameters {
             node_id: Cell::new(NodeId::DUMMY),
             span: SPAN,
             kind: FormalParameterKind::FormalParameter,
-            items,
+            items: ctx.ast.vec(),
             rest: None,
         };
 
@@ -367,22 +474,87 @@ impl<'a> CffUnflattener<'a> {
         };
         let callee = Expression::FunctionExpression(ctx.ast.alloc(func));
 
-        let arg_clone = call_site_arg.clone_in_with_semantic_ids(alloc);
-        let mut arguments: OxcVec<'a, Argument<'a>> = ctx.ast.vec();
-        arguments.push(Argument::from(arg_clone));
-
         Expression::CallExpression(ctx.ast.alloc(CallExpression {
             node_id: Cell::new(NodeId::DUMMY),
             span: SPAN,
             callee,
-            arguments,
+            arguments: ctx.ast.vec(),
             optional: false,
             type_arguments: None,
             pure: false,
         }))
     }
 
-    fn try_inline_direct(&mut self, call: &CallExpression<'a>, ctx: &Ctx<'a>) -> Option<Expression<'a>> {
+    fn make_inline_stmts(
+        args_param_name: &str,
+        body_stmts: &OxcVec<'a, Statement<'a>>,
+        call_site_arg: &Expression<'a>,
+        ctx: &Ctx<'a>,
+    ) -> OxcVec<'a, Statement<'a>> {
+        let alloc = ctx.ast.allocator;
+        let uses_args = body_references_param(body_stmts.as_slice(), args_param_name);
+
+        if !uses_args {
+            let mut stmts: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
+            for s in body_stmts {
+                stmts.push(s.clone_in_with_semantic_ids(alloc));
+            }
+            return stmts;
+        }
+
+        let mut block_body: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
+
+        let binding_id = BindingIdentifier {
+            node_id: Cell::new(NodeId::DUMMY),
+            span: SPAN,
+            name: ctx.ast.ident(args_param_name),
+            symbol_id: Cell::default(),
+        };
+        let declarator = VariableDeclarator {
+            node_id: Cell::new(NodeId::DUMMY),
+            span: SPAN,
+            kind: VariableDeclarationKind::Var,
+            id: BindingPattern::BindingIdentifier(ctx.ast.alloc(binding_id)),
+            type_annotation: None,
+            init: Some(call_site_arg.clone_in_with_semantic_ids(alloc)),
+            definite: false,
+        };
+        let mut declarations = ctx.ast.vec();
+        declarations.push(declarator);
+        block_body.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
+            node_id: Cell::new(NodeId::DUMMY),
+            span: SPAN,
+            kind: VariableDeclarationKind::Var,
+            declarations,
+            declare: false,
+        })));
+
+        for s in body_stmts {
+            block_body.push(s.clone_in_with_semantic_ids(alloc));
+        }
+
+        let block = Statement::BlockStatement(ctx.ast.alloc(BlockStatement {
+            node_id: Cell::new(NodeId::DUMMY),
+            span: SPAN,
+            body: block_body,
+            scope_id: Cell::new(None),
+        }));
+
+        let mut result: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
+        result.push(block);
+        result
+    }
+
+    fn resolve_direct<'b>(
+        &'b self,
+        call: &'b CallExpression<'a>,
+    ) -> Option<(
+        &'b str,
+        &'b str,
+        &'b Expression<'a>,
+        &'b DispatcherMeta,
+        &'b OxcVec<'a, Statement<'a>>,
+    )> {
         let Expression::Identifier(callee_id) = &call.callee else {
             return None;
         };
@@ -393,36 +565,31 @@ impl<'a> CffUnflattener<'a> {
         if call.arguments.len() != 2 {
             return None;
         }
-
-        let Some(state_expr) = call.arguments[0].as_expression() else {
-            return None;
-        };
+        let state_expr = call.arguments[0].as_expression()?;
         let Expression::Identifier(state_id) = state_expr else {
             return None;
         };
         let state_label = state_id.name.as_str();
-
         let key = (name.to_string(), state_label.to_string());
         if !self.case_bodies.contains_key(&key) {
             return None;
         }
-
-        let Some(args_expr) = call.arguments[1].as_expression() else {
-            return None;
-        };
-
+        let args_expr = call.arguments[1].as_expression()?;
         let meta = self.meta.get(name)?;
         let body = self.case_bodies.get(&key)?;
-
-        if self.inlined < 10 {
-            eprintln!("[CFF] inlining {}({}, [...]) at call site", name, state_label);
-        }
-        self.inlined += 1;
-
-        Some(Self::make_iife(&meta.args_param, body, args_expr, ctx))
+        Some((name, state_label, args_expr, meta, body))
     }
 
-    fn try_inline_call_this(&mut self, call: &CallExpression<'a>, ctx: &Ctx<'a>) -> Option<Expression<'a>> {
+    fn resolve_call_this<'b>(
+        &'b self,
+        call: &'b CallExpression<'a>,
+    ) -> Option<(
+        &'b str,
+        &'b str,
+        &'b Expression<'a>,
+        &'b DispatcherMeta,
+        &'b OxcVec<'a, Statement<'a>>,
+    )> {
         let Expression::StaticMemberExpression(sme) = &call.callee else {
             return None;
         };
@@ -439,56 +606,95 @@ impl<'a> CffUnflattener<'a> {
         if call.arguments.len() != 3 {
             return None;
         }
-
-        let Some(first) = call.arguments[0].as_expression() else {
-            return None;
-        };
+        let first = call.arguments[0].as_expression()?;
         if !matches!(first, Expression::ThisExpression(_)) {
             return None;
         }
-
-        let Some(state_expr) = call.arguments[1].as_expression() else {
-            return None;
-        };
+        let state_expr = call.arguments[1].as_expression()?;
         let Expression::Identifier(state_id) = state_expr else {
             return None;
         };
         let state_label = state_id.name.as_str();
-
         let key = (name.to_string(), state_label.to_string());
         if !self.case_bodies.contains_key(&key) {
             return None;
         }
-
-        let Some(args_expr) = call.arguments[2].as_expression() else {
-            return None;
-        };
-
+        let args_expr = call.arguments[2].as_expression()?;
         let meta = self.meta.get(name)?;
         let body = self.case_bodies.get(&key)?;
+        Some((name, state_label, args_expr, meta, body))
+    }
 
-        if self.inlined < 10 {
-            eprintln!(
-                "[CFF] inlining {}.call(this, {}, [...]) at call site",
-                name, state_label
-            );
-        }
-        self.inlined += 1;
-
-        Some(Self::make_iife(&meta.args_param, body, args_expr, ctx))
+    fn resolve_call<'b>(
+        &'b self,
+        call: &'b CallExpression<'a>,
+    ) -> Option<(
+        &'b str,
+        &'b str,
+        &'b Expression<'a>,
+        &'b DispatcherMeta,
+        &'b OxcVec<'a, Statement<'a>>,
+    )> {
+        self.resolve_direct(call).or_else(|| self.resolve_call_this(call))
     }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
+    fn exit_statements(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
+        let mut i = 0;
+        while i < stmts.len() {
+            let call = match &stmts[i] {
+                Statement::ExpressionStatement(es) => {
+                    if let Expression::CallExpression(c) = &es.expression {
+                        Some(c.as_ref())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            let Some(call) = call else {
+                i += 1;
+                continue;
+            };
+            let Some((_, _, args_expr, meta, body)) = self.resolve_call(call) else {
+                i += 1;
+                continue;
+            };
+            let args_param = meta.args_param.clone();
+            let replacement = Self::make_inline_stmts(&args_param, body, args_expr, ctx);
+
+            if self.inlined < 10 {
+                eprintln!("[CFF] inlining call site (stmt-level)");
+            }
+            self.inlined += 1;
+
+            let count = replacement.len();
+            stmts.remove(i);
+            for (j, s) in replacement.into_iter().enumerate() {
+                stmts.insert(i + j, s);
+            }
+            i += count;
+        }
+    }
+
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
+        if matches!(ctx.parent(), Ancestor::ExpressionStatementExpression(_)) {
+            return;
+        }
         if let Expression::CallExpression(call) = expr {
-            if let Some(replacement) = self.try_inline_direct(call, ctx) {
-                *expr = replacement;
+            let Some((_, _, args_expr, meta, body)) = self.resolve_call(call) else {
                 return;
+            };
+            let args_param = meta.args_param.clone();
+            let replacement = Self::make_iife(&args_param, body, args_expr, ctx);
+
+            if self.inlined < 10 {
+                eprintln!("[CFF] inlining call site (expr-level)");
             }
-            if let Some(replacement) = self.try_inline_call_this(call, ctx) {
-                *expr = replacement;
-            }
+            self.inlined += 1;
+
+            *expr = replacement;
         }
     }
 }
@@ -539,8 +745,8 @@ mod tests {
         let (out, inlined) = run(code);
         assert_eq!(inlined, 1, "should inline 1 call, got: {out}");
         assert!(
-            out.contains("function(a)"),
-            "should have IIFE with args param 'a': {out}"
+            out.contains("var a = [5]"),
+            "should have var decl for args param: {out}"
         );
         assert!(
             !out.contains("D(X,") && !out.contains("D(X, "),
@@ -590,7 +796,10 @@ mod tests {
         "#;
         let (out, inlined) = run(code);
         assert_eq!(inlined, 1, "should inline .call(this,...) form: {out}");
-        assert!(out.contains("function(a)"), "should have IIFE with args param: {out}");
+        assert!(
+            out.contains("var a = [5]"),
+            "should have var decl for args param: {out}"
+        );
     }
 
     #[test]
@@ -673,5 +882,40 @@ mod tests {
         "#;
         let (out, inlined) = run(code);
         assert_eq!(inlined, 1, "should inline inside IIFE wrapper: {out}");
+    }
+
+    #[test]
+    fn no_args_ref_emits_bare_stmts() {
+        let code = r#"
+            function D(s, a) {
+                switch (s) {
+                    case X: { foo(); bar(); } break;
+                }
+            }
+            D(X, [1]);
+        "#;
+        let (out, inlined) = run(code);
+        assert_eq!(inlined, 1, "should inline: {out}");
+        assert!(!out.contains("function("), "no IIFE wrapper: {out}");
+        assert!(!out.contains("var a"), "no var decl for unused param: {out}");
+        assert!(out.contains("foo()"), "bare stmt emitted: {out}");
+        assert!(out.contains("bar()"), "bare stmt emitted: {out}");
+    }
+
+    #[test]
+    fn args_ref_emits_block_with_var() {
+        let code = r#"
+            function D(s, a) {
+                switch (s) {
+                    case X: { var t = a[0]; foo(t); } break;
+                }
+            }
+            D(X, [42]);
+        "#;
+        let (out, inlined) = run(code);
+        assert_eq!(inlined, 1, "should inline: {out}");
+        assert!(!out.contains("function(a)"), "no IIFE param: {out}");
+        assert!(out.contains("var a = [42]"), "var decl for args param: {out}");
+        assert!(out.contains("foo(t)"), "body preserved: {out}");
     }
 }
