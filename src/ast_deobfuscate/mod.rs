@@ -31,6 +31,7 @@ pub mod expression_simplify;
 pub mod fromcharcode_fold;
 pub mod function_inline;
 pub mod iife_unwrap;
+pub mod json_parse_eval;
 pub mod lookup_forwarder;
 pub mod multi_var_split;
 pub mod object_sparsing;
@@ -77,6 +78,7 @@ pub use expression_simplify::ExpressionSimplifier;
 pub use fromcharcode_fold::FromCharCodeFolder;
 pub use function_inline::{FunctionCollector, FunctionInliner};
 pub use iife_unwrap::IifeUnwrap;
+pub use json_parse_eval::JsonParseEvaluator;
 pub use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
 pub use multi_var_split::MultiVarSplitter;
 pub use object_sparsing::ObjectSparsingConsolidator;
@@ -135,6 +137,7 @@ pub struct AstDeobfuscator {
     switch_true_converter: SwitchTrueConverter,
     short_circuit_to_if: ShortCircuitToIf,
     iife_unwrap: IifeUnwrap,
+    json_parse_evaluator: JsonParseEvaluator,
     skip_annotations: bool,
 }
 
@@ -169,6 +172,7 @@ impl AstDeobfuscator {
             switch_true_converter: SwitchTrueConverter::new(),
             short_circuit_to_if: ShortCircuitToIf::new(),
             iife_unwrap: IifeUnwrap::new(),
+            json_parse_evaluator: JsonParseEvaluator::new(),
             skip_annotations: false,
         }
     }
@@ -577,6 +581,15 @@ impl AstDeobfuscator {
             self.switch_true_converter.converted_count()
         );
 
+        eprintln!("[DEOBFUSCATE] Phase 16.7: SemanticBuilder for json_parse_evaluator");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        eprintln!("[DEOBFUSCATE] Phase 16.7: Running json_parse_evaluator");
+        traverse_mut_with_ctx(&mut self.json_parse_evaluator, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 16.7: Evaluated {} JSON.parse() calls",
+            self.json_parse_evaluator.evaluated_count()
+        );
         eprintln!("[DEOBFUSCATE] Phase 17: SemanticBuilder for short_circuit_to_if");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
