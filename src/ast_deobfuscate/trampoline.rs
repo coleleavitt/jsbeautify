@@ -18,6 +18,7 @@
 //!    * `function NAME() { return DISPATCH.apply(this, [STATE, arguments]); }`
 //!    * `var NAME = function() { return DISPATCH.apply(this, [STATE, arguments]); };`
 //!    * `var NAME = function NAME2() { return DISPATCH.apply(this, [STATE, arguments]); };`
+//!    * `NAME = function() { return DISPATCH.apply(this, [STATE, arguments]); };`
 //!    DISPATCH must be a plain identifier; STATE must be a plain identifier.
 //! 2. At every call site `NAME(<args>)` (identifier call, not member call), rewrites to
 //!    `DISPATCH.call(this, STATE, [<args>])`.
@@ -29,9 +30,9 @@
 
 use oxc_allocator::{CloneIn, Vec as OxcVec};
 use oxc_ast::ast::{
-    Argument, ArrayExpression, ArrayExpressionElement, BindingPattern, CallExpression, EmptyStatement, Expression,
-    Function, IdentifierName, IdentifierReference, Statement, StaticMemberExpression, ThisExpression,
-    VariableDeclarator,
+    Argument, ArrayExpression, ArrayExpressionElement, AssignmentTarget, BindingPattern, CallExpression,
+    EmptyStatement, Expression, Function, IdentifierName, IdentifierReference, Statement, StaticMemberExpression,
+    ThisExpression, VariableDeclarator,
 };
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
@@ -156,6 +157,23 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineCollector {
                 info.state
             );
             self.trampolines.insert(id.name.as_str().to_string(), info);
+        }
+    }
+
+    fn enter_expression(&mut self, expr: &mut Expression<'a>, _ctx: &mut Ctx<'a>) {
+        if let Expression::AssignmentExpression(assign) = expr {
+            if let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left {
+                if let Expression::FunctionExpression(func) = &assign.right {
+                    if let Some(info) = Self::extract_info(func) {
+                        let name = target.name.as_str().to_string();
+                        eprintln!(
+                            "[AST/tramp] found  {} = function() -> {}.apply(this, [{}, arguments])",
+                            name, info.dispatcher, info.state
+                        );
+                        self.trampolines.insert(name, info);
+                    }
+                }
+            }
         }
     }
 }
@@ -309,6 +327,22 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineInliner {
                     node_id: Cell::new(NodeId::DUMMY),
                     span: SPAN,
                 }));
+                return;
+            }
+        }
+        if let Statement::ExpressionStatement(es) = stmt {
+            if let Expression::AssignmentExpression(assign) = &es.expression {
+                if let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left {
+                    if matches!(&assign.right, Expression::FunctionExpression(_))
+                        && self.trampolines.contains_key(target.name.as_str())
+                    {
+                        eprintln!("[AST/tramp] remove {} = function()", target.name.as_str());
+                        *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
+                            node_id: Cell::new(NodeId::DUMMY),
+                            span: SPAN,
+                        }));
+                    }
+                }
             }
         }
     }
@@ -407,5 +441,31 @@ mod tests {
             out.contains("LT.call(this, S, [1, 2])") || out.contains("LT.call(this,S,[1,2])"),
             "got: {out}"
         );
+    }
+
+    #[test]
+    fn inlines_assignment_trampoline() {
+        let out = run("F59 = function(x) { return LT.apply(this, [S, arguments]); }; F59(a);");
+        assert!(
+            out.contains("LT.call(this, S, [a])") || out.contains("LT.call(this,S,[a])"),
+            "call site must be inlined: {out}"
+        );
+    }
+
+    #[test]
+    fn removes_assignment_declaration() {
+        let out = run("F59 = function(x) { return LT.apply(this, [S, arguments]); }; F59(a);");
+        assert!(!out.contains("F59 = function"), "assignment must be removed: {out}");
+        assert!(!out.contains("F59=function"), "assignment must be removed: {out}");
+    }
+
+    #[test]
+    fn preserves_non_trampoline_assignment() {
+        let out = run("F59 = function(x) { return x + 1; }; F59(a);");
+        assert!(
+            out.contains("F59") && out.contains("function"),
+            "non-trampoline must be kept: {out}"
+        );
+        assert!(out.contains("F59(a)"), "call site must be unchanged: {out}");
     }
 }
