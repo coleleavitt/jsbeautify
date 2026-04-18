@@ -86,17 +86,7 @@ fn scan_stmt<'a>(
             }
         }
         Statement::ExpressionStatement(es) => {
-            if let Expression::CallExpression(call) = &es.expression {
-                let callee = match &call.callee {
-                    Expression::ParenthesizedExpression(p) => &p.expression,
-                    other => other,
-                };
-                if let Expression::FunctionExpression(func) = callee {
-                    if let Some(body) = &func.body {
-                        scan_stmts(&body.statements, dispatchers, bodies, alloc);
-                    }
-                }
-            }
+            scan_expr(&es.expression, dispatchers, bodies, alloc);
         }
         Statement::BlockStatement(b) => scan_stmts(&b.body, dispatchers, bodies, alloc),
         Statement::IfStatement(ifs) => {
@@ -115,12 +105,100 @@ fn scan_stmt<'a>(
             }
         }
         Statement::ForStatement(f) => scan_stmt(&f.body, dispatchers, bodies, alloc),
+        Statement::ForInStatement(f) => scan_stmt(&f.body, dispatchers, bodies, alloc),
+        Statement::ForOfStatement(f) => scan_stmt(&f.body, dispatchers, bodies, alloc),
         Statement::WhileStatement(w) => scan_stmt(&w.body, dispatchers, bodies, alloc),
         Statement::DoWhileStatement(d) => scan_stmt(&d.body, dispatchers, bodies, alloc),
+        Statement::LabeledStatement(l) => scan_stmt(&l.body, dispatchers, bodies, alloc),
         Statement::SwitchStatement(s) => {
             for case in &s.cases {
                 scan_stmts(&case.consequent, dispatchers, bodies, alloc);
             }
+        }
+        _ => {}
+    }
+}
+
+fn scan_expr<'a>(
+    expr: &Expression<'a>,
+    dispatchers: &DispatcherMap,
+    bodies: &mut CaseBodyMap<'a>,
+    alloc: &'a oxc_allocator::Allocator,
+) {
+    match expr {
+        Expression::FunctionExpression(func) => {
+            if let Some(body) = &func.body {
+                scan_stmts(&body.statements, dispatchers, bodies, alloc);
+            }
+        }
+        Expression::ArrowFunctionExpression(func) => {
+            scan_stmts(&func.body.statements, dispatchers, bodies, alloc);
+        }
+        Expression::AssignmentExpression(assign) => {
+            scan_expr(&assign.right, dispatchers, bodies, alloc);
+        }
+        Expression::CallExpression(call) => {
+            scan_expr(&call.callee, dispatchers, bodies, alloc);
+            for arg in &call.arguments {
+                if let Some(e) = arg.as_expression() {
+                    scan_expr(e, dispatchers, bodies, alloc);
+                }
+            }
+        }
+        Expression::NewExpression(ne) => {
+            scan_expr(&ne.callee, dispatchers, bodies, alloc);
+            for arg in &ne.arguments {
+                if let Some(e) = arg.as_expression() {
+                    scan_expr(e, dispatchers, bodies, alloc);
+                }
+            }
+        }
+        Expression::SequenceExpression(seq) => {
+            for e in &seq.expressions {
+                scan_expr(e, dispatchers, bodies, alloc);
+            }
+        }
+        Expression::ParenthesizedExpression(p) => {
+            scan_expr(&p.expression, dispatchers, bodies, alloc);
+        }
+        Expression::ConditionalExpression(c) => {
+            scan_expr(&c.consequent, dispatchers, bodies, alloc);
+            scan_expr(&c.alternate, dispatchers, bodies, alloc);
+        }
+        Expression::LogicalExpression(l) => {
+            scan_expr(&l.left, dispatchers, bodies, alloc);
+            scan_expr(&l.right, dispatchers, bodies, alloc);
+        }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+                    scan_expr(&p.value, dispatchers, bodies, alloc);
+                }
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for elem in &a.elements {
+                if let Some(e) = elem.as_expression() {
+                    scan_expr(e, dispatchers, bodies, alloc);
+                }
+            }
+        }
+        Expression::UnaryExpression(u) => {
+            scan_expr(&u.argument, dispatchers, bodies, alloc);
+        }
+        Expression::BinaryExpression(b) => {
+            scan_expr(&b.left, dispatchers, bodies, alloc);
+            scan_expr(&b.right, dispatchers, bodies, alloc);
+        }
+        Expression::StaticMemberExpression(s) => {
+            scan_expr(&s.object, dispatchers, bodies, alloc);
+        }
+        Expression::ComputedMemberExpression(c) => {
+            scan_expr(&c.object, dispatchers, bodies, alloc);
+            scan_expr(&c.expression, dispatchers, bodies, alloc);
+        }
+        Expression::TaggedTemplateExpression(t) => {
+            scan_expr(&t.tag, dispatchers, bodies, alloc);
         }
         _ => {}
     }
@@ -142,6 +220,10 @@ fn scan_var_declarator<'a>(
     if let Some(info) = dispatchers.get(var_name) {
         extract_case_bodies(func, &info.name, dispatchers, bodies, alloc);
     }
+    // Always recurse into the function body to find nested dispatchers
+    if let Some(body) = &func.body {
+        scan_stmts(&body.statements, dispatchers, bodies, alloc);
+    }
 }
 
 fn extract_case_bodies<'a>(
@@ -152,12 +234,14 @@ fn extract_case_bodies<'a>(
     alloc: &'a oxc_allocator::Allocator,
 ) {
     let Some(body) = &func.body else { return };
-    if body.statements.len() != 1 {
-        return;
-    }
-    let Statement::SwitchStatement(switch) = &body.statements[0] else {
-        return;
-    };
+    let switch = body.statements.iter().find_map(|s| {
+        if let Statement::SwitchStatement(sw) = s {
+            Some(sw)
+        } else {
+            None
+        }
+    });
+    let Some(switch) = switch else { return };
     let info = match dispatchers.get(dispatcher_name) {
         Some(i) => i,
         None => return,
