@@ -36,6 +36,7 @@ pub mod lookup_forwarder;
 pub mod multi_var_split;
 pub mod object_sparsing;
 pub mod operator_proxy;
+pub mod optional_chaining_normalizer;
 pub mod self_init_accessor;
 pub mod sequence_expression_split;
 pub mod short_circuit_to_if;
@@ -83,6 +84,7 @@ pub use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
 pub use multi_var_split::MultiVarSplitter;
 pub use object_sparsing::ObjectSparsingConsolidator;
 pub use operator_proxy::{OperatorProxyCollector, OperatorProxyInliner};
+pub use optional_chaining_normalizer::OptionalChainingNormalizer;
 pub use self_init_accessor::SelfInitAccessorFlattener;
 pub use sequence_expression_split::SequenceExpressionSplitter;
 pub use short_circuit_to_if::ShortCircuitToIf;
@@ -138,6 +140,7 @@ pub struct AstDeobfuscator {
     short_circuit_to_if: ShortCircuitToIf,
     iife_unwrap: IifeUnwrap,
     json_parse_evaluator: JsonParseEvaluator,
+    optional_chaining_normalizer: OptionalChainingNormalizer,
     skip_annotations: bool,
 }
 
@@ -173,6 +176,7 @@ impl AstDeobfuscator {
             short_circuit_to_if: ShortCircuitToIf::new(),
             iife_unwrap: IifeUnwrap::new(),
             json_parse_evaluator: JsonParseEvaluator::new(),
+            optional_chaining_normalizer: OptionalChainingNormalizer::new(),
             skip_annotations: false,
         }
     }
@@ -589,6 +593,16 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 16.7: Evaluated {} JSON.parse() calls",
             self.json_parse_evaluator.evaluated_count()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 16.9: SemanticBuilder for optional_chaining_normalizer");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        eprintln!("[DEOBFUSCATE] Phase 16.9: Running optional_chaining_normalizer");
+        traverse_mut_with_ctx(&mut self.optional_chaining_normalizer, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 16.9: Detected {} optional chaining expressions",
+            self.optional_chaining_normalizer.detected_count()
         );
         eprintln!("[DEOBFUSCATE] Phase 17: SemanticBuilder for short_circuit_to_if");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
