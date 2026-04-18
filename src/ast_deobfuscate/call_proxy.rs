@@ -1,6 +1,7 @@
 use oxc_allocator::CloneIn;
 use oxc_ast::ast::{
     Argument, BindingPattern, CallExpression, EmptyStatement, Expression, Function, IdentifierReference, Statement,
+    VariableDeclarator,
 };
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
@@ -46,7 +47,15 @@ impl CallProxyCollector {
 
     fn try_extract_proxy(&mut self, func: &Function<'_>) -> Option<(String, CallProxyInfo)> {
         let name = func.id.as_ref()?.name.as_str().to_string();
+        let info = Self::extract_proxy_info(func, &name)?;
+        Some((name, info))
+    }
 
+    fn try_extract_proxy_for(&mut self, name: &str, func: &Function<'_>) -> Option<CallProxyInfo> {
+        Self::extract_proxy_info(func, name)
+    }
+
+    fn extract_proxy_info(func: &Function<'_>, name: &str) -> Option<CallProxyInfo> {
         if func.r#async || func.generator {
             return None;
         }
@@ -109,7 +118,7 @@ impl CallProxyCollector {
             params.len()
         );
 
-        Some((name, CallProxyInfo { target_name, params }))
+        Some(CallProxyInfo { target_name, params })
     }
 }
 
@@ -122,6 +131,19 @@ impl Default for CallProxyCollector {
 impl<'a> Traverse<'a, DeobfuscateState> for CallProxyCollector {
     fn enter_function(&mut self, func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
         if let Some((name, info)) = self.try_extract_proxy(func) {
+            self.proxies.insert(name, info);
+        }
+    }
+
+    fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
+        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+            return;
+        };
+        let Some(Expression::FunctionExpression(func)) = &declarator.init else {
+            return;
+        };
+        let name = id.name.as_str().to_string();
+        if let Some(info) = self.try_extract_proxy_for(&name, func) {
             self.proxies.insert(name, info);
         }
     }
@@ -213,6 +235,36 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyInliner {
             let name = id.name.as_str();
             if self.proxies.contains_key(name) {
                 eprintln!("[AST] Removing call proxy function: {name}");
+                self.changed = true;
+                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
+                    node_id: Cell::new(NodeId::DUMMY),
+                    span: SPAN,
+                }));
+                return;
+            }
+        }
+
+        if let Statement::VariableDeclaration(decl) = stmt {
+            let all_are_proxies = !decl.declarations.is_empty()
+                && decl.declarations.iter().all(|d| {
+                    let BindingPattern::BindingIdentifier(id) = &d.id else {
+                        return false;
+                    };
+                    let Some(Expression::FunctionExpression(_)) = &d.init else {
+                        return false;
+                    };
+                    self.proxies.contains_key(id.name.as_str())
+                });
+            if all_are_proxies {
+                let names: Vec<String> = decl
+                    .declarations
+                    .iter()
+                    .filter_map(|d| match &d.id {
+                        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                eprintln!("[AST] Removing call proxy var declaration: var {};", names.join(", "));
                 self.changed = true;
                 *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
                     node_id: Cell::new(NodeId::DUMMY),

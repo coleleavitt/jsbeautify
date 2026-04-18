@@ -32,24 +32,39 @@ impl Default for VoidReplacer {
 
 impl<'a> Traverse<'a, DeobfuscateState> for VoidReplacer {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
-        if let Expression::UnaryExpression(unary) = expr {
-            if unary.operator != UnaryOperator::Void {
-                return;
-            }
-
-            if let Expression::NumericLiteral(num) = &unary.argument
-                && num.value == 0.0
-            {
-                eprintln!("[AST] Converting void 0 -> undefined");
-                self.changed = true;
-                *expr = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident("undefined"),
-                    reference_id: Cell::default(),
-                }));
-            }
+        let Expression::UnaryExpression(unary) = expr else {
+            return;
+        };
+        if unary.operator != UnaryOperator::Void {
+            return;
         }
+        if !is_pure_operand(&unary.argument) {
+            return;
+        }
+        eprintln!("[AST] Converting void <pure-expr> -> undefined");
+        self.changed = true;
+        *expr = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
+            node_id: Cell::new(NodeId::DUMMY),
+            span: SPAN,
+            name: ctx.ast.ident("undefined"),
+            reference_id: Cell::default(),
+        }));
+    }
+}
+
+fn is_pure_operand(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::RegExpLiteral(_) => true,
+        Expression::Identifier(id) => id.name.as_str() == "undefined",
+        Expression::ArrayExpression(a) => a.elements.is_empty(),
+        Expression::ObjectExpression(o) => o.properties.is_empty(),
+        Expression::ParenthesizedExpression(p) => is_pure_operand(&p.expression),
+        _ => false,
     }
 }
 
@@ -89,12 +104,24 @@ mod tests {
     }
 
     #[test]
-    fn test_preserve_void_other() {
-        let output = run_void_replacer("var x = void 5;");
-        eprintln!("Output: {output}");
+    fn test_void_literal_to_undefined() {
+        for src in [
+            "var x = void 5;",
+            "var x = void \"hi\";",
+            "var x = void (0);",
+            "var x = void []",
+        ] {
+            let output = run_void_replacer(src);
+            assert!(output.contains("undefined"), "{src} -> {output}");
+        }
+    }
+
+    #[test]
+    fn test_preserve_void_side_effect() {
+        let output = run_void_replacer("var x = void f();");
         assert!(
-            output.contains("void 5") || output.contains("void(5)"),
-            "Should preserve void 5, got: {output}"
+            output.contains("void"),
+            "must preserve side-effecting void, got: {output}"
         );
     }
 

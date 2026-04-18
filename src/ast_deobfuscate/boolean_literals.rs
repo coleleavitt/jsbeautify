@@ -32,33 +32,40 @@ impl Default for BooleanLiteralConverter {
 
 impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
-        if let Expression::UnaryExpression(unary) = expr {
-            if unary.operator != UnaryOperator::LogicalNot {
-                return;
-            }
-
-            if let Expression::NumericLiteral(num) = &unary.argument {
-                let value = num.value;
-
-                if value == 0.0 {
-                    eprintln!("[AST] Converting !0 -> true");
-                    self.changed = true;
-                    *expr = Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        value: true,
-                    }));
-                } else if value == 1.0 {
-                    eprintln!("[AST] Converting !1 -> false");
-                    self.changed = true;
-                    *expr = Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        value: false,
-                    }));
-                }
-            }
+        let Expression::UnaryExpression(unary) = expr else {
+            return;
+        };
+        if unary.operator != UnaryOperator::LogicalNot {
+            return;
         }
+        let Some(truthy) = js_truthiness(&unary.argument) else {
+            return;
+        };
+        let result = !truthy;
+        eprintln!("[AST] Converting !<literal> -> {result}");
+        self.changed = true;
+        *expr = Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
+            node_id: Cell::new(NodeId::DUMMY),
+            span: SPAN,
+            value: result,
+        }));
+    }
+}
+
+fn js_truthiness(expr: &Expression<'_>) -> Option<bool> {
+    match expr {
+        Expression::NumericLiteral(n) => Some(n.value != 0.0 && !n.value.is_nan()),
+        Expression::StringLiteral(s) => Some(!s.value.is_empty()),
+        Expression::BooleanLiteral(b) => Some(b.value),
+        Expression::NullLiteral(_) => Some(false),
+        Expression::Identifier(id) => match id.name.as_str() {
+            "undefined" | "NaN" => Some(false),
+            "Infinity" => Some(true),
+            _ => None,
+        },
+        Expression::ArrayExpression(_) | Expression::ObjectExpression(_) => Some(true),
+        Expression::ParenthesizedExpression(p) => js_truthiness(&p.expression),
+        _ => None,
     }
 }
 
@@ -104,10 +111,28 @@ mod tests {
     }
 
     #[test]
-    fn test_preserve_other_not() {
+    fn test_not_positive_number_to_false() {
         let output = run_boolean_literals("var x = !5;");
-        eprintln!("Output: {output}");
-        assert!(output.contains("!5"), "Should preserve !5, got: {output}");
+        assert!(output.contains("false"), "!5 -> false, got: {output}");
+    }
+
+    #[test]
+    fn test_not_string_literal() {
+        assert!(run_boolean_literals("var x = !\"hi\";").contains("false"));
+        assert!(run_boolean_literals("var x = !\"\";").contains("true"));
+    }
+
+    #[test]
+    fn test_not_array_object() {
+        assert!(run_boolean_literals("var x = ![];").contains("false"));
+        assert!(run_boolean_literals("var x = !{};").contains("false"));
+    }
+
+    #[test]
+    fn test_not_undefined_nan_null() {
+        assert!(run_boolean_literals("var x = !undefined;").contains("true"));
+        assert!(run_boolean_literals("var x = !NaN;").contains("true"));
+        assert!(run_boolean_literals("var x = !null;").contains("true"));
     }
 
     #[test]

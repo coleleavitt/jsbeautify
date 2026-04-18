@@ -7,12 +7,15 @@
 //! - Better performance (single parse/codegen cycle)
 //! - More maintainable code following `oxc_minifier` patterns
 
+pub mod akamai;
 pub mod algebraic_simplify;
+pub mod apply_call_simplifier;
 pub mod array_unpack;
 pub mod boolean_literals;
 pub mod bun_alphabet;
 pub mod bun_module_annotator;
 pub mod call_proxy;
+pub mod concat_canonicaliser;
 pub mod constant_folding;
 pub mod control_flow_unflatten;
 pub mod dead_code;
@@ -25,29 +28,41 @@ pub mod empty_statement_cleanup;
 pub mod encrypted_eval;
 pub mod esbuild_helper;
 pub mod expression_simplify;
+pub mod fromcharcode_fold;
 pub mod function_inline;
 pub mod iife_unwrap;
+pub mod lookup_forwarder;
 pub mod multi_var_split;
 pub mod object_sparsing;
 pub mod operator_proxy;
+pub mod self_init_accessor;
 pub mod sequence_expression_split;
 pub mod short_circuit_to_if;
 pub mod state;
 pub mod strength_reduction;
 pub mod string_array_inline;
 pub mod string_array_rotation;
+pub mod switch_true_converter;
 pub mod ternary;
 pub mod ternary_to_if_else;
+pub mod trampoline;
 pub mod try_catch;
+pub mod unary_proxy;
 pub mod unicode_mangling;
 pub mod variable_rename;
 pub mod void_replacer;
 
+pub use akamai::{
+    AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,
+    UndefinedPatternNormalizer,
+};
 pub use algebraic_simplify::AlgebraicSimplifier;
+pub use apply_call_simplifier::ApplyCallSimplifier;
 pub use array_unpack::ArrayUnpacker;
 pub use boolean_literals::BooleanLiteralConverter;
 pub use bun_module_annotator::annotate_bun_modules;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
+pub use concat_canonicaliser::ConcatCanonicaliser;
 pub use constant_folding::ConstantFolder;
 pub use control_flow_unflatten::ControlFlowUnflattener;
 pub use dead_code::DeadCodeEliminator;
@@ -59,20 +74,26 @@ pub use dynamic_property::DynamicPropertyConverter;
 pub use empty_statement_cleanup::EmptyStatementCleanup;
 pub use esbuild_helper::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esbuild_modules};
 pub use expression_simplify::ExpressionSimplifier;
+pub use fromcharcode_fold::FromCharCodeFolder;
 pub use function_inline::{FunctionCollector, FunctionInliner};
 pub use iife_unwrap::IifeUnwrap;
+pub use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
 pub use multi_var_split::MultiVarSplitter;
 pub use object_sparsing::ObjectSparsingConsolidator;
 pub use operator_proxy::{OperatorProxyCollector, OperatorProxyInliner};
+pub use self_init_accessor::SelfInitAccessorFlattener;
 pub use sequence_expression_split::SequenceExpressionSplitter;
 pub use short_circuit_to_if::ShortCircuitToIf;
 pub use state::DeobfuscateState;
 pub use strength_reduction::StrengthReducer;
 pub use string_array_inline::StringArrayInliner;
 pub use string_array_rotation::StringArrayRotation;
+pub use switch_true_converter::SwitchTrueConverter;
 pub use ternary::TernarySimplifier;
 pub use ternary_to_if_else::TernaryToIfElse;
+pub use trampoline::{TrampolineCollector, TrampolineInliner};
 pub use try_catch::TryCatchRemover;
+pub use unary_proxy::{UnaryProxyCollector, UnaryProxyInliner};
 pub use unicode_mangling::UnicodeNormalizer;
 pub use variable_rename::VariableRenamer;
 pub use void_replacer::VoidReplacer;
@@ -111,6 +132,7 @@ pub struct AstDeobfuscator {
     sequence_expression_splitter: SequenceExpressionSplitter,
     multi_var_splitter: MultiVarSplitter,
     ternary_to_if_else: TernaryToIfElse,
+    switch_true_converter: SwitchTrueConverter,
     short_circuit_to_if: ShortCircuitToIf,
     iife_unwrap: IifeUnwrap,
     skip_annotations: bool,
@@ -144,6 +166,7 @@ impl AstDeobfuscator {
             sequence_expression_splitter: SequenceExpressionSplitter::new(),
             multi_var_splitter: MultiVarSplitter::new(),
             ternary_to_if_else: TernaryToIfElse::new(),
+            switch_true_converter: SwitchTrueConverter::new(),
             short_circuit_to_if: ShortCircuitToIf::new(),
             iife_unwrap: IifeUnwrap::new(),
             skip_annotations: false,
@@ -184,6 +207,129 @@ impl AstDeobfuscator {
         }
 
         let mut program = parse_result.program;
+
+        eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP detection");
+        let mut akamai = AkamaiDeobfuscator::new();
+        let is_akamai = akamai.detect(&program);
+
+        if is_akamai {
+            eprintln!("[DEOBFUSCATE] Phase 0.5a: Akamai stack-tracker removal");
+            akamai.tracker_remover.detect(&program);
+            if !akamai.tracker_remover.tracker_names().is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                traverse_mut_with_ctx(&mut akamai.tracker_remover, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5a: Removed {} stack-tracker calls for trackers {:?}",
+                    akamai.tracker_remover.removed_call_count(),
+                    akamai.tracker_remover.tracker_names()
+                );
+            } else {
+                eprintln!("[DEOBFUSCATE] Phase 0.5a: No pure stack-tracker variable identified");
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5b: Akamai undefined-pattern + boolean-arithmetic folding");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            traverse_mut_with_ctx(&mut akamai.undef_normalizer, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.5b: Replaced {} [][[]] patterns with undefined",
+                akamai.undef_normalizer.replaced_count()
+            );
+            traverse_mut_with_ctx(&mut akamai.bool_folder, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.5b: Folded {} boolean-arithmetic expressions",
+                akamai.bool_folder.folded_count()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5c: Akamai equality-proxy unwrapping");
+            akamai.eq_unwrapper.collect(&program);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.5c: Found {} equality-proxy functions",
+                akamai.eq_unwrapper.proxies().len()
+            );
+            if !akamai.eq_unwrapper.proxies().is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                traverse_mut_with_ctx(&mut akamai.eq_unwrapper, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5c: Unwrapped {} equality-proxy call sites",
+                    akamai.eq_unwrapper.unwrapped_count()
+                );
+            }
+
+            eprintln!("[AKAMAI] ─── summary ───");
+            eprintln!(
+                "[AKAMAI]   trackers detected     : {:?}",
+                akamai.tracker_remover.tracker_names()
+            );
+            eprintln!(
+                "[AKAMAI]   tracker calls removed : {}",
+                akamai.tracker_remover.removed_call_count()
+            );
+            eprintln!(
+                "[AKAMAI]   [][[]] -> undefined    : {}",
+                akamai.undef_normalizer.replaced_count()
+            );
+            eprintln!(
+                "[AKAMAI]   bool-arith folded      : {}",
+                akamai.bool_folder.folded_count()
+            );
+            eprintln!(
+                "[AKAMAI]   eq-proxies identified  : {}",
+                akamai.eq_unwrapper.proxies().len()
+            );
+            eprintln!(
+                "[AKAMAI]   eq-proxy calls unwrapped: {}",
+                akamai.eq_unwrapper.unwrapped_count()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5d: Akamai self-init-accessor flattener");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut accessor_flattener = SelfInitAccessorFlattener::new();
+            traverse_mut_with_ctx(&mut accessor_flattener, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.5d: Flattened {} self-init accessors",
+                accessor_flattener.rewritten()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5e: Akamai lookup-forwarder inliner");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut fwd_collector = LookupForwarderCollector::new();
+            traverse_mut_with_ctx(&mut fwd_collector, &mut program, &mut ctx);
+            let forwarders = fwd_collector.forwarders();
+            eprintln!("[DEOBFUSCATE] Phase 0.5e: Found {} lookup forwarders", forwarders.len());
+            if !forwarders.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = LookupForwarderInliner::new(forwarders);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5e: Inlined {} lookup-forwarder call sites",
+                    inliner.inlined()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5f: Akamai trampoline inliner");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut tramp_collector = TrampolineCollector::new();
+            traverse_mut_with_ctx(&mut tramp_collector, &mut program, &mut ctx);
+            let trampolines = tramp_collector.into_trampolines();
+            eprintln!("[DEOBFUSCATE] Phase 0.5f: Found {} trampolines", trampolines.len());
+            if !trampolines.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = TrampolineInliner::new(trampolines);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5f: Inlined {} trampoline call sites",
+                    inliner.inlined()
+                );
+            }
+        }
 
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
@@ -243,6 +389,51 @@ impl AstDeobfuscator {
             let mut inliner = OperatorProxyInliner::new(op_proxies);
             traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
         }
+
+        eprintln!("[DEOBFUSCATE] Phase 5b: SemanticBuilder for unary_proxy");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut un_proxy_collector = UnaryProxyCollector::new();
+        eprintln!("[DEOBFUSCATE] Phase 5b: Running unary_proxy_collector");
+        traverse_mut_with_ctx(&mut un_proxy_collector, &mut program, &mut ctx);
+        let un_proxies = un_proxy_collector.get_proxies();
+        eprintln!("[DEOBFUSCATE] Phase 5b: Found {} unary proxies", un_proxies.len());
+        if !un_proxies.is_empty() {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut inliner = UnaryProxyInliner::new(un_proxies);
+            traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 5b: Inlined {} unary-proxy call sites",
+                inliner.inlined_count()
+            );
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 5c: apply/call simplifier");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut apply_call = ApplyCallSimplifier::new();
+        traverse_mut_with_ctx(&mut apply_call, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 5c: Simplified {} .apply/.call sites",
+            apply_call.rewrites()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 5d: concat canonicaliser + String.fromCharCode folder");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut concat = ConcatCanonicaliser::new();
+        traverse_mut_with_ctx(&mut concat, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 5d: Canonicalised {} .concat(...) calls",
+            concat.rewrites()
+        );
+        let mut fromcc = FromCharCodeFolder::new();
+        traverse_mut_with_ctx(&mut fromcc, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 5d: Folded {} String.fromCharCode(...) calls",
+            fromcc.folded()
+        );
 
         eprintln!("[DEOBFUSCATE] Phase 6: SemanticBuilder for simplification passes");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
@@ -374,6 +565,16 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 16: Converted {} ternary expressions to if/else",
             self.ternary_to_if_else.converted_count()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 16.5: SemanticBuilder for switch_true_converter");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        eprintln!("[DEOBFUSCATE] Phase 16.5: Running switch_true_converter");
+        traverse_mut_with_ctx(&mut self.switch_true_converter, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 16.5: Converted {} switch(true) statements to if/else",
+            self.switch_true_converter.converted_count()
         );
 
         eprintln!("[DEOBFUSCATE] Phase 17: SemanticBuilder for short_circuit_to_if");
