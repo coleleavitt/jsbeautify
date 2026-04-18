@@ -24,6 +24,7 @@ pub mod dead_code;
 pub mod dead_var_elimination;
 pub mod decoder_inline;
 pub mod deterministic_rename;
+pub mod dispatch_inliner;
 pub mod dispatcher_detector;
 pub mod dispatcher_inline;
 pub mod dynamic_property;
@@ -78,6 +79,7 @@ pub use dead_code::DeadCodeEliminator;
 pub use dead_var_elimination::{DeadVarCollector, DeadVarEliminator};
 pub use decoder_inline::DecoderInliner;
 pub use deterministic_rename::DeterministicRenamer;
+pub use dispatch_inliner::{DispatchInlinerCollector, DispatchInlinerRewriter};
 pub use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, DispatcherMap};
 pub use dispatcher_inline::DispatcherInliner;
 pub use dynamic_property::DynamicPropertyConverter;
@@ -548,6 +550,28 @@ impl AstDeobfuscator {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             let mut inliner = FunctionInliner::new(single_use);
             traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 9.5: dispatch inliner (string-array-factory resolution)");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut di_collector = DispatchInlinerCollector::new();
+        traverse_mut_with_ctx(&mut di_collector, &mut program, &mut ctx);
+        let (di_factories, di_constants) = di_collector.into_maps();
+        eprintln!(
+            "[DEOBFUSCATE] Phase 9.5: Found {} string-array factories, {} index constants",
+            di_factories.len(),
+            di_constants.len()
+        );
+        if !di_factories.is_empty() {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut di_rewriter = DispatchInlinerRewriter::new(di_factories, di_constants);
+            traverse_mut_with_ctx(&mut di_rewriter, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 9.5: Inlined {} dispatch call sites",
+                di_rewriter.inlined()
+            );
         }
 
         eprintln!("[DEOBFUSCATE] Phase 10: SemanticBuilder for array/dynamic/ternary/try_catch");
