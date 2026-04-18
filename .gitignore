@@ -1,1 +1,4 @@
-/targetcore.1269190
+/target
+core.*
+*.core
+core.[0-9]*
