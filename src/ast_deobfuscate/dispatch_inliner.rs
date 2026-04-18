@@ -22,7 +22,8 @@
 //! Also resolves simple `var CONST = NUMBER;` index constants.
 
 use oxc_ast::ast::{
-    AssignmentTarget, BindingPattern, Expression, Function, Statement, StringLiteral, VariableDeclarator,
+    AssignmentTarget, BinaryOperator, BindingPattern, Expression, Function, Statement, StringLiteral, UnaryOperator,
+    VariableDeclarator,
 };
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
@@ -34,9 +35,87 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
+fn try_eval_expr(expr: &Expression<'_>, known: &FxHashMap<String, usize>) -> Option<i64> {
+    match expr {
+        Expression::NumericLiteral(n) => {
+            let v = n.value;
+            if v.fract() != 0.0 || v > i64::MAX as f64 || v < i64::MIN as f64 {
+                return None;
+            }
+            Some(v as i64)
+        }
+        Expression::Identifier(id) => known.get(id.name.as_str()).map(|&v| v as i64),
+        Expression::BinaryExpression(bin) => {
+            let l = try_eval_expr(&bin.left, known)?;
+            let r = try_eval_expr(&bin.right, known)?;
+            match bin.operator {
+                BinaryOperator::Addition => l.checked_add(r),
+                BinaryOperator::Subtraction => l.checked_sub(r),
+                BinaryOperator::Multiplication => l.checked_mul(r),
+                _ => None,
+            }
+        }
+        Expression::UnaryExpression(u) if u.operator == UnaryOperator::UnaryPlus => try_eval_expr(&u.argument, known),
+        Expression::ParenthesizedExpression(p) => try_eval_expr(&p.expression, known),
+        _ => None,
+    }
+}
+
+fn try_eval_as_usize(expr: &Expression<'_>, known: &FxHashMap<String, usize>) -> Option<usize> {
+    let v = try_eval_expr(expr, known)?;
+    usize::try_from(v).ok()
+}
+
+enum ConstExpr {
+    Lit(i64),
+    Ident(String),
+    Add(Box<ConstExpr>, Box<ConstExpr>),
+    Sub(Box<ConstExpr>, Box<ConstExpr>),
+    Mul(Box<ConstExpr>, Box<ConstExpr>),
+}
+
+impl ConstExpr {
+    fn from_ast(expr: &Expression<'_>) -> Option<Self> {
+        match expr {
+            Expression::NumericLiteral(n) => {
+                let v = n.value;
+                if v.fract() != 0.0 || v > i64::MAX as f64 || v < i64::MIN as f64 {
+                    return None;
+                }
+                Some(Self::Lit(v as i64))
+            }
+            Expression::Identifier(id) => Some(Self::Ident(id.name.as_str().to_string())),
+            Expression::BinaryExpression(bin) => {
+                let l = Box::new(Self::from_ast(&bin.left)?);
+                let r = Box::new(Self::from_ast(&bin.right)?);
+                match bin.operator {
+                    BinaryOperator::Addition => Some(Self::Add(l, r)),
+                    BinaryOperator::Subtraction => Some(Self::Sub(l, r)),
+                    BinaryOperator::Multiplication => Some(Self::Mul(l, r)),
+                    _ => None,
+                }
+            }
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::UnaryPlus => Self::from_ast(&u.argument),
+            Expression::ParenthesizedExpression(p) => Self::from_ast(&p.expression),
+            _ => None,
+        }
+    }
+
+    fn eval(&self, known: &FxHashMap<String, usize>) -> Option<i64> {
+        match self {
+            Self::Lit(v) => Some(*v),
+            Self::Ident(name) => known.get(name.as_str()).map(|&v| v as i64),
+            Self::Add(l, r) => l.eval(known)?.checked_add(r.eval(known)?),
+            Self::Sub(l, r) => l.eval(known)?.checked_sub(r.eval(known)?),
+            Self::Mul(l, r) => l.eval(known)?.checked_mul(r.eval(known)?),
+        }
+    }
+}
+
 pub struct DispatchInlinerCollector {
     factories: FxHashMap<String, Vec<String>>,
     constants: FxHashMap<String, usize>,
+    unresolved: Vec<(String, ConstExpr)>,
 }
 
 impl DispatchInlinerCollector {
@@ -45,11 +124,28 @@ impl DispatchInlinerCollector {
         Self {
             factories: FxHashMap::default(),
             constants: FxHashMap::default(),
+            unresolved: Vec::new(),
         }
     }
 
     #[must_use]
-    pub fn into_maps(self) -> (FxHashMap<String, Vec<String>>, FxHashMap<String, usize>) {
+    pub fn into_maps(mut self) -> (FxHashMap<String, Vec<String>>, FxHashMap<String, usize>) {
+        // Multi-pass: resolve constants that depend on other constants
+        for _ in 0..10 {
+            let prev_len = self.constants.len();
+            self.unresolved.retain(|(name, expr)| {
+                if let Some(v) = expr.eval(&self.constants) {
+                    if let Ok(u) = usize::try_from(v) {
+                        self.constants.insert(name.clone(), u);
+                        return false;
+                    }
+                }
+                true
+            });
+            if self.constants.len() == prev_len {
+                break;
+            }
+        }
         (self.factories, self.constants)
     }
 
@@ -173,14 +269,15 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
         let BindingPattern::BindingIdentifier(id) = &decl.id else {
             return;
         };
-        let Some(Expression::NumericLiteral(num)) = &decl.init else {
+        let Some(init) = &decl.init else {
             return;
         };
-        let val = num.value;
-        if val.fract() != 0.0 || val < 0.0 || val > u32::MAX as f64 {
-            return;
+        let name = id.name.as_str().to_string();
+        if let Some(val) = try_eval_as_usize(init, &self.constants) {
+            self.constants.insert(name, val);
+        } else if let Some(ce) = ConstExpr::from_ast(init) {
+            self.unresolved.push((name, ce));
         }
-        self.constants.insert(id.name.as_str().to_string(), val as usize);
     }
 
     fn enter_statement(&mut self, stmt: &mut Statement<'a>, _ctx: &mut Ctx<'a>) {
@@ -193,14 +290,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
         let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left else {
             return;
         };
-        let Expression::NumericLiteral(num) = &assign.right else {
-            return;
-        };
-        let val = num.value;
-        if val.fract() != 0.0 || val < 0.0 || val > u32::MAX as f64 {
-            return;
+        let name = target.name.as_str().to_string();
+        if let Some(val) = try_eval_as_usize(&assign.right, &self.constants) {
+            self.constants.insert(name, val);
+        } else if let Some(ce) = ConstExpr::from_ast(&assign.right) {
+            self.unresolved.push((name, ce));
         }
-        self.constants.insert(target.name.as_str().to_string(), val as usize);
     }
 }
 
@@ -226,17 +321,7 @@ impl DispatchInlinerRewriter {
     }
 
     fn resolve_index(&self, expr: &Expression<'_>) -> Option<usize> {
-        match expr {
-            Expression::NumericLiteral(n) => {
-                let val = n.value;
-                if val.fract() != 0.0 || val < 0.0 {
-                    return None;
-                }
-                Some(val as usize)
-            }
-            Expression::Identifier(id) => self.constants.get(id.name.as_str()).copied(),
-            _ => None,
-        }
+        try_eval_as_usize(expr, &self.constants)
     }
 }
 
@@ -416,5 +501,27 @@ mod tests {
         let out = run(code);
         assert!(out.contains("\"c\""), "bare assignment constant should resolve: {out}");
         assert!(!out.contains("f()[J]"), "call site should be replaced: {out}");
+    }
+
+    #[test]
+    fn resolves_computed_constant() {
+        let code = r#"var A = 1; var B = A + A; function f(){return ["x","y","z"];} var r = f()[B];"#;
+        let out = run(code);
+        assert!(
+            out.contains("\"z\""),
+            "computed constant B=2 should resolve to index 2: {out}"
+        );
+        assert!(!out.contains("f()[B]"), "call site should be replaced: {out}");
+    }
+
+    #[test]
+    fn resolves_chain() {
+        let code = r#"X = 2; Y = X * 3; Z = Y - 1; function f(){return ["a","b","c","d","e","f"];} var r = f()[Z];"#;
+        let out = run(code);
+        assert!(
+            out.contains("\"f\""),
+            "chained constant Z=5 should resolve to index 5: {out}"
+        );
+        assert!(!out.contains("f()[Z]"), "call site should be replaced: {out}");
     }
 }
