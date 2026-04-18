@@ -10,17 +10,26 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct BooleanLiteralConverter {
     changed: bool,
+    double_negation_count: usize,
 }
 
 impl BooleanLiteralConverter {
     #[must_use]
     pub const fn new() -> Self {
-        Self { changed: false }
+        Self {
+            changed: false,
+            double_negation_count: 0,
+        }
     }
 
     #[must_use]
     pub const fn has_changed(&self) -> bool {
         self.changed
+    }
+
+    #[must_use]
+    pub const fn double_negation_count(&self) -> usize {
+        self.double_negation_count
     }
 }
 
@@ -38,6 +47,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
         if unary.operator != UnaryOperator::LogicalNot {
             return;
         }
+
+        // Check for !!x pattern BEFORE checking for !<literal>
+        if let Expression::UnaryExpression(inner) = &unary.argument {
+            if inner.operator == UnaryOperator::LogicalNot {
+                self.double_negation_count += 1;
+                // Do NOT rewrite !!x — it's idiomatic JavaScript
+                return;
+            }
+        }
+
         let Some(truthy) = js_truthiness(&unary.argument) else {
             return;
         };
@@ -140,5 +159,27 @@ mod tests {
         let output = run_boolean_literals("var x = !foo;");
         eprintln!("Output: {output}");
         assert!(output.contains("!foo"), "Should preserve !foo, got: {output}");
+    }
+
+    #[test]
+    fn test_counts_double_negation() {
+        let allocator = Allocator::default();
+        let source_type = SourceType::mjs();
+        let code = "var x = !!y; var z = !!w;";
+        let ret = Parser::new(&allocator, code, source_type).parse();
+        let mut program = ret.program;
+
+        let mut converter = BooleanLiteralConverter::new();
+        let state = DeobfuscateState::new();
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
+
+        traverse_mut_with_ctx(&mut converter, &mut program, &mut ctx);
+
+        let output = Codegen::new().build(&program).code;
+        eprintln!("Output: {output}");
+        assert!(output.contains("!!y"), "Should preserve !!y, got: {output}");
+        assert!(output.contains("!!w"), "Should preserve !!w, got: {output}");
+        assert_eq!(converter.double_negation_count(), 2, "Expected 2 double-negations");
     }
 }

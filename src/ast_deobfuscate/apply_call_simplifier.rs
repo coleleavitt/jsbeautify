@@ -7,14 +7,9 @@
 //! - `fn.call(undefined, a, b, c)`     → `fn(a, b, c)`
 //!
 //! ONLY fires when:
-//! 1. The receiver is a plain identifier or StaticMemberExpression (no dynamic callee — the
-//!    rewrite would change `this` binding for `obj.method.apply(null, ...)`).
+//! 1. The first argument is the literal `null` or the identifier `undefined`.
 //! 2. For `apply`, the 2nd argument is a literal ArrayExpression with no spread elements.
-//! 3. The first argument is the literal `null` or the identifier `undefined`.
 //!
-//! We also avoid rewriting `foo.apply.apply(null, ...)` chains — these are rare enough to
-//! leave alone.
-
 use oxc_allocator::{CloneIn, Vec as OxcVec};
 use oxc_ast::ast::{Argument, ArrayExpressionElement, CallExpression, Expression};
 use oxc_span::SPAN;
@@ -57,14 +52,6 @@ fn is_null_or_undefined(expr: &Expression<'_>) -> bool {
     }
 }
 
-fn callee_is_safe_receiver(expr: &Expression<'_>) -> bool {
-    match expr {
-        Expression::Identifier(_) => true,
-        Expression::StaticMemberExpression(sme) => callee_is_safe_receiver(&sme.object),
-        _ => false,
-    }
-}
-
 impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
         let Expression::CallExpression(call) = expr else {
@@ -75,9 +62,6 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
         };
         let method = sme.property.name.as_str();
         if method != "apply" && method != "call" {
-            return;
-        }
-        if !callee_is_safe_receiver(&sme.object) {
             return;
         }
         if call.arguments.is_empty() {
@@ -212,5 +196,25 @@ mod tests {
         let out = run("obj.method.apply(null, [a, b]);");
         assert!(!out.contains(".apply"), "got: {out}");
         assert!(out.contains("obj.method(a, b)") || out.contains("obj.method(a,b)"));
+    }
+
+    #[test]
+    fn call_null_computed_member_callee() {
+        let out = run("D8()[x19()[Rj]].call(null, Hn, QS, fw);");
+        assert!(!out.contains(".call"), "got: {out}");
+        assert!(
+            out.contains("D8()[x19()[Rj]](Hn, QS, fw)") || out.contains("D8()[x19()[Rj]](Hn,QS,fw)"),
+            "expected direct call, got: {out}"
+        );
+    }
+
+    #[test]
+    fn call_null_many_args() {
+        let out = run("f.call(null, 1, 2, 3);");
+        assert!(!out.contains(".call"), "got: {out}");
+        assert!(
+            out.contains("f(1, 2, 3)") || out.contains("f(1,2,3)"),
+            "expected f(1, 2, 3), got: {out}"
+        );
     }
 }

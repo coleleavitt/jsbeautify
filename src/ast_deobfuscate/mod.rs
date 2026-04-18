@@ -15,6 +15,7 @@ pub mod boolean_literals;
 pub mod bun_alphabet;
 pub mod bun_module_annotator;
 pub mod call_proxy;
+pub mod call_this_simplifier;
 pub mod concat_canonicaliser;
 pub mod constant_folding;
 pub mod control_flow_unflatten;
@@ -66,6 +67,7 @@ pub use array_unpack::ArrayUnpacker;
 pub use boolean_literals::BooleanLiteralConverter;
 pub use bun_module_annotator::annotate_bun_modules;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
+pub use call_this_simplifier::CallThisSimplifier;
 pub use concat_canonicaliser::ConcatCanonicaliser;
 pub use constant_folding::ConstantFolder;
 pub use control_flow_unflatten::ControlFlowUnflattener;
@@ -468,6 +470,16 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 5d: Folded {} String.fromCharCode(...) calls",
             fromcc.folded()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 5e: call-this simplifier");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut call_this = CallThisSimplifier::new();
+        traverse_mut_with_ctx(&mut call_this, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 5e: Simplified {} .call(this, ...) sites",
+            call_this.rewrites()
         );
 
         eprintln!("[DEOBFUSCATE] Phase 6: SemanticBuilder for simplification passes");

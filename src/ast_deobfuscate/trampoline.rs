@@ -70,9 +70,6 @@ impl TrampolineCollector {
         if func.r#async || func.generator {
             return None;
         }
-        if !func.params.items.is_empty() {
-            return None;
-        }
         let body = func.body.as_ref()?;
         if body.statements.len() != 1 {
             return None;
@@ -390,5 +387,25 @@ mod tests {
     fn leaves_non_arguments_second_arg_alone() {
         let out = run("var x = function() { return g.apply(this, [S, [a,b]]); }; x();");
         assert!(out.contains("var x"), "must keep (2nd arg not 'arguments'): {out}");
+    }
+
+    #[test]
+    fn inlines_one_param_trampoline() {
+        let out = run("var F = function(x) { return LT.apply(this, [S, arguments]); }; F(a);");
+        assert!(!out.contains("var F"), "declaration must be removed: {out}");
+        assert!(
+            out.contains("LT.call(this, S, [a])") || out.contains("LT.call(this,S,[a])"),
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn inlines_two_param_trampoline() {
+        let out = run("var G = function(a, b) { return LT.apply(this, [S, arguments]); }; G(1, 2);");
+        assert!(!out.contains("var G"), "declaration must be removed: {out}");
+        assert!(
+            out.contains("LT.call(this, S, [1, 2])") || out.contains("LT.call(this,S,[1,2])"),
+            "got: {out}"
+        );
     }
 }
