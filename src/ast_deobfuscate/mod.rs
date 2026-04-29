@@ -31,6 +31,7 @@ pub mod dispatcher_detector;
 pub mod dispatcher_inline;
 pub mod dowhile_switch_cleaner;
 pub mod dowhile_switch_detector;
+pub mod dyn_concat_resolver;
 pub mod dynamic_property;
 pub mod empty_statement_cleanup;
 pub mod encrypted_eval;
@@ -94,6 +95,7 @@ pub use dowhile_switch_detector::{
     CompoundOp, DoWhileCaseInfo, DoWhileDispatcherInfo, DoWhileDispatcherMap, DoWhileSwitchDetector, StateTransition,
     collect_constants, resolve_compound_transitions,
 };
+pub use dyn_concat_resolver::DynConcatResolver;
 pub use dynamic_property::DynamicPropertyConverter;
 pub use empty_statement_cleanup::EmptyStatementCleanup;
 pub use esbuild_helper::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esbuild_modules};
@@ -518,6 +520,25 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 5d: Folded {} String.fromCharCode(...) calls",
             fromcc.folded()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 5d.5: dyn-concat resolver (string-var inlining, fixed-point)");
+        let mut dyn_resolver = DynConcatResolver::new();
+        let mut iter = 0u32;
+        loop {
+            dyn_resolver.reset_changed();
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            traverse_mut_with_ctx(&mut dyn_resolver, &mut program, &mut ctx);
+            iter += 1;
+            if !dyn_resolver.changed() || iter >= 8 {
+                break;
+            }
+        }
+        eprintln!(
+            "[DEOBFUSCATE] Phase 5d.5: {} rewrites over {} iteration(s)",
+            dyn_resolver.rewrites(),
+            iter
         );
 
         eprintln!("[DEOBFUSCATE] Phase 5e: call-this simplifier");
