@@ -20,6 +20,7 @@ pub mod bun_runtime;
 pub mod call_proxy;
 pub mod call_this_simplifier;
 pub mod cff_unflattener;
+pub mod class_name_renamer;
 pub mod comma_return_simplifier;
 pub mod concat_canonicaliser;
 pub mod constant_folding;
@@ -41,6 +42,7 @@ pub mod esbuild_helper;
 pub mod expression_simplify;
 pub mod fromcharcode_fold;
 pub mod function_inline;
+pub mod if_body_comma_split;
 pub mod iife_unwrap;
 pub mod json_parse_eval;
 pub mod lookup_forwarder;
@@ -85,6 +87,7 @@ pub use bun_module_annotator::annotate_bun_modules;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub use call_this_simplifier::CallThisSimplifier;
 pub use cff_unflattener::{CffUnflattener, collect_case_bodies};
+pub use class_name_renamer::{ClassNameCollector, ClassNameRenamer, DisplayNameCollector};
 pub use comma_return_simplifier::CommaReturnSimplifier;
 pub use concat_canonicaliser::ConcatCanonicaliser;
 pub use constant_folding::ConstantFolder;
@@ -108,6 +111,7 @@ pub use esbuild_helper::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esb
 pub use expression_simplify::ExpressionSimplifier;
 pub use fromcharcode_fold::FromCharCodeFolder;
 pub use function_inline::{FunctionCollector, FunctionInliner};
+pub use if_body_comma_split::IfBodyCommaSplitter;
 pub use iife_unwrap::IifeUnwrap;
 pub use json_parse_eval::JsonParseEvaluator;
 pub use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
@@ -476,6 +480,35 @@ impl AstDeobfuscator {
                 );
             } else {
                 eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
+            }
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 0.97: Class name detection (this.name / displayName)");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut class_collector = ClassNameCollector::new();
+            traverse_mut_with_ctx(&mut class_collector, &mut program, &mut ctx);
+            let mut class_map = class_collector.into_map();
+
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut display_collector = DisplayNameCollector::new();
+            traverse_mut_with_ctx(&mut display_collector, &mut program, &mut ctx);
+            for (k, v) in display_collector.into_map() {
+                class_map.entry(k).or_insert(v);
+            }
+
+            if !class_map.is_empty() {
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
+                    class_map.len()
+                );
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut renamer = ClassNameRenamer::new(class_map);
+                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                eprintln!("[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers", renamer.renamed());
             }
         }
 
@@ -903,6 +936,18 @@ impl AstDeobfuscator {
             eprintln!(
                 "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
                 return_splitter.split_count()
+            );
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 14.7: If-body comma expression splitting");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut if_splitter = IfBodyCommaSplitter::new();
+            traverse_mut_with_ctx(&mut if_splitter, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 14.7: Split {} if-body comma expressions",
+                if_splitter.split_count()
             );
         }
 
