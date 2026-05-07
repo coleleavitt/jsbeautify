@@ -15,6 +15,7 @@ pub mod array_unpack;
 pub mod boolean_literals;
 pub mod bun_alphabet;
 pub mod bun_module_annotator;
+pub mod bun_runtime;
 pub mod call_proxy;
 pub mod call_this_simplifier;
 pub mod cff_unflattener;
@@ -48,6 +49,7 @@ pub mod nullish_coalescing_simplifier;
 pub mod object_sparsing;
 pub mod operator_proxy;
 pub mod optional_chaining_normalizer;
+pub mod return_sequence_split;
 pub mod self_init_accessor;
 pub mod sequence_expression_split;
 pub mod short_circuit_to_if;
@@ -55,6 +57,7 @@ pub mod state;
 pub mod strength_reduction;
 pub mod string_array_inline;
 pub mod string_array_rotation;
+pub mod string_array_self_defending;
 pub mod switch_true_converter;
 pub mod ternary;
 pub mod ternary_to_if_else;
@@ -66,6 +69,7 @@ pub mod variable_rename;
 pub mod void_replacer;
 pub mod window_alias_propagator;
 
+pub use self::bun_runtime::{BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer};
 pub use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,
     UndefinedPatternNormalizer,
@@ -111,6 +115,7 @@ pub use nullish_coalescing_simplifier::NullishCoalescingSimplifier;
 pub use object_sparsing::ObjectSparsingConsolidator;
 pub use operator_proxy::{OperatorProxyCollector, OperatorProxyInliner};
 pub use optional_chaining_normalizer::OptionalChainingNormalizer;
+pub use return_sequence_split::ReturnSequenceSplitter;
 pub use self_init_accessor::SelfInitAccessorFlattener;
 pub use sequence_expression_split::SequenceExpressionSplitter;
 pub use short_circuit_to_if::ShortCircuitToIf;
@@ -118,6 +123,7 @@ pub use state::DeobfuscateState;
 pub use strength_reduction::StrengthReducer;
 pub use string_array_inline::StringArrayInliner;
 pub use string_array_rotation::StringArrayRotation;
+pub use string_array_self_defending::SelfDefendingStringArray;
 pub use switch_true_converter::SwitchTrueConverter;
 pub use ternary::TernarySimplifier;
 pub use ternary_to_if_else::TernaryToIfElse;
@@ -142,6 +148,7 @@ use crate::Result;
 pub struct AstDeobfuscator {
     control_flow_unflattener: ControlFlowUnflattener,
     string_array_rotation: StringArrayRotation,
+    self_defending_string_array: SelfDefendingStringArray,
     decoder_inliner: DecoderInliner,
     string_array_inliner: StringArrayInliner,
     dispatcher_inliner: DispatcherInliner,
@@ -181,6 +188,7 @@ impl AstDeobfuscator {
         Self {
             control_flow_unflattener: ControlFlowUnflattener::new(),
             string_array_rotation: StringArrayRotation::new(),
+            self_defending_string_array: SelfDefendingStringArray::new(),
             decoder_inliner: DecoderInliner::new(),
             string_array_inliner: StringArrayInliner::new(),
             dispatcher_inliner: DispatcherInliner::new(),
@@ -418,6 +426,30 @@ impl AstDeobfuscator {
             }
         }
 
+        eprintln!("[DEOBFUSCATE] Phase 0.9: Bun runtime helper detection & rename");
+        let bun_helper_map = {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = BunRuntimeCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let map = collector.into_map();
+            if !map.is_empty() {
+                eprintln!("[DEOBFUSCATE] Phase 0.9: Detected {} Bun runtime helpers", map.len());
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut renamer = BunRuntimeRenamer::new(map.clone());
+                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.9: Renamed {} declarations, {} references",
+                    renamer.renamed_decls(),
+                    renamer.renamed_refs()
+                );
+            } else {
+                eprintln!("[DEOBFUSCATE] Phase 0.9: No Bun helpers detected (not a Bun bundle)");
+            }
+            map
+        };
+
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
@@ -436,6 +468,18 @@ impl AstDeobfuscator {
 
         let mut state = ctx.into_state();
         self.string_array_rotation.finalize(&mut state);
+
+        eprintln!("[DEOBFUSCATE] Phase 2.5: Self-defending string array (javascript-obfuscator modern)");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
+        traverse_mut_with_ctx(&mut self.self_defending_string_array, &mut program, &mut ctx);
+        let mut state = ctx.into_state();
+        self.self_defending_string_array.finalize(&mut state);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 2.5: Found {} string arrays, {} decoders",
+            state.string_arrays.len(),
+            state.decoders.len()
+        );
 
         eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for decoder/string_array/dispatcher");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
@@ -821,6 +865,18 @@ impl AstDeobfuscator {
             self.sequence_expression_splitter.split_count()
         );
 
+        eprintln!("[DEOBFUSCATE] Phase 14.5: Return-sequence splitting");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut return_splitter = ReturnSequenceSplitter::new();
+            traverse_mut_with_ctx(&mut return_splitter, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
+                return_splitter.split_count()
+            );
+        }
+
         eprintln!("[DEOBFUSCATE] Phase 15: SemanticBuilder for multi_var_split");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
@@ -936,18 +992,34 @@ impl AstDeobfuscator {
         let output = annotate_webpack_modules(&output);
         let output = annotate_esbuild_modules(&output, &esbuild_collector);
 
-        let esm_helpers: Vec<String> = esbuild_collector
+        let mut esm_helpers: Vec<String> = esbuild_collector
             .get_helpers()
             .iter()
             .filter(|(_, info)| matches!(info.kind, EsbuildHelperKind::Esm))
             .map(|(name, _)| name.clone())
             .collect();
-        let cjs_helpers: Vec<String> = esbuild_collector
+        let mut cjs_helpers: Vec<String> = esbuild_collector
             .get_helpers()
             .iter()
             .filter(|(_, info)| matches!(info.kind, EsbuildHelperKind::CommonJs))
             .map(|(name, _)| name.clone())
             .collect();
+
+        // Augment from Bun runtime collector if esbuild didn't find anything
+        if esm_helpers.is_empty() {
+            for (name, helper) in &bun_helper_map {
+                if matches!(helper, BunHelper::Esm) {
+                    esm_helpers.push(name.clone());
+                }
+            }
+        }
+        if cjs_helpers.is_empty() {
+            for (name, helper) in &bun_helper_map {
+                if matches!(helper, BunHelper::CommonJs) {
+                    cjs_helpers.push(name.clone());
+                }
+            }
+        }
         let output = annotate_bun_modules(&output, &esm_helpers, &cjs_helpers);
 
         Ok(output)

@@ -43,7 +43,8 @@ pub enum ModuleType {
     Main,
 }
 
-static MR_CALL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"MR\([^,]+,\s*\{").expect("valid regex pattern"));
+static MR_CALL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:MR|__export|j\$)\([^,]+,\s*\{").expect("valid regex pattern"));
 
 static EXPORT_PAIR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"([A-Za-z_$][A-Za-z0-9_$]*):\s*\(\)\s*=>\s*([A-Za-z_$][A-Za-z0-9_$]*)").expect("valid regex pattern")
