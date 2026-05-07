@@ -53,6 +53,7 @@ pub enum BunHelper {
     GetOwnPropDesc,
     HasOwnProp,
     AccessProp,
+    CopyProps,
     CommonJs,
     Esm,
     ToEsm,
@@ -72,6 +73,7 @@ impl BunHelper {
             Self::GetOwnPropDesc => "__getOwnPropDesc",
             Self::HasOwnProp => "__hasOwnProp",
             Self::AccessProp => "__accessProp",
+            Self::CopyProps => "__copyProps",
             Self::CommonJs => "__commonJS",
             Self::Esm => "__esm",
             Self::ToEsm => "__toESM",
@@ -243,6 +245,8 @@ impl BunRuntimeCollector {
             self.record(name, BunHelper::ToEsm);
         } else if is_tocommonjs_helper(arrow) {
             self.record(name, BunHelper::ToCommonJs);
+        } else if is_copyprops_helper(arrow) {
+            self.record(name, BunHelper::CopyProps);
         } else if is_name_helper_arrow(arrow) {
             self.record(name, BunHelper::Name);
         }
@@ -488,6 +492,44 @@ fn is_export_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>) -> bo
         return false;
     };
     matches!(stmt, Statement::ForInStatement(_))
+}
+
+/// `__copyProps`: `(H, $, q) => { var K = __getOwnPropNames($); for (let _ of K) ... }`.
+/// Exactly 3 params (simple identifiers, not destructuring), block body,
+/// first statement is VarDecl with a CallExpression init, has for-of,
+/// does NOT contain `__esModule` (which would indicate __toESM instead).
+fn is_copyprops_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>) -> bool {
+    if arrow.params.items.len() != 3 || arrow.expression {
+        return false;
+    }
+    // All params must be simple identifiers (not destructured)
+    for p in &arrow.params.items {
+        if !matches!(p.pattern, BindingPattern::BindingIdentifier(_)) {
+            return false;
+        }
+    }
+    // Must have a for-of but NOT an __esModule check
+    let has_for_of = arrow
+        .body
+        .statements
+        .iter()
+        .any(|s| matches!(s, Statement::ForOfStatement(_)));
+    if !has_for_of {
+        return false;
+    }
+    // Must start with var decl (the getOwnPropNames call)
+    let Some(Statement::VariableDeclaration(vd)) = arrow.body.statements.first() else {
+        return false;
+    };
+    // The var decl's init must be a call expression (calling getOwnPropNames)
+    let Some(first_decl) = vd.declarations.first() else {
+        return false;
+    };
+    let Some(Expression::CallExpression(_)) = &first_decl.init else {
+        return false;
+    };
+    // Must NOT contain __esModule (that's __toESM)
+    !body_contains_esmodule_check(&arrow.body.statements)
 }
 
 /// `__toESM`: `(mod, isNodeMode, target) => …`. 2-3 params, block body, contains __getProtoOf.

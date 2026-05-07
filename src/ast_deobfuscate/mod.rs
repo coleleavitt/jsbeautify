@@ -52,6 +52,8 @@ pub mod nullish_coalescing_simplifier;
 pub mod object_sparsing;
 pub mod operator_proxy;
 pub mod optional_chaining_normalizer;
+pub mod param_heuristic;
+pub mod post_annotations;
 pub mod return_sequence_split;
 pub mod self_init_accessor;
 pub mod sequence_expression_split;
@@ -121,6 +123,8 @@ pub use nullish_coalescing_simplifier::NullishCoalescingSimplifier;
 pub use object_sparsing::ObjectSparsingConsolidator;
 pub use operator_proxy::{OperatorProxyCollector, OperatorProxyInliner};
 pub use optional_chaining_normalizer::OptionalChainingNormalizer;
+pub use param_heuristic::ParamHeuristicRenamer;
+pub use post_annotations::{annotate_namespace_modules, annotate_ts_enums, expand_arrow_sequences};
 pub use return_sequence_split::ReturnSequenceSplitter;
 pub use self_init_accessor::SelfInitAccessorFlattener;
 pub use sequence_expression_split::SequenceExpressionSplitter;
@@ -510,6 +514,18 @@ impl AstDeobfuscator {
                 traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
                 eprintln!("[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers", renamer.renamed());
             }
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 0.98: Heuristic parameter renaming");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut param_renamer = ParamHeuristicRenamer::new();
+            traverse_mut_with_ctx(&mut param_renamer, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",
+                param_renamer.renamed()
+            );
         }
 
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
@@ -1095,6 +1111,15 @@ impl AstDeobfuscator {
             }
         }
         let output = annotate_bun_modules(&output, &esm_helpers, &cjs_helpers);
+
+        eprintln!("[DEOBFUSCATE] Phase 21: Post-codegen annotations (enums, namespaces, arrows)");
+        let (output, enum_count) = annotate_ts_enums(&output);
+        let (output, ns_count) = annotate_namespace_modules(&output);
+        let (output, arrow_count) = expand_arrow_sequences(&output);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 21: {} enum annotations, {} namespace annotations, {} arrow expansions",
+            enum_count, ns_count, arrow_count
+        );
 
         Ok(output)
     }
