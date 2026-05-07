@@ -14,6 +14,7 @@ pub mod array_coerce_fold;
 pub mod array_unpack;
 pub mod boolean_literals;
 pub mod bun_alphabet;
+pub mod bun_export_renamer;
 pub mod bun_module_annotator;
 pub mod bun_runtime;
 pub mod call_proxy;
@@ -79,6 +80,7 @@ pub use apply_call_simplifier::ApplyCallSimplifier;
 pub use array_coerce_fold::ArrayCoerceFold;
 pub use array_unpack::ArrayUnpacker;
 pub use boolean_literals::BooleanLiteralConverter;
+pub use bun_export_renamer::{ExportNameCollector, ExportNameRenamer};
 pub use bun_module_annotator::annotate_bun_modules;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub use call_this_simplifier::CallThisSimplifier;
@@ -449,6 +451,33 @@ impl AstDeobfuscator {
             }
             map
         };
+
+        eprintln!("[DEOBFUSCATE] Phase 0.95: Bun __export() name extraction & rename");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = ExportNameCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let export_map = collector.into_map();
+            if !export_map.is_empty() {
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
+                    export_map.len()
+                );
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut renamer = ExportNameRenamer::new(export_map);
+                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.95: Renamed {} declarations + {} references = {} total",
+                    renamer.renamed_decls(),
+                    renamer.renamed_refs(),
+                    renamer.total_renamed()
+                );
+            } else {
+                eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
+            }
+        }
 
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
