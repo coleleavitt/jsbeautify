@@ -19,13 +19,21 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "jsbeautify", version, about, long_about = None)]
 struct Cli {
-    /// Input JavaScript file (use "-" for stdin)
+    /// Input JavaScript file, directory (with --dir), or "-" for stdin
     #[arg(value_name = "FILE")]
     input: String,
 
     /// Write output to a file instead of stdout
     #[arg(short, long, value_name = "FILE")]
     output: Option<String>,
+
+    /// Recursively scan a directory (analyze all .js/.html/.json files)
+    #[arg(long)]
+    dir: bool,
+
+    /// Glob patterns to exclude when scanning directories (repeatable)
+    #[arg(long, value_name = "GLOB")]
+    exclude: Vec<String>,
 
     /// Enable AST-based deobfuscation (19-phase pipeline)
     #[arg(short, long)]
@@ -258,6 +266,134 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    // ── Directory scanning mode ───────────────────────────────────────────────
+    if cli.dir {
+        use std::path::Path;
+        let dir = Path::new(&cli.input);
+        if !dir.is_dir() {
+            eprintln!("Error: '{}' is not a directory", cli.input);
+            std::process::exit(1);
+        }
+
+        let extensions = ["js", "mjs", "cjs", "jsx", "ts", "tsx", "html", "htm"];
+        let mut all_matches: Vec<js_beautify_rs::analyzers::AnalyzerMatch> = Vec::new();
+        let mut file_count = 0u32;
+
+        fn walk_dir(
+            dir: &Path,
+            extensions: &[&str],
+            exclude: &[String],
+            matches: &mut Vec<js_beautify_rs::analyzers::AnalyzerMatch>,
+            count: &mut u32,
+        ) {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                // Skip hidden dirs and node_modules
+                if name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "vendor"
+                    || name == "dist"
+                    || name == "build"
+                {
+                    continue;
+                }
+
+                // Check exclude patterns
+                let path_str = path.to_string_lossy();
+                if exclude.iter().any(|pat| path_str.contains(pat.as_str())) {
+                    continue;
+                }
+
+                if path.is_dir() {
+                    walk_dir(&path, extensions, exclude, matches, count);
+                } else if let Some(ext) = path.extension() {
+                    let ext_str = ext.to_string_lossy().to_ascii_lowercase();
+                    if extensions.iter().any(|e| *e == ext_str.as_str()) {
+                        if let Ok(code) = std::fs::read_to_string(&path) {
+                            let ft = if ext_str == "html" || ext_str == "htm" {
+                                FileType::Html
+                            } else {
+                                FileType::Js
+                            };
+                            let cfg = AnalyzerConfig::default();
+                            let file_matches = if ft == FileType::Html {
+                                js_beautify_rs::analyzers::html_script_extractor::analyze_html(
+                                    &code,
+                                    Some(&path_str),
+                                    &cfg,
+                                )
+                            } else {
+                                run_all(&code, Some(&path_str), ft, &cfg)
+                            };
+                            matches.extend(file_matches);
+                            *count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        walk_dir(dir, &extensions, &cli.exclude, &mut all_matches, &mut file_count);
+
+        // Apply scope filter
+        if cli.in_scope.is_some() || cli.out_of_scope.is_some() {
+            let scope = js_beautify_rs::scope::ScopeMatcher::from_csv(
+                cli.in_scope.as_deref().unwrap_or(""),
+                cli.out_of_scope.as_deref().unwrap_or(""),
+            );
+            all_matches.retain(|m| {
+                if m.match_kind == "hostname" || m.match_kind == "url" || m.match_kind == "comment_hostname" {
+                    scope.is_in_scope(&m.match_value)
+                } else {
+                    true
+                }
+            });
+        }
+
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&all_matches)?
+        } else {
+            let mut lines: Vec<String> = all_matches
+                .iter()
+                .map(|m| {
+                    format!(
+                        "[{}] {} @ {} (line {}:{})",
+                        m.match_kind,
+                        m.match_value,
+                        m.file_path.as_deref().unwrap_or("?"),
+                        m.position.start.line,
+                        m.position.start.column
+                    )
+                })
+                .collect();
+            lines.insert(
+                0,
+                format!("Scanned {} files, {} findings\n", file_count, all_matches.len()),
+            );
+            lines.join("\n")
+        };
+
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+            eprintln!(
+                "Results written to {} ({} findings from {} files)",
+                out_path.display(),
+                all_matches.len(),
+                file_count
+            );
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     let code = if cli.input == "-" {
         let mut buffer = String::new();

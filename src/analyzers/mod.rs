@@ -15,6 +15,7 @@
 //! println!("{} findings", matches.len());
 //! ```
 
+pub mod api_extractor;
 pub mod ast_walker;
 pub mod comment_extractor;
 pub mod derived;
@@ -121,6 +122,9 @@ pub fn run_all(
     if config.comments {
         out.extend(comment_extractor::analyze(source, file_path, file_type));
     }
+
+    // Always run API call + storage extraction
+    out.extend(api_extractor::analyze(source, file_path, file_type));
 
     out
 }
