@@ -255,6 +255,22 @@ struct Cli {
     /// Derived analyzer: "new_kind:original_kind:include_regex" (repeatable)
     #[arg(long, value_name = "SPEC")]
     derive: Vec<String>,
+
+    /// Read scope patterns from a file (one pattern per line)
+    #[arg(long, value_name = "FILE")]
+    scope_file: Option<PathBuf>,
+
+    /// Output in SARIF format (Static Analysis Results Interchange Format)
+    #[arg(long)]
+    sarif: bool,
+
+    /// Generate wordlist from analyzer match values (paths, URLs, hostnames)
+    #[arg(long)]
+    wordlist_from_matches: bool,
+
+    /// Minimum severity to report (info, low, medium, high, critical)
+    #[arg(long, value_name = "LEVEL")]
+    min_severity: Option<String>,
 }
 
 fn main() {
@@ -343,7 +359,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         walk_dir(dir, &extensions, &cli.exclude, &mut all_matches, &mut file_count);
 
         // Apply scope filter
-        if cli.in_scope.is_some() || cli.out_of_scope.is_some() {
+        if cli.in_scope.is_some() || cli.out_of_scope.is_some() || cli.scope_file.is_some() {
+            let mut in_scope_combined = cli.in_scope.clone().unwrap_or_default();
+            if let Some(ref sp) = cli.scope_file {
+                if let Ok(c) = fs::read_to_string(sp) {
+                    let fp: String = c
+                        .lines()
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    if !in_scope_combined.is_empty() {
+                        in_scope_combined.push(',');
+                    }
+                    in_scope_combined.push_str(&fp);
+                }
+            }
             let scope = js_beautify_rs::scope::ScopeMatcher::from_csv(
                 cli.in_scope.as_deref().unwrap_or(""),
                 cli.out_of_scope.as_deref().unwrap_or(""),
@@ -496,7 +527,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut matches = run_all(&code, file_path, FileType::Js, &cfg);
 
         // Apply scope filtering if --in-scope is set
-        if cli.in_scope.is_some() || cli.out_of_scope.is_some() {
+        if cli.in_scope.is_some() || cli.out_of_scope.is_some() || cli.scope_file.is_some() {
+            let mut in_scope_combined = cli.in_scope.clone().unwrap_or_default();
+            if let Some(ref sp) = cli.scope_file {
+                if let Ok(c) = fs::read_to_string(sp) {
+                    let fp: String = c
+                        .lines()
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    if !in_scope_combined.is_empty() {
+                        in_scope_combined.push(',');
+                    }
+                    in_scope_combined.push_str(&fp);
+                }
+            }
             let scope = js_beautify_rs::scope::ScopeMatcher::from_csv(
                 cli.in_scope.as_deref().unwrap_or(""),
                 cli.out_of_scope.as_deref().unwrap_or(""),
@@ -528,6 +574,102 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+
+        // Apply severity filter
+        if let Some(ref min_sev_str) = cli.min_severity {
+            if let Some(min_sev) = js_beautify_rs::analyzers::regex_bank::Severity::from_str(min_sev_str) {
+                matches.retain(|m| js_beautify_rs::analyzers::regex_bank::severity_for_kind(&m.match_kind) >= min_sev);
+            }
+        }
+
+        // Wordlist from matches mode
+        if cli.wordlist_from_matches {
+            let words: std::collections::HashSet<String> = matches
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.match_kind.as_str(),
+                        "path" | "url" | "hostname" | "api_call" | "comment_path" | "comment_hostname"
+                    )
+                })
+                .flat_map(|m| {
+                    m.match_value
+                        .split(|c| matches!(c, '/' | '?' | '=' | '&' | '#' | ':' | '-' | '_' | '.'))
+                        .filter(|s| s.len() > 1)
+                        .map(|s| s.to_ascii_lowercase())
+                })
+                .filter(|w| !js_beautify_rs::wordlist::filter::is_noise(w))
+                .collect();
+            let mut words: Vec<_> = words.into_iter().collect();
+            words.sort_unstable();
+            let output_text = words.join("\n");
+            if let Some(out_path) = &cli.analysis_out {
+                fs::write(out_path, &output_text)?;
+                eprintln!("Wordlist from matches: {} words → {}", words.len(), out_path.display());
+            } else {
+                println!("{output_text}");
+            }
+            return Ok(());
+        }
+
+        // SARIF output
+        if cli.sarif {
+            let sarif = serde_json::json!({
+                "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+                "version": "2.1.0",
+                "runs": [{
+                    "tool": {
+                        "driver": {
+                            "name": "jsbeautify",
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "informationUri": "https://github.com/user/js-beautify-rs",
+                            "rules": matches.iter().map(|m| &m.match_kind).collect::<std::collections::HashSet<_>>().iter().map(|kind| {
+                                serde_json::json!({
+                                    "id": kind,
+                                    "shortDescription": { "text": kind },
+                                    "defaultConfiguration": {
+                                        "level": match js_beautify_rs::analyzers::regex_bank::severity_for_kind(kind) {
+                                            js_beautify_rs::analyzers::regex_bank::Severity::Critical | js_beautify_rs::analyzers::regex_bank::Severity::High => "error",
+                                            js_beautify_rs::analyzers::regex_bank::Severity::Medium => "warning",
+                                            _ => "note",
+                                        }
+                                    }
+                                })
+                            }).collect::<Vec<_>>()
+                        }
+                    },
+                    "results": matches.iter().map(|m| {
+                        serde_json::json!({
+                            "ruleId": m.match_kind,
+                            "level": match js_beautify_rs::analyzers::regex_bank::severity_for_kind(&m.match_kind) {
+                                js_beautify_rs::analyzers::regex_bank::Severity::Critical | js_beautify_rs::analyzers::regex_bank::Severity::High => "error",
+                                js_beautify_rs::analyzers::regex_bank::Severity::Medium => "warning",
+                                _ => "note",
+                            },
+                            "message": { "text": m.match_value },
+                            "locations": [{
+                                "physicalLocation": {
+                                    "artifactLocation": { "uri": m.file_path.as_deref().unwrap_or("stdin") },
+                                    "region": {
+                                        "startLine": m.position.start.line,
+                                        "startColumn": m.position.start.column + 1,
+                                        "endLine": m.position.end.line,
+                                        "endColumn": m.position.end.column + 1,
+                                    }
+                                }
+                            }]
+                        })
+                    }).collect::<Vec<_>>()
+                }]
+            });
+            let output_text = serde_json::to_string_pretty(&sarif)?;
+            if let Some(out_path) = &cli.analysis_out {
+                fs::write(out_path, &output_text)?;
+            } else {
+                println!("{output_text}");
+            }
+            return Ok(());
         }
 
         let output_text = if cli.json {
