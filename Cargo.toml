@@ -50,6 +50,7 @@ significant_drop_tightening = "allow"
 regex = "1"
 lazy_static = "1.4"
 thiserror = "2.0.17"
+url = "2"
 base64 = "0.22"
 rc4 = "0.1.0"
 serde = { version = "1", features = ["derive"] }

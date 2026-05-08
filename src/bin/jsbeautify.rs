@@ -1,8 +1,11 @@
 use clap::Parser;
+use js_beautify_rs::analyzers::match_kind::FileType;
+use js_beautify_rs::analyzers::{AnalyzerConfig, run_all};
 use js_beautify_rs::cross_version::{AlignConfig, CrossVersionAligner};
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
-use js_beautify_rs::{Options, beautify};
+use js_beautify_rs::{Options, beautify, wordlist};
+use serde_json;
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -86,6 +89,47 @@ struct Cli {
     /// Extract names from Bun bundle patterns (MR exports, this.name, displayName)
     #[arg(long)]
     bun_extract: bool,
+
+    // ── Security analysis ────────────────────────────────────────────────────
+    /// Run all security analyzers (secrets, sinks, paths, GraphQL, npm packages)
+    #[arg(long)]
+    analyze: bool,
+
+    /// Scan for secrets and credentials only (fast, regex-based)
+    #[arg(long)]
+    scan_secrets: bool,
+
+    /// Detect dangerous sinks (innerHTML, postMessage, location.href, …)
+    #[arg(long)]
+    find_sinks: bool,
+
+    /// Extract paths, hostnames, and URLs
+    #[arg(long)]
+    extract_paths: bool,
+
+    /// Extract GraphQL operations
+    #[arg(long)]
+    extract_graphql: bool,
+
+    /// Extract npm package references
+    #[arg(long)]
+    extract_packages: bool,
+
+    /// Detect sensitive property names (secret, authorization, aws_secret_key, …)
+    #[arg(long)]
+    find_sensitive_props: bool,
+
+    /// Generate a fuzzing wordlist from JS identifiers and string literals
+    #[arg(long)]
+    wordlist: bool,
+
+    /// Output analysis results as JSON (default: human-readable)
+    #[arg(long)]
+    json: bool,
+
+    /// Write analysis/wordlist output to FILE instead of stdout
+    #[arg(long, value_name = "FILE")]
+    analysis_out: Option<PathBuf>,
 }
 
 fn main() {
@@ -166,6 +210,76 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli.bun_extract,
         );
     }
+
+    // ── Security analysis / wordlist ──────────────────────────────────────────
+    let run_analysis = cli.analyze
+        || cli.scan_secrets
+        || cli.find_sinks
+        || cli.extract_paths
+        || cli.extract_graphql
+        || cli.extract_packages
+        || cli.find_sensitive_props;
+
+    if run_analysis {
+        let cfg = if cli.analyze {
+            AnalyzerConfig::default()
+        } else {
+            AnalyzerConfig {
+                secrets: cli.scan_secrets,
+                sensitive_props: cli.find_sensitive_props,
+                paths_hostnames: cli.extract_paths,
+                graphql: cli.extract_graphql,
+                sinks: cli.find_sinks,
+                npm_packages: cli.extract_packages,
+                comments: cli.extract_paths, // include comments when paths requested
+            }
+        };
+
+        let file_path = if cli.input == "-" {
+            None
+        } else {
+            Some(cli.input.as_str())
+        };
+        let matches = run_all(&code, file_path, FileType::Js, &cfg);
+
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&matches)?
+        } else {
+            let mut lines = Vec::with_capacity(matches.len());
+            for m in &matches {
+                lines.push(format!(
+                    "[{}] {} (line {}:{})",
+                    m.match_kind, m.match_value, m.position.start.line, m.position.start.column
+                ));
+            }
+            if lines.is_empty() {
+                "No findings.".to_string()
+            } else {
+                lines.join("\n")
+            }
+        };
+
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+            eprintln!("Analysis written to {}", out_path.display());
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    if cli.wordlist {
+        let words = wordlist::generate_from_js(&code);
+        let output_text = words.join("\n");
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+            eprintln!("Wordlist written to {} ({} words)", out_path.display(), words.len());
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     let beautified = beautify(&code, &options)?;
 

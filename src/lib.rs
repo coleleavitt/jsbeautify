@@ -12,6 +12,7 @@
 //! let beautified = beautify(code, &options).expect("beautification failed");
 //! ```
 
+pub mod analyzers;
 pub mod ast_deobfuscate;
 pub mod beautifier;
 pub mod bun_extract;
@@ -21,6 +22,7 @@ pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
 pub mod webpack_module_extractor;
+pub mod wordlist;
 
 mod chunk_detector;
 mod chunk_splitter;
