@@ -17,6 +17,8 @@ pub mod ast_deobfuscate;
 pub mod beautifier;
 pub mod bun_extract;
 pub mod cross_version;
+pub mod fuzz;
+pub mod nextjs_discovery;
 pub mod oxc_opts;
 pub mod sourcemap;
 pub mod token;

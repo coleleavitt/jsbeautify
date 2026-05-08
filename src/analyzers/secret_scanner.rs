@@ -115,3 +115,28 @@ mod tests {
         assert!(m.is_empty());
     }
 }
+
+/// Scan `source` with a list of user-supplied regex patterns.
+/// Each pattern becomes its own match kind: `custom:<pattern_label>`.
+#[must_use]
+pub fn scan_custom(
+    source: &str,
+    file_path: Option<&str>,
+    file_type: FileType,
+    patterns: &[(String, regex::Regex)], // (label, compiled regex)
+) -> Vec<AnalyzerMatch> {
+    let mut out = Vec::new();
+    for (label, re) in patterns {
+        for m in re.find_iter(source) {
+            out.push(AnalyzerMatch {
+                match_kind: format!("custom:{label}"),
+                match_value: m.as_str().to_string(),
+                position: PositionRange::from_byte_range(source, m.start(), m.end()),
+                file_type,
+                file_path: file_path.map(str::to_string),
+                metadata: None,
+            });
+        }
+    }
+    out
+}

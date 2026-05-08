@@ -5,6 +5,7 @@ use js_beautify_rs::cross_version::{AlignConfig, CrossVersionAligner};
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
 use js_beautify_rs::{Options, beautify, wordlist};
+use regex;
 use serde_json;
 use std::fs;
 use std::io::{self, Read};
@@ -122,6 +123,50 @@ struct Cli {
     /// Generate a fuzzing wordlist from JS identifiers and string literals
     #[arg(long)]
     wordlist: bool,
+
+    /// Minimum word length for wordlist output [default: 2]
+    #[arg(long, value_name = "N")]
+    min_length: Option<usize>,
+
+    /// Maximum word length for wordlist output (0 = unlimited) [default: 0]
+    #[arg(long, value_name = "N")]
+    max_length: Option<usize>,
+
+    /// Convert all wordlist entries to lowercase
+    #[arg(long)]
+    lowercase: bool,
+
+    /// Generate plural/singular forms for each word
+    #[arg(long)]
+    plurals: bool,
+
+    /// Filter wordlist by extraction source (e.g. js_variable_name, html_body_text). Repeatable.
+    #[arg(long, value_name = "SOURCE")]
+    sources: Vec<String>,
+
+    /// Sort wordlist by occurrence count (default: alphabetical)
+    #[arg(long)]
+    sort_by_count: bool,
+
+    /// Maximum number of words to output (0 = unlimited)
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+
+    /// Custom regex pattern to scan for (repeatable). Format: "label:pattern"
+    #[arg(long, value_name = "LABEL:REGEX")]
+    custom_regex: Vec<String>,
+
+    /// Analyze HTML file (extract <script> blocks and run analyzers on them)
+    #[arg(long)]
+    analyze_html: bool,
+
+    /// Discover Next.js chunks from page HTML (outputs chunk URLs)
+    #[arg(long)]
+    discover_nextjs: bool,
+
+    /// Base URL for Next.js chunk discovery (required with --discover-nextjs)
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
 
     /// Output analysis results as JSON (default: human-readable)
     #[arg(long)]
@@ -269,11 +314,217 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if cli.wordlist {
-        let words = wordlist::generate_from_js(&code);
-        let output_text = words.join("\n");
+        use js_beautify_rs::wordlist::extractors::html_extractor::{
+            self as html_ext, HtmlExtractConfig, HtmlSourcedWord,
+        };
+        use js_beautify_rs::wordlist::extractors::js_ast_extractor::{self, ExtractConfig, SourcedWord};
+
+        let min_len = cli.min_length.unwrap_or(2);
+        let max_len = cli.max_length.unwrap_or(0);
+        let limit = cli.limit.unwrap_or(0);
+
+        // Collect sourced words
+        let mut all_words: Vec<(String, &str)> = Vec::new();
+
+        // Detect if input is HTML
+        let is_html = code.trim_start().starts_with('<') || cli.input.ends_with(".html") || cli.input.ends_with(".htm");
+
+        if is_html {
+            for w in html_ext::extract_sourced(&code, &HtmlExtractConfig::default()) {
+                all_words.push((w.word, w.source));
+            }
+            // Also extract from inline scripts
+            for block in js_beautify_rs::analyzers::html_script_extractor::extract_scripts(&code) {
+                for w in js_ast_extractor::extract_sourced(&block.content, &ExtractConfig::default()) {
+                    all_words.push((w.word, w.source));
+                }
+            }
+        } else {
+            for w in js_ast_extractor::extract_sourced(&code, &ExtractConfig::default()) {
+                all_words.push((w.word, w.source));
+            }
+        }
+
+        // Filter by sources
+        if !cli.sources.is_empty() {
+            all_words.retain(|(_, src)| cli.sources.iter().any(|s| s == *src));
+        }
+
+        // Apply length filters
+        all_words.retain(|(w, _)| w.len() >= min_len && (max_len == 0 || w.len() <= max_len));
+
+        // Lowercase
+        if cli.lowercase {
+            for (w, _) in &mut all_words {
+                *w = w.to_ascii_lowercase();
+            }
+        }
+
+        // Deduplicate
+        let mut seen = std::collections::HashSet::new();
+        all_words.retain(|(w, _)| seen.insert(w.clone()));
+
+        // Plurals
+        if cli.plurals {
+            let mut extras: Vec<(String, &str)> = Vec::new();
+            for (w, src) in &all_words {
+                if w.ends_with('s') {
+                    // Generate singular
+                    if w.len() > 3 {
+                        extras.push((w[..w.len() - 1].to_string(), *src));
+                    }
+                } else {
+                    // Generate plural
+                    extras.push((format!("{w}s"), *src));
+                }
+            }
+            for e in extras {
+                if seen.insert(e.0.clone()) {
+                    all_words.push(e);
+                }
+            }
+        }
+
+        // Sort
+        if cli.sort_by_count {
+            // We don't have occurrence count without a DB, so just sort alpha
+            all_words.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        } else {
+            all_words.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        }
+
+        // Limit
+        if limit > 0 && all_words.len() > limit {
+            all_words.truncate(limit);
+        }
+
+        let output_text = if cli.json {
+            let items: Vec<serde_json::Value> = all_words
+                .iter()
+                .map(|(w, src)| serde_json::json!({"word": w, "source": src}))
+                .collect();
+            serde_json::to_string_pretty(&items)?
+        } else {
+            all_words.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join("\n")
+        };
+
         if let Some(out_path) = &cli.analysis_out {
             fs::write(out_path, &output_text)?;
-            eprintln!("Wordlist written to {} ({} words)", out_path.display(), words.len());
+            eprintln!("Wordlist written to {} ({} words)", out_path.display(), all_words.len());
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    // ── Custom regex scan ────────────────────────────────────────────────────
+    if !cli.custom_regex.is_empty() {
+        let mut patterns: Vec<(String, regex::Regex)> = Vec::new();
+        for spec in &cli.custom_regex {
+            let (label, pat) = spec.split_once(':').unwrap_or(("custom", spec));
+            match regex::Regex::new(pat) {
+                Ok(re) => patterns.push((label.to_string(), re)),
+                Err(e) => {
+                    eprintln!("Invalid regex '{}': {}", pat, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        let file_path = if cli.input == "-" {
+            None
+        } else {
+            Some(cli.input.as_str())
+        };
+        let matches = js_beautify_rs::analyzers::secret_scanner::scan_custom(&code, file_path, FileType::Js, &patterns);
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&matches)?
+        } else {
+            matches
+                .iter()
+                .map(|m| {
+                    format!(
+                        "[{}] {} (line {}:{})",
+                        m.match_kind, m.match_value, m.position.start.line, m.position.start.column
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    // ── Analyze HTML (inline scripts) ────────────────────────────────────────
+    if cli.analyze_html {
+        let matches = js_beautify_rs::analyzers::html_script_extractor::analyze_html(
+            &code,
+            if cli.input == "-" {
+                None
+            } else {
+                Some(cli.input.as_str())
+            },
+            &AnalyzerConfig::default(),
+        );
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&matches)?
+        } else {
+            if matches.is_empty() {
+                "No findings in inline scripts.".to_string()
+            } else {
+                matches
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "[{}] {} (line {}:{})",
+                            m.match_kind, m.match_value, m.position.start.line, m.position.start.column
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        };
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    // ── Next.js chunk discovery ──────────────────────────────────────────────
+    if cli.discover_nextjs {
+        let base = cli.base_url.as_deref().unwrap_or("https://example.com");
+        let result = js_beautify_rs::nextjs_discovery::discover_from_html(&code, base);
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&serde_json::json!({
+                "build_id": result.build_id,
+                "base_url": result.base_url,
+                "chunk_urls": result.chunk_urls,
+                "routes": result.routes,
+            }))?
+        } else {
+            let mut lines = Vec::new();
+            if !result.build_id.is_empty() {
+                lines.push(format!("Build ID: {}", result.build_id));
+            }
+            lines.push(format!("Chunks discovered: {}", result.chunk_urls.len()));
+            for url in &result.chunk_urls {
+                lines.push(format!("  {url}"));
+            }
+            if !result.routes.is_empty() {
+                lines.push(format!("\nRoutes ({}):", result.routes.len()));
+                for r in &result.routes {
+                    lines.push(format!("  {r}"));
+                }
+            }
+            lines.join("\n")
+        };
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
         } else {
             println!("{output_text}");
         }

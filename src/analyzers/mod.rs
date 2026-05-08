@@ -19,6 +19,7 @@ pub mod ast_walker;
 pub mod comment_extractor;
 pub mod graphql_extractor;
 pub mod helpers;
+pub mod html_script_extractor;
 pub mod match_kind;
 pub mod npm_package_extractor;
 pub mod path_extractor;
