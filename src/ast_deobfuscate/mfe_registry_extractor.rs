@@ -1,0 +1,238 @@
+//! SAC Shell MFE registry extractor — maps micro-frontend loading paths.
+//!
+//! Schwab's Advisor Center uses single-spa for micro-frontend orchestration:
+//! 1. Shell loads `/config` → receives gateway URLs
+//! 2. MFEs registered via single-spa, activated by hash route
+//! 3. MFE HTML fetched via XHR (NO SRI/integrity checks)
+//! 4. Scripts dynamically injected into DOM from parsed HTML
+//!
+//! Security concerns:
+//! - No Subresource Integrity (SRI) on dynamically-loaded MFE scripts
+//! - MFE HTML fetched over XHR without integrity verification
+//! - Cross-origin script injection from CDN without pinning
+//! - Shared cookie/token scope between all MFEs
+
+use regex::Regex;
+
+/// A detected micro-frontend registration.
+#[derive(Debug, Clone)]
+pub struct MfeRegistration {
+    /// MFE name (e.g. "sac-dashboard-ui")
+    pub name: String,
+    /// Activation route/hash pattern
+    pub route_pattern: Option<String>,
+    /// Source URL pattern for loading
+    pub source_url: Option<String>,
+    /// Whether SRI/integrity is present
+    pub has_integrity_check: bool,
+}
+
+/// A detected dynamic script injection.
+#[derive(Debug, Clone)]
+pub struct ScriptInjection {
+    /// How the script URL is constructed
+    pub url_pattern: String,
+    /// Whether nonce/integrity is applied
+    pub has_security_attrs: bool,
+    /// The injection method (createElement, innerHTML, etc.)
+    pub method: String,
+}
+
+/// Result of MFE registry analysis.
+#[derive(Debug)]
+pub struct MfeAnalysisResult {
+    pub registrations: Vec<MfeRegistration>,
+    pub script_injections: Vec<ScriptInjection>,
+    pub config_endpoints: Vec<String>,
+    pub has_sri: bool,
+    pub has_csp_nonce: bool,
+    pub shared_auth_scope: bool,
+}
+
+/// Extract MFE registry patterns from source.
+#[must_use]
+pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
+    lazy_static::lazy_static! {
+        // single-spa registerApplication
+        static ref REGISTER_APP_RE: Regex = Regex::new(
+            r#"registerApplication\(\s*["']([^"']+)["']"#
+        ).unwrap();
+
+        // MFE name patterns (sac-*-ui, as-*-ui)
+        static ref MFE_NAME_RE: Regex = Regex::new(
+            r#"["']((?:sac|as|money-movement|import-transactions|acd|managed-accounts)-[\w-]+-ui)["']"#
+        ).unwrap();
+
+        // Dynamic script creation
+        static ref SCRIPT_CREATE_RE: Regex = Regex::new(
+            r#"createElement\(\s*["']script["']\)"#
+        ).unwrap();
+
+        // Script src assignment
+        static ref SCRIPT_SRC_RE: Regex = Regex::new(
+            r#"\.src\s*=\s*([^;]+)"#
+        ).unwrap();
+
+        // XHR/fetch to load HTML
+        static ref XHR_HTML_RE: Regex = Regex::new(
+            r#"(?:XMLHttpRequest|fetch)\([^)]*?\.html"#
+        ).unwrap();
+
+        // Config endpoint
+        static ref CONFIG_RE: Regex = Regex::new(
+            r#"["'](/config|/mfe-config|/mfes/[^"']+)["']"#
+        ).unwrap();
+
+        // Integrity attribute
+        static ref INTEGRITY_RE: Regex = Regex::new(
+            r#"integrity|crossorigin|sri"#
+        ).unwrap();
+
+        // CSP nonce
+        static ref NONCE_RE: Regex = Regex::new(
+            r#"nonce|\.nc\b"#
+        ).unwrap();
+
+        // Gateway/BFF URLs
+        static ref GATEWAY_RE: Regex = Regex::new(
+            r#"["'](https?://[^"']*(?:gateway|bff)[^"']*)["']"#
+        ).unwrap();
+    }
+
+    let mut registrations = Vec::new();
+    let mut script_injections = Vec::new();
+    let mut config_endpoints = Vec::new();
+
+    // Extract MFE registrations
+    for caps in REGISTER_APP_RE.captures_iter(source) {
+        let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+        registrations.push(MfeRegistration {
+            name,
+            route_pattern: None,
+            source_url: None,
+            has_integrity_check: false,
+        });
+    }
+
+    // Extract MFE names from string literals
+    for caps in MFE_NAME_RE.captures_iter(source) {
+        let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+        if !registrations.iter().any(|r| r.name == name) {
+            registrations.push(MfeRegistration {
+                name,
+                route_pattern: None,
+                source_url: None,
+                has_integrity_check: false,
+            });
+        }
+    }
+
+    // Count script injections
+    let injection_count = SCRIPT_CREATE_RE.find_iter(source).count();
+    for _ in 0..injection_count.min(10) {
+        script_injections.push(ScriptInjection {
+            url_pattern: "dynamic".to_string(),
+            has_security_attrs: NONCE_RE.is_match(source),
+            method: "createElement('script')".to_string(),
+        });
+    }
+
+    // Extract config endpoints
+    for caps in CONFIG_RE.captures_iter(source) {
+        let endpoint = caps.get(1).map_or("", |m| m.as_str()).to_string();
+        if !config_endpoints.contains(&endpoint) {
+            config_endpoints.push(endpoint);
+        }
+    }
+
+    let has_sri = INTEGRITY_RE.is_match(source);
+    let has_csp_nonce = NONCE_RE.is_match(source);
+    // If multiple MFEs share the same auth cookies, it's shared scope
+    let shared_auth_scope = registrations.len() > 1;
+
+    MfeAnalysisResult {
+        registrations,
+        script_injections,
+        config_endpoints,
+        has_sri,
+        has_csp_nonce,
+        shared_auth_scope,
+    }
+}
+
+/// Format as annotation block.
+#[must_use]
+pub fn format_mfe_analysis(result: &MfeAnalysisResult) -> String {
+    let mut output = String::new();
+    output.push_str("// ╔══════════════════════════════════════════════════════════╗\n");
+    output.push_str("// ║      MICRO-FRONTEND (MFE) REGISTRY ANALYSIS            ║\n");
+    output.push_str("// ╠══════════════════════════════════════════════════════════╣\n");
+    output.push_str(&format!("// ║ MFEs detected: {}\n", result.registrations.len()));
+    output.push_str(&format!(
+        "// ║ Dynamic script injections: {}\n",
+        result.script_injections.len()
+    ));
+    output.push_str(&format!(
+        "// ║ SRI/Integrity checks: {}\n",
+        if result.has_sri { "YES" } else { "⚠️  NO" }
+    ));
+    output.push_str(&format!(
+        "// ║ CSP Nonce: {}\n",
+        if result.has_csp_nonce { "YES" } else { "NO" }
+    ));
+    output.push_str(&format!(
+        "// ║ Shared auth scope: {}\n",
+        if result.shared_auth_scope {
+            "⚠️  YES (all MFEs share tokens)"
+        } else {
+            "NO"
+        }
+    ));
+
+    if !result.registrations.is_empty() {
+        output.push_str("// ║\n// ║ REGISTERED MFEs:\n");
+        for mfe in &result.registrations {
+            output.push_str(&format!("// ║   {}\n", mfe.name));
+        }
+    }
+
+    if !result.has_sri {
+        output.push_str("// ║\n// ║ ⚠️  SUPPLY CHAIN RISK: No SRI on dynamically-loaded scripts!\n");
+        output.push_str("// ║     An attacker controlling the CDN/MFE server could inject\n");
+        output.push_str("// ║     arbitrary JS into the advisor portal.\n");
+    }
+
+    output.push_str("// ╚══════════════════════════════════════════════════════════╝\n");
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_mfe_names() {
+        let source = r#"
+            registerApplication("sac-dashboard-ui", () => import("./dashboard"));
+            const mfe = "sac-global-search-ui";
+            loadMfe("as-alerts-ui");
+        "#;
+
+        let result = analyze_mfe_registry(source);
+        assert!(result.registrations.iter().any(|r| r.name == "sac-dashboard-ui"));
+        assert!(result.registrations.iter().any(|r| r.name == "sac-global-search-ui"));
+        assert!(result.registrations.iter().any(|r| r.name == "as-alerts-ui"));
+    }
+
+    #[test]
+    fn test_no_sri_detection() {
+        let source = r#"
+            var s = document.createElement("script");
+            s.src = mfeUrl + "/main.js";
+            document.head.appendChild(s);
+        "#;
+
+        let result = analyze_mfe_registry(source);
+        assert!(!result.has_sri);
+    }
+}
