@@ -175,6 +175,78 @@ struct Cli {
     /// Write analysis/wordlist output to FILE instead of stdout
     #[arg(long, value_name = "FILE")]
     analysis_out: Option<PathBuf>,
+
+    // ── Repeater ─────────────────────────────────────────────────────────────
+    /// Replay a raw .req file (Burp export format) and print the response
+    #[arg(long)]
+    repeat: bool,
+
+    /// Override target URL for repeater (e.g. "https://host:443")
+    #[arg(long, value_name = "URL")]
+    repeat_url: Option<String>,
+
+    /// Proxy host for repeater/fuzz requests
+    #[arg(long, value_name = "HOST")]
+    proxy_host: Option<String>,
+
+    /// Proxy port for repeater/fuzz requests
+    #[arg(long, value_name = "PORT")]
+    proxy_port: Option<u16>,
+
+    // ── Fuzz ─────────────────────────────────────────────────────────────────
+    /// Fuzz a .req template file with wordlists/payloads
+    #[arg(long)]
+    fuzz: bool,
+
+    /// Wordlist file(s) for fuzzing (repeatable, paired with markers)
+    #[arg(long, value_name = "FILE")]
+    fuzz_wordlist: Vec<PathBuf>,
+
+    /// Marker strings to replace (default: FUZZ, FUZZ2, ...). Repeatable.
+    #[arg(long, value_name = "MARKER")]
+    marker: Vec<String>,
+
+    /// Inline payloads (comma-separated) for quick fuzz
+    #[arg(long, value_name = "a,b,c")]
+    payloads: Option<String>,
+
+    /// Attack mode: sniper, battering-ram, pitchfork, clusterbomb [default: sniper]
+    #[arg(long, value_name = "MODE")]
+    attack_mode: Option<String>,
+
+    /// Only show responses with these status codes (comma-separated)
+    #[arg(long, value_name = "200,302")]
+    match_status: Option<String>,
+
+    /// Hide responses whose body contains this string
+    #[arg(long, value_name = "STRING")]
+    filter_body: Option<String>,
+
+    /// Number of concurrent fuzz requests [default: 10]
+    #[arg(long, value_name = "N")]
+    concurrency: Option<usize>,
+
+    /// Delay between fuzz requests in milliseconds
+    #[arg(long, value_name = "MS")]
+    delay_ms: Option<u64>,
+
+    // ── Diff ─────────────────────────────────────────────────────────────────
+    /// Diff two JS/HTML files — show added/removed findings
+    #[arg(long, value_name = "OLD_FILE")]
+    diff_with: Option<PathBuf>,
+
+    // ── Scope ────────────────────────────────────────────────────────────────
+    /// In-scope patterns (comma-separated hostnames/globs) for filtering results
+    #[arg(long, value_name = "PATTERNS")]
+    in_scope: Option<String>,
+
+    /// Out-of-scope patterns (comma-separated) — exclusions
+    #[arg(long, value_name = "PATTERNS")]
+    out_of_scope: Option<String>,
+
+    /// Derived analyzer: "new_kind:original_kind:include_regex" (repeatable)
+    #[arg(long, value_name = "SPEC")]
+    derive: Vec<String>,
 }
 
 fn main() {
@@ -285,7 +357,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Some(cli.input.as_str())
         };
-        let matches = run_all(&code, file_path, FileType::Js, &cfg);
+        let mut matches = run_all(&code, file_path, FileType::Js, &cfg);
+
+        // Apply scope filtering if --in-scope is set
+        if cli.in_scope.is_some() || cli.out_of_scope.is_some() {
+            let scope = js_beautify_rs::scope::ScopeMatcher::from_csv(
+                cli.in_scope.as_deref().unwrap_or(""),
+                cli.out_of_scope.as_deref().unwrap_or(""),
+            );
+            matches.retain(|m| {
+                // Only filter hostname/url matches by scope
+                if m.match_kind == "hostname" || m.match_kind == "url" || m.match_kind == "comment_hostname" {
+                    scope.is_in_scope(&m.match_value)
+                } else {
+                    true
+                }
+            });
+        }
+
+        // Apply derived analyzers if --derive is set
+        if !cli.derive.is_empty() {
+            for spec in &cli.derive {
+                // Format: "new_kind:original_kind:include_regex"
+                let parts: Vec<&str> = spec.splitn(3, ':').collect();
+                if parts.len() >= 2 {
+                    let new_kind = parts[0];
+                    let original_kind = parts[1];
+                    let include = if parts.len() == 3 { vec![parts[2]] } else { vec![] };
+                    if let Ok(derived) =
+                        js_beautify_rs::analyzers::derived::DerivedAnalyzer::new(original_kind, new_kind, &include, &[])
+                    {
+                        let derived_matches = derived.apply(&matches);
+                        matches.extend(derived_matches);
+                    }
+                }
+            }
+        }
 
         let output_text = if cli.json {
             serde_json::to_string_pretty(&matches)?
@@ -531,6 +638,193 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Repeater ─────────────────────────────────────────────────────────────
+    if cli.repeat {
+        let config = js_beautify_rs::repeater::RepeaterConfig {
+            url: cli.repeat_url.clone(),
+            proxy_host: cli.proxy_host.clone(),
+            proxy_port: cli.proxy_port,
+            update_content_length: true,
+            timeout_secs: 30,
+        };
+        let result = js_beautify_rs::repeater::replay(&code, &config)?;
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&result)?
+        } else {
+            format!(
+                "HTTP {} | {} bytes | {}ms\n{}",
+                result.status_code, result.body_size, result.elapsed_ms, result.body
+            )
+        };
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    // ── Fuzz ─────────────────────────────────────────────────────────────────
+    if cli.fuzz {
+        use js_beautify_rs::fuzz::*;
+
+        let mode = cli
+            .attack_mode
+            .as_deref()
+            .and_then(AttackMode::from_str)
+            .unwrap_or(AttackMode::Sniper);
+
+        // Determine markers
+        let markers: Vec<String> = if cli.marker.is_empty() {
+            vec!["FUZZ".into(), "FUZZ2".into(), "FUZZ3".into()]
+        } else {
+            cli.marker.clone()
+        };
+
+        // Load wordlists
+        let mut wordlists: Vec<Vec<String>> = Vec::new();
+        for wl_path in &cli.fuzz_wordlist {
+            wordlists.push(load_wordlist(wl_path)?);
+        }
+        if let Some(ref payloads_str) = cli.payloads {
+            let inline: Vec<String> = payloads_str.split(',').map(|s| s.trim().to_string()).collect();
+            if wordlists.is_empty() {
+                wordlists.push(inline);
+            } else {
+                wordlists[0].extend(inline);
+            }
+        }
+        if wordlists.is_empty() {
+            eprintln!("Error: --fuzz requires --fuzz-wordlist or --payloads");
+            std::process::exit(1);
+        }
+
+        let combinations = generate_combinations(&wordlists, mode);
+        let concurrency = cli.concurrency.unwrap_or(10);
+        let delay = cli.delay_ms.unwrap_or(0);
+        let match_statuses: Vec<u16> = cli
+            .match_status
+            .as_deref()
+            .map(|s| s.split(',').filter_map(|c| c.trim().parse().ok()).collect())
+            .unwrap_or_default();
+
+        let config = js_beautify_rs::repeater::RepeaterConfig {
+            url: cli.repeat_url.clone(),
+            proxy_host: cli.proxy_host.clone(),
+            proxy_port: cli.proxy_port,
+            update_content_length: true,
+            timeout_secs: 30,
+        };
+
+        eprintln!(
+            "[FUZZ] Mode: {mode}, Combinations: {}, Concurrency: {concurrency}",
+            combinations.len()
+        );
+
+        let mut results: Vec<js_beautify_rs::fuzz::FuzzResult> = Vec::new();
+        for (idx, combo) in combinations.iter().enumerate() {
+            let rendered = apply_payloads(&code, &markers, combo);
+            match js_beautify_rs::repeater::replay(&rendered, &config) {
+                Ok(resp) => {
+                    // Filter by status
+                    if !match_statuses.is_empty() && !match_statuses.contains(&resp.status_code) {
+                        continue;
+                    }
+                    // Filter by body content
+                    if let Some(ref filter) = cli.filter_body {
+                        if resp.body.contains(filter.as_str()) {
+                            continue;
+                        }
+                    }
+                    let preview = resp.body.chars().take(80).collect::<String>();
+                    if !cli.json {
+                        println!(
+                            "[{}] {:?} → {} | {} bytes | {}ms | {}",
+                            idx,
+                            combo,
+                            resp.status_code,
+                            resp.body_size,
+                            resp.elapsed_ms,
+                            preview.replace('\n', " ")
+                        );
+                    }
+                    results.push(FuzzResult {
+                        index: idx,
+                        payloads: combo.clone(),
+                        status_code: resp.status_code,
+                        response_size: resp.body_size,
+                        body_preview: preview,
+                    });
+                }
+                Err(e) => {
+                    if !cli.json {
+                        eprintln!("[{}] {:?} → ERROR: {}", idx, combo, e);
+                    }
+                }
+            }
+            if delay > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+        }
+
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        } else {
+            eprintln!(
+                "\n[FUZZ] Done. {} results ({} filtered out)",
+                results.len(),
+                combinations.len() - results.len()
+            );
+        }
+        return Ok(());
+    }
+
+    // ── Diff ─────────────────────────────────────────────────────────────────
+    if let Some(ref old_path) = cli.diff_with {
+        let old_code = fs::read_to_string(old_path)?;
+        let result = js_beautify_rs::diff::diff_versions(
+            &old_code,
+            &code,
+            if cli.input == "-" {
+                None
+            } else {
+                Some(cli.input.as_str())
+            },
+            FileType::Js,
+        );
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&result)?
+        } else {
+            let mut lines = Vec::new();
+            lines.push(format!("Content changed: {}", result.content_changed));
+            lines.push(format!("Old hash: {}", result.old_hash));
+            lines.push(format!("New hash: {}", result.new_hash));
+            if !result.added.is_empty() {
+                lines.push(format!("\n+++ ADDED ({}):", result.added.len()));
+                for m in &result.added {
+                    lines.push(format!("  + [{}] {}", m.match_kind, m.match_value));
+                }
+            }
+            if !result.removed.is_empty() {
+                lines.push(format!("\n--- REMOVED ({}):", result.removed.len()));
+                for m in &result.removed {
+                    lines.push(format!("  - [{}] {}", m.match_kind, m.match_value));
+                }
+            }
+            lines.push(format!("\nUnchanged findings: {}", result.unchanged_count));
+            lines.join("\n")
+        };
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    // ── Scope filtering on analyze results ───────────────────────────────────
+    // (handled inline when --in-scope is combined with --analyze)
 
     let beautified = beautify(&code, &options)?;
 

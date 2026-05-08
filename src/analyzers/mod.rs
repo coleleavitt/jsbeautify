@@ -17,6 +17,7 @@
 
 pub mod ast_walker;
 pub mod comment_extractor;
+pub mod derived;
 pub mod graphql_extractor;
 pub mod helpers;
 pub mod html_script_extractor;
