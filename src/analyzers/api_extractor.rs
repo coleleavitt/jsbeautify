@@ -13,7 +13,7 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 
 use super::ast_walker::span_to_pos;
-use super::match_kind::{AnalyzerMatch, FileType};
+use super::match_kind::{AnalyzerMatch, FileType, Provenance};
 use super::regex_bank::severity_for_kind;
 
 pub const KIND_API_CALL: &str = "api_call";
@@ -50,6 +50,7 @@ impl<'a> ApiVisitor<'a> {
             file_type: self.file_type,
             file_path: self.file_path.map(str::to_string),
             severity: severity_for_kind(kind),
+            provenance: Provenance::Ast,
             metadata: None,
         });
     }

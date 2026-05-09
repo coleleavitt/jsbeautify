@@ -28,7 +28,7 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
 use super::ast_walker::span_to_pos;
-use super::match_kind::{AnalyzerMatch, FileType};
+use super::match_kind::{AnalyzerMatch, FileType, Provenance};
 use super::regex_bank::Severity;
 
 const DEP_KEYS: &[&str] = &[
@@ -72,6 +72,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
                         file_type,
                         file_path: file_path.map(str::to_string),
                         severity: Severity::Medium,
+                        provenance: Provenance::Ast,
                         metadata: Some(serde_json::json!({
                             "block": key,
                             "packages": names,
@@ -89,6 +90,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
                             file_type,
                             file_path: file_path.map(str::to_string),
                             severity: Severity::Info,
+                            provenance: Provenance::Ast,
                             metadata: Some(serde_json::json!({
                                 "name": name,
                                 "version": version,
@@ -163,6 +165,7 @@ impl<'s> PkgVisitor<'s> {
                 file_type: self.file_type,
                 file_path: self.file_path.map(str::to_string),
                 severity: Severity::Medium,
+                provenance: Provenance::Ast,
                 metadata: Some(serde_json::json!({
                     "block": key_name,
                     "packages": names,
@@ -177,6 +180,7 @@ impl<'s> PkgVisitor<'s> {
                     file_type: self.file_type,
                     file_path: self.file_path.map(str::to_string),
                     severity: Severity::Info,
+                    provenance: Provenance::Ast,
                     metadata: Some(serde_json::json!({
                         "name": name,
                         "version": version,

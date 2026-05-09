@@ -6,7 +6,7 @@
 //! applies include/exclude regex filters on the match value, and emits results
 //! under a `new_match_kind`.
 
-use super::match_kind::AnalyzerMatch;
+use super::match_kind::{AnalyzerMatch, Provenance};
 use super::regex_bank::severity_for_kind;
 use regex::Regex;
 
@@ -67,6 +67,7 @@ impl DerivedAnalyzer {
                 file_type: m.file_type,
                 file_path: m.file_path.clone(),
                 severity: severity_for_kind(&self.new_match_kind),
+                provenance: Provenance::Derived,
                 metadata: m.metadata.clone(),
             })
             .collect()
@@ -98,6 +99,7 @@ mod tests {
             file_type: FileType::Js,
             file_path: None,
             severity: crate::analyzers::regex_bank::Severity::Info,
+            provenance: Provenance::Ast,
             metadata: None,
         }
     }

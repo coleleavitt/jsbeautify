@@ -59,6 +59,50 @@ lazy_regex!(REF_QUERY, r"^\?\ref=");
 lazy_regex!(DOT_SLASH_PATTERN, r"^\.\.?/?$");
 lazy_regex!(END_SLASH_PATTERN, r"^[^/]*/$");
 
+// Additional patterns recovered from binary strings (REPORT-style, not surfaced
+// in the markdown reports). Each one filters a class of false positives the
+// original analyzer drops.
+lazy_regex!(LONG_NUMBER_SUFFIX, r"^[a-zA-Z]+\d{4,}$");
+lazy_regex!(LETTER_HEX_SUFFIX, r"^[a-zA-Z]{1,4}[0-9a-f]{10,}$");
+lazy_regex!(LETTER_DIGITS, r"^[A-Za-z]\d+$");
+lazy_regex!(UNDERSCORE_ONLY, r"^_+$");
+lazy_regex!(CSS_CONCAT_PATTERN, r"\.concat[A-Za-z]|--[a-z]");
+lazy_regex!(
+    CSS_SPLIT_PATTERN,
+    r#"%22|%3[cCeE]|%28|%29|%20|["'<>()\s\[\]\{\}\$`,.;:!?@#^&*+=|\\~/]--+|__+|-"#
+);
+lazy_regex!(TEMPLATE_VAR_PATTERN, r"\{\{|\}\}|\$\{|\}");
+
+// Cookie attribute fragments — bundled inline cookie strings like
+// `;path=/;expires=Mon, 01 Jan 2030 00:00:00 GMT;secure;httponly` would
+// otherwise surface as `path` matches.
+pub const COOKIE_ATTR_PREFIXES: &[&str] = &[
+    ";path=",
+    ";expires=",
+    ";samesite=",
+    ";secure",
+    ";httponly",
+    ";max-age=",
+    ";same-site=",
+    ";domain=",
+    ";priority=",
+    ";partitioned",
+];
+
+// React/Redux internal sentinels — ship in production bundles and otherwise
+// fire `secret_*` heuristics or path heuristics.
+pub const REACT_INTERNAL_SENTINELS: &[&str] = &[
+    "__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED",
+    "SECRET_DO_NOT_PASS_THIS_OR_YOU_WILL_BE_FIRED",
+    "__REDUX_DEVTOOLS_EXTENSION__",
+    "__REACT_DEVTOOLS_GLOBAL_HOOK__",
+    "__REACT_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED",
+    "__webpack_require__",
+    "__webpack_modules__",
+    "__webpack_exports__",
+    "__esModule",
+];
+
 // String-literal noise tokens (substring matches)
 pub const NOISE_LITERAL_PREFIXES: &[&str] = &[
     "./lib",
@@ -97,6 +141,19 @@ pub fn is_path_noise(value: &str) -> bool {
     // bare module names
     if BARE_MODULE_NAMES.contains(&value) {
         return true;
+    }
+    // React/webpack internal sentinels
+    if REACT_INTERNAL_SENTINELS.contains(&value) {
+        return true;
+    }
+    // Cookie attribute prefixes (case-insensitive substring at start)
+    {
+        let lower = value.to_ascii_lowercase();
+        for p in COOKIE_ATTR_PREFIXES {
+            if lower.starts_with(p) {
+                return true;
+            }
+        }
     }
     // literal prefix matches
     for p in NOISE_LITERAL_PREFIXES {
@@ -141,6 +198,12 @@ pub fn is_path_noise(value: &str) -> bool {
         &*REF_QUERY,
         &*DOT_SLASH_PATTERN,
         &*END_SLASH_PATTERN,
+        &*LONG_NUMBER_SUFFIX,
+        &*LETTER_HEX_SUFFIX,
+        &*LETTER_DIGITS,
+        &*UNDERSCORE_ONLY,
+        &*CSS_CONCAT_PATTERN,
+        &*TEMPLATE_VAR_PATTERN,
     ]
     .iter()
     .any(|r| r.is_match(value))
@@ -234,6 +297,52 @@ mod tests {
 
         assert!(!is_path_noise("/api/v2/users"));
         assert!(!is_path_noise("/admin/login"));
+    }
+
+    #[test]
+    fn cookie_attrs_are_noise() {
+        assert!(is_path_noise(";path=/"));
+        assert!(is_path_noise(";Path=/api"));
+        assert!(is_path_noise(";expires=Mon, 01 Jan 2030 00:00:00 GMT"));
+        assert!(is_path_noise(";samesite=Strict"));
+        assert!(is_path_noise(";secure"));
+        assert!(is_path_noise(";HttpOnly"));
+    }
+
+    #[test]
+    fn react_sentinels_are_noise() {
+        assert!(is_path_noise("__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED"));
+        assert!(is_path_noise("__REDUX_DEVTOOLS_EXTENSION__"));
+        assert!(is_path_noise("__webpack_require__"));
+    }
+
+    #[test]
+    fn long_number_suffix_is_noise() {
+        // Mangled identifiers like `api1234567` (>= 4 trailing digits)
+        assert!(is_path_noise("api12345"));
+        assert!(is_path_noise("foo7777"));
+        // Single-letter + digits is also noise (LETTER_DIGITS pattern)
+        assert!(is_path_noise("v123"));
+        assert!(is_path_noise("a1"));
+        // Multi-letter with 1-3 trailing digits passes
+        assert!(!is_path_noise("api2"));
+        assert!(!is_path_noise("login"));
+    }
+
+    #[test]
+    fn letter_hex_suffix_is_noise() {
+        // Webpack content hash: `app1a2b3c4d5e6f` style
+        assert!(is_path_noise("app1234567890ab"));
+        assert!(is_path_noise("a1234567890abcdef"));
+        // Normal hostname with hex-like chars passes
+        assert!(!is_path_noise("api.example.com"));
+    }
+
+    #[test]
+    fn underscore_only_is_noise() {
+        assert!(is_path_noise("___"));
+        assert!(is_path_noise("____"));
+        assert!(!is_path_noise("__init__"));
     }
 
     #[test]

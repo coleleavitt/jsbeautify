@@ -20,7 +20,7 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 
 use super::ast_walker::span_to_pos;
-use super::match_kind::{AnalyzerMatch, FileType};
+use super::match_kind::{AnalyzerMatch, FileType, Provenance};
 use super::regex_bank;
 
 /// Scan `source` for object/class/JSX property names that match jxscout's
@@ -58,6 +58,7 @@ impl<'a> PropNameVisitor<'a> {
                     file_type: self.file_type,
                     file_path: self.file_path.map(str::to_string),
                     severity: rule.severity,
+                    provenance: Provenance::Ast,
                     metadata: None,
                 });
             }

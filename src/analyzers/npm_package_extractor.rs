@@ -14,7 +14,7 @@ use oxc_span::SourceType;
 
 use super::ast_walker::span_to_pos;
 use super::helpers;
-use super::match_kind::{AnalyzerMatch, FileType};
+use super::match_kind::{AnalyzerMatch, FileType, Provenance};
 use super::regex_bank::Severity;
 
 const PACKAGE_JSON_KEYS: &[&str] = &[
@@ -77,6 +77,7 @@ impl<'s> NpmVisitor<'s> {
             file_type: self.file_type,
             file_path: self.file_path.map(str::to_string),
             severity: Severity::Info,
+            provenance: Provenance::Ast,
             metadata: None,
         });
     }

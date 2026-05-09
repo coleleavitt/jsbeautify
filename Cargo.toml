@@ -51,8 +51,8 @@ regex = "1"
 lazy_static = "1.4"
 thiserror = "2.0.17"
 url = "2"
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net", "process"] }
 base64 = "0.22"
 rc4 = "0.1.0"
 serde = { version = "1", features = ["derive"] }
@@ -70,3 +70,22 @@ oxc_codegen = "0.124.0"
 oxc_cfg = "0.124.0"
 clap = { version = "4.5.57", features = ["derive"] }
 md5 = "0.7"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+dirs = "5"
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "client", "client-legacy", "http1"] }
+http-body-util = "0.1"
+bytes = "1"
+rustls = "0.23"
+tokio-rustls = "0.26"
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+rustls-pemfile = "2"
+tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+webpki-roots = "0.26"
+futures-util = "0.3"
+async-trait = "0.1"
+cron = "0.12"

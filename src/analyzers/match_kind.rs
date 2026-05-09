@@ -84,6 +84,34 @@ fn byte_offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
     (line, col)
 }
 
+/// How an analyzer arrived at a match. Mirrors jxscout's internal MatchKind enum
+/// (ASTPath, RegexPath, RegexBuiltIn, etc.) so consumers can distinguish a path
+/// the AST analyzer found from one the regex pass surfaced.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    /// AST-walked literal/template (path, hostname, GraphQL, package, etc.)
+    Ast,
+    /// User-supplied regex (CLI --custom-regex or settings analyzer.custom_analyzers)
+    RegexUser,
+    /// Built-in secret regex (regex_bank)
+    RegexBuiltIn,
+    /// Derived analyzer (filter on existing matches)
+    Derived,
+    /// HTML-tag-driven extraction (script-extractor, relationship graph)
+    Html,
+    /// Comment-driven extraction
+    Comment,
+    /// Unknown / legacy
+    Other,
+}
+
+impl Default for Provenance {
+    fn default() -> Self {
+        Self::Other
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AnalyzerMatch {
     /// e.g. `"github_pat"`, `"path"`, `"hostname"`, `"location_assignment"`.
@@ -97,6 +125,9 @@ pub struct AnalyzerMatch {
     /// Populated from [`super::regex_bank::severity_for_kind`] when missing.
     #[serde(default = "default_severity")]
     pub severity: Severity,
+    /// How the match was discovered. Default Ast for legacy compat.
+    #[serde(default)]
+    pub provenance: Provenance,
     /// Optional analyzer-specific metadata as a JSON object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
@@ -107,6 +138,48 @@ fn default_severity() -> Severity {
 }
 
 impl AnalyzerMatch {
+    /// Convenience constructor that sets provenance + severity from defaults.
+    /// Most analyzers should call `.with_provenance(...)` after this.
+    #[must_use]
+    pub fn new(
+        match_kind: impl Into<String>,
+        match_value: impl Into<String>,
+        position: PositionRange,
+        file_type: FileType,
+        file_path: Option<String>,
+    ) -> Self {
+        let kind = match_kind.into();
+        let severity = super::regex_bank::severity_for_kind(&kind);
+        Self {
+            match_kind: kind,
+            match_value: match_value.into(),
+            position,
+            file_type,
+            file_path,
+            severity,
+            provenance: Provenance::Other,
+            metadata: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_provenance(mut self, p: Provenance) -> Self {
+        self.provenance = p;
+        self
+    }
+
+    #[must_use]
+    pub fn with_severity(mut self, s: Severity) -> Self {
+        self.severity = s;
+        self
+    }
+
+    #[must_use]
+    pub fn with_metadata(mut self, m: serde_json::Value) -> Self {
+        self.metadata = Some(m);
+        self
+    }
+
     /// Stable hash of the `(match_kind, match_value, file_path, metadata)` tuple,
     /// used for `finding_per_unique_value` deduplication. Mirrors jxscout's
     /// `metadata_hash` column.
@@ -163,6 +236,7 @@ mod tests {
             file_type: FileType::Js,
             file_path: Some("/x.js".into()),
             severity: Severity::Critical,
+            provenance: Provenance::Ast,
             metadata: None,
         };
         let s = serde_json::to_string(&m).unwrap();
@@ -181,6 +255,7 @@ mod tests {
             file_type: FileType::Js,
             file_path: Some("/x.js".into()),
             severity: Severity::Info,
+            provenance: Provenance::Ast,
             metadata: None,
         };
         assert_eq!(mk("/api/users").dedup_hash(), mk("/api/users").dedup_hash());

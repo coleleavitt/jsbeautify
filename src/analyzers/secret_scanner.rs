@@ -6,7 +6,7 @@
 //!
 //! Mirrors `crates/core/analyzers/src/regex_analyzer.rs` from jxscout.
 
-use super::match_kind::{AnalyzerMatch, FileType, PositionRange};
+use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::{self, Severity};
 
 /// Scan `source` for secrets. `file_path` is optional (for output annotation).
@@ -22,6 +22,7 @@ pub fn scan(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<A
                 file_type,
                 file_path: file_path.map(str::to_string),
                 severity: rule.severity,
+                provenance: Provenance::RegexBuiltIn,
                 metadata: None,
             });
         }
@@ -136,6 +137,7 @@ pub fn scan_custom(
                 file_type,
                 file_path: file_path.map(str::to_string),
                 severity: Severity::Medium,
+                provenance: Provenance::RegexUser,
                 metadata: None,
             });
         }
