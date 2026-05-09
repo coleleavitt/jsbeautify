@@ -57,6 +57,7 @@ impl<'a> PropNameVisitor<'a> {
                     position: span_to_pos(self.source, start, end),
                     file_type: self.file_type,
                     file_path: self.file_path.map(str::to_string),
+                    severity: rule.severity,
                     metadata: None,
                 });
             }

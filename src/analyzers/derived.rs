@@ -7,6 +7,7 @@
 //! under a `new_match_kind`.
 
 use super::match_kind::AnalyzerMatch;
+use super::regex_bank::severity_for_kind;
 use regex::Regex;
 
 /// Configuration for a single derived analyzer.
@@ -65,6 +66,7 @@ impl DerivedAnalyzer {
                 position: m.position.clone(),
                 file_type: m.file_type,
                 file_path: m.file_path.clone(),
+                severity: severity_for_kind(&self.new_match_kind),
                 metadata: m.metadata.clone(),
             })
             .collect()
@@ -95,6 +97,7 @@ mod tests {
             },
             file_type: FileType::Js,
             file_path: None,
+            severity: crate::analyzers::regex_bank::Severity::Info,
             metadata: None,
         }
     }

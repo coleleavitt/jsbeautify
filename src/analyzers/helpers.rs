@@ -72,7 +72,8 @@ pub const NOISE_LITERAL_PREFIXES: &[&str] = &[
     "../dist",
 ];
 
-// Bare module names (full-string equality against candidate)
+// Bare module names (full-string equality against candidate).
+// Mirrors REPORT_03 §64-98 plus common third-party junk that surfaces in bundled output.
 pub const BARE_MODULE_NAMES: &[&str] = &[
     "zone.js",
     "bn.js",
@@ -83,6 +84,11 @@ pub const BARE_MODULE_NAMES: &[&str] = &[
     "asn1.js",
     "declare.js",
     "elliptic.js",
+    "core-js",
+    "regenerator-runtime",
+    "tslib",
+    "react-dom",
+    "scheduler",
 ];
 
 /// Return true if `value` looks like a path/hostname noise pattern.
@@ -185,6 +191,21 @@ pub const NOISE_HOSTNAMES: &[&str] = &[
     "test.com",
     "randombase.com",
     "fusioncharts.com",
+    // standard schemas / docs surfaces
+    "www.iana.org",
+    "tools.ietf.org",
+    "datatracker.ietf.org",
+    "schema.org",
+    "schemas.xmlsoap.org",
+    "json-schema.org",
+    // CDN / build artifact hosts that aren't usually security-relevant
+    "unpkg.com",
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "registry.yarnpkg.com",
+    // standards bodies
+    "www.ecma-international.org",
+    "tc39.es",
 ];
 
 #[must_use]

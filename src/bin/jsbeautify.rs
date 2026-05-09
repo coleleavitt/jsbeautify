@@ -116,6 +116,10 @@ struct Cli {
     #[arg(long)]
     extract_paths: bool,
 
+    /// Extract only hostnames (jxscout-compatible separate analyzer)
+    #[arg(long)]
+    extract_hostnames: bool,
+
     /// Extract GraphQL operations
     #[arg(long)]
     extract_graphql: bool,
@@ -271,6 +275,32 @@ struct Cli {
     /// Minimum severity to report (info, low, medium, high, critical)
     #[arg(long, value_name = "LEVEL")]
     min_severity: Option<String>,
+
+    /// Deduplicate matches by (match_kind, match_value, file_path, metadata).
+    /// Matches jxscout's `finding_per_unique_value` setting.
+    #[arg(long)]
+    unique: bool,
+
+    /// Run all security analyzers (alias of --analyze, jxscout-compatible name).
+    #[arg(long)]
+    analyze_all: bool,
+
+    /// Reverse a sourcemap (.map) file: extract every embedded `sourcesContent`
+    /// entry, run analyzers against it as `FileType::ReversedSource`. Outputs
+    /// per-source JSON to --analysis-out (or stdout) plus optional disk dump.
+    #[arg(long, value_name = "MAP_FILE")]
+    reverse_sourcemap: Option<PathBuf>,
+
+    /// Directory to write reversed source files into (one file per source).
+    /// Use with --reverse-sourcemap. Defaults to skipping disk writes.
+    #[arg(long, value_name = "DIR")]
+    reversed_sources_dir: Option<PathBuf>,
+
+    /// Build the asset-relationship graph for an HTML page (jxscout's
+    /// js_loader / iframe_loader / lazy-chunk graph). Use --base-url to
+    /// resolve relative paths to absolute URLs.
+    #[arg(long)]
+    relationships: bool,
 }
 
 fn main() {
@@ -282,6 +312,123 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    // ── Asset-relationship graph mode ─────────────────────────────────────────
+    if cli.relationships {
+        let html = if cli.input == "-" {
+            let mut buf = String::new();
+            io::stdin().read_to_string(&mut buf)?;
+            buf
+        } else {
+            fs::read_to_string(&cli.input)?
+        };
+        let page_id = cli.base_url.clone().unwrap_or_else(|| cli.input.clone());
+        let graph = js_beautify_rs::relationships::AssetGraph::from_html(&html, &page_id);
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&graph)?
+        } else {
+            let mut lines = vec![format!("Page: {}", graph.page)];
+            for r in &graph.relations {
+                let kind = serde_json::to_string(&r.kind).unwrap_or_default();
+                let kind = kind.trim_matches('"');
+                if matches!(r.kind, js_beautify_rs::relationships::RelationKind::InlineJs) {
+                    lines.push(format!(
+                        "[{kind}] (inline, {} bytes) line {}",
+                        r.inline_content.len(),
+                        r.line
+                    ));
+                } else {
+                    lines.push(format!("[{kind}] {} line {}", r.target, r.line));
+                }
+            }
+            lines.join("\n")
+        };
+
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+            eprintln!("Relationship graph written to {}", out_path.display());
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
+
+    // ── Sourcemap reversal mode ───────────────────────────────────────────────
+    if let Some(ref map_path) = cli.reverse_sourcemap {
+        let map_json =
+            fs::read_to_string(map_path).map_err(|e| format!("failed to read {}: {}", map_path.display(), e))?;
+        let reversed =
+            js_beautify_rs::sourcemap::reverse(&map_json).map_err(|e| format!("failed to parse sourcemap: {e}"))?;
+
+        if let Some(ref dir) = cli.reversed_sources_dir {
+            fs::create_dir_all(dir)?;
+            for rs in &reversed {
+                // Sanitize source_path: strip leading `/` and `..` segments to
+                // prevent escaping the output dir.
+                let safe = rs.source_path.replace("..", "_").trim_start_matches('/').to_string();
+                let dest = dir.join(&safe);
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent).ok();
+                }
+                fs::write(&dest, &rs.content)?;
+            }
+            eprintln!("Wrote {} reversed source(s) to {}", reversed.len(), dir.display());
+        }
+
+        // Run analyzers on each reversed source under FileType::ReversedSource.
+        let cfg = AnalyzerConfig::default();
+        let mut all_matches: Vec<js_beautify_rs::analyzers::AnalyzerMatch> = Vec::new();
+        for rs in &reversed {
+            let matches = run_all(
+                &rs.content,
+                Some(rs.source_path.as_str()),
+                FileType::ReversedSource,
+                &cfg,
+            );
+            all_matches.extend(matches);
+        }
+
+        if cli.unique {
+            all_matches = js_beautify_rs::analyzers::dedup_unique_values(all_matches);
+        }
+        if let Some(ref min_sev_str) = cli.min_severity {
+            if let Some(min_sev) = js_beautify_rs::analyzers::regex_bank::Severity::from_str(min_sev_str) {
+                all_matches.retain(|m| m.severity >= min_sev);
+            }
+        }
+
+        let output_text = if cli.json {
+            serde_json::to_string_pretty(&all_matches)?
+        } else {
+            let lines: Vec<String> = all_matches
+                .iter()
+                .map(|m| {
+                    format!(
+                        "[{}] {} @ {} (line {}:{})",
+                        m.match_kind,
+                        m.match_value,
+                        m.file_path.as_deref().unwrap_or("?"),
+                        m.position.start.line,
+                        m.position.start.column
+                    )
+                })
+                .collect();
+            format!(
+                "Reversed {} source(s); {} findings\n{}",
+                reversed.len(),
+                all_matches.len(),
+                lines.join("\n")
+            )
+        };
+
+        if let Some(out_path) = &cli.analysis_out {
+            fs::write(out_path, &output_text)?;
+            eprintln!("Results written to {}", out_path.display());
+        } else {
+            println!("{output_text}");
+        }
+        return Ok(());
+    }
 
     // ── Directory scanning mode ───────────────────────────────────────────────
     if cli.dir {
@@ -386,6 +533,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     true
                 }
             });
+        }
+
+        // Apply severity filter
+        if let Some(ref min_sev_str) = cli.min_severity {
+            if let Some(min_sev) = js_beautify_rs::analyzers::regex_bank::Severity::from_str(min_sev_str) {
+                all_matches.retain(|m| m.severity >= min_sev);
+            }
+        }
+
+        // Deduplicate
+        if cli.unique {
+            all_matches = js_beautify_rs::analyzers::dedup_unique_values(all_matches);
         }
 
         let output_text = if cli.json {
@@ -497,25 +656,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Security analysis / wordlist ──────────────────────────────────────────
     let run_analysis = cli.analyze
+        || cli.analyze_all
         || cli.scan_secrets
         || cli.find_sinks
         || cli.extract_paths
+        || cli.extract_hostnames
         || cli.extract_graphql
         || cli.extract_packages
         || cli.find_sensitive_props;
 
     if run_analysis {
-        let cfg = if cli.analyze {
+        let cfg = if cli.analyze || cli.analyze_all {
             AnalyzerConfig::default()
         } else {
             AnalyzerConfig {
                 secrets: cli.scan_secrets,
                 sensitive_props: cli.find_sensitive_props,
-                paths_hostnames: cli.extract_paths,
+                paths_hostnames: cli.extract_paths || cli.extract_hostnames,
                 graphql: cli.extract_graphql,
                 sinks: cli.find_sinks,
                 npm_packages: cli.extract_packages,
-                comments: cli.extract_paths, // include comments when paths requested
+                comments: cli.extract_paths || cli.extract_hostnames,
             }
         };
 
@@ -525,6 +686,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(cli.input.as_str())
         };
         let mut matches = run_all(&code, file_path, FileType::Js, &cfg);
+
+        // --extract-hostnames (without --extract-paths) keeps only host kinds
+        if cli.extract_hostnames && !cli.extract_paths && !cli.analyze && !cli.analyze_all {
+            matches.retain(|m| matches!(m.match_kind.as_str(), "hostname" | "comment_hostname"));
+        }
 
         // Apply scope filtering if --in-scope is set
         if cli.in_scope.is_some() || cli.out_of_scope.is_some() || cli.scope_file.is_some() {
@@ -579,8 +745,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Apply severity filter
         if let Some(ref min_sev_str) = cli.min_severity {
             if let Some(min_sev) = js_beautify_rs::analyzers::regex_bank::Severity::from_str(min_sev_str) {
-                matches.retain(|m| js_beautify_rs::analyzers::regex_bank::severity_for_kind(&m.match_kind) >= min_sev);
+                matches.retain(|m| m.severity >= min_sev);
             }
+        }
+
+        // Deduplicate by unique value if --unique
+        if cli.unique {
+            matches = js_beautify_rs::analyzers::dedup_unique_values(matches);
         }
 
         // Wordlist from matches mode

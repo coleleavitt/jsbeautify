@@ -14,6 +14,7 @@ use oxc_span::SourceType;
 
 use super::ast_walker::span_to_pos;
 use super::match_kind::{AnalyzerMatch, FileType};
+use super::regex_bank::severity_for_kind;
 
 pub const KIND_API_CALL: &str = "api_call";
 pub const KIND_STORAGE_ACCESS: &str = "storage_access";
@@ -48,6 +49,7 @@ impl<'a> ApiVisitor<'a> {
             position: span_to_pos(self.source, start, end),
             file_type: self.file_type,
             file_path: self.file_path.map(str::to_string),
+            severity: severity_for_kind(kind),
             metadata: None,
         });
     }

@@ -13,6 +13,7 @@ use oxc_span::SourceType;
 
 use super::helpers;
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange};
+use super::regex_bank::Severity;
 
 const KIND_COMMENT_PATH: &str = "comment_path";
 const KIND_COMMENT_HOSTNAME: &str = "comment_hostname";
@@ -46,6 +47,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
                     position: pos.clone(),
                     file_type,
                     file_path: file_path.map(str::to_string),
+                    severity: Severity::Info,
                     metadata: None,
                 });
             }
@@ -61,6 +63,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
                     position: pos.clone(),
                     file_type,
                     file_path: file_path.map(str::to_string),
+                    severity: Severity::Info,
                     metadata: None,
                 });
             }

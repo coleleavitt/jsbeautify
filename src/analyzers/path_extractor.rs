@@ -15,6 +15,7 @@ use oxc_span::SourceType;
 use super::ast_walker::span_to_pos;
 use super::helpers;
 use super::match_kind::{AnalyzerMatch, FileType};
+use super::regex_bank::Severity;
 
 /// Extract paths, hostnames, and URLs from `source`.
 #[must_use]
@@ -72,6 +73,7 @@ impl<'s> PathHostVisitor<'s> {
                 position: span_to_pos(self.source, span_start, span_end),
                 file_type: self.file_type,
                 file_path: self.file_path.map(str::to_string),
+                severity: Severity::Info,
                 metadata: None,
             });
         }
@@ -93,6 +95,7 @@ impl<'s> PathHostVisitor<'s> {
                             position: span_to_pos(self.source, span_start, span_end),
                             file_type: self.file_type,
                             file_path: self.file_path.map(str::to_string),
+                            severity: Severity::Info,
                             metadata: None,
                         });
                     }
@@ -120,6 +123,7 @@ impl<'s> PathHostVisitor<'s> {
                 position: span_to_pos(self.source, span_start, span_end),
                 file_type: self.file_type,
                 file_path: self.file_path.map(str::to_string),
+                severity: Severity::Info,
                 metadata: None,
             });
         }
@@ -137,6 +141,7 @@ impl<'s> PathHostVisitor<'s> {
                         position: span_to_pos(self.source, base_start, base_start + text.len() as u32),
                         file_type: self.file_type,
                         file_path: self.file_path.map(str::to_string),
+                        severity: Severity::Info,
                         metadata: None,
                     });
                 }
@@ -151,6 +156,7 @@ impl<'s> PathHostVisitor<'s> {
                     position: span_to_pos(self.source, base_start, base_start + text.len() as u32),
                     file_type: self.file_type,
                     file_path: self.file_path.map(str::to_string),
+                    severity: Severity::Info,
                     metadata: None,
                 });
             }

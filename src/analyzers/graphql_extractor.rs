@@ -15,6 +15,7 @@ use oxc_span::SourceType;
 use super::ast_walker::span_to_pos;
 use super::helpers;
 use super::match_kind::{AnalyzerMatch, FileType};
+use super::regex_bank::Severity;
 
 /// Extract GraphQL operations from `source`.
 #[must_use]
@@ -66,6 +67,7 @@ impl<'s> GqlVisitor<'s> {
             position: span_to_pos(self.source, start, end),
             file_type: self.file_type,
             file_path: self.file_path.map(str::to_string),
+            severity: Severity::Low,
             metadata: None,
         });
     }
@@ -113,6 +115,7 @@ impl<'a, 's> Visit<'a> for GqlVisitor<'s> {
                 position: span_to_pos(self.source, expr.span.start, expr.span.end),
                 file_type: self.file_type,
                 file_path: self.file_path.map(str::to_string),
+                severity: Severity::Low,
                 metadata: None,
             });
         }

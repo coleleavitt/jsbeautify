@@ -34,8 +34,8 @@ pub struct DiffResult {
 /// by `(match_kind, match_value)` pairs.
 #[must_use]
 pub fn diff_versions(old_source: &str, new_source: &str, file_path: Option<&str>, file_type: FileType) -> DiffResult {
-    let old_hash = sha256_hex(old_source);
-    let new_hash = sha256_hex(new_source);
+    let old_hash = content_fingerprint(old_source);
+    let new_hash = content_fingerprint(new_source);
 
     if old_hash == new_hash {
         return DiffResult {
@@ -84,11 +84,13 @@ pub fn diff_versions(old_source: &str, new_source: &str, file_path: Option<&str>
     }
 }
 
-/// Compute SHA-256 hex digest of content.
-fn sha256_hex(content: &str) -> String {
+/// Fast non-cryptographic content fingerprint for change detection.
+/// Uses SipHash (DefaultHasher) — NOT a cryptographic hash. Suitable only
+/// for detecting whether content changed between two versions within the
+/// same process. Not stable across Rust versions or platforms.
+fn content_fingerprint(content: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    // Use a fast non-crypto hash for change detection (same as jxscout's content_hash)
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     format!("{:016x}", hasher.finish())

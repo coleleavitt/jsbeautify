@@ -21,6 +21,7 @@ pub mod diff;
 pub mod fuzz;
 pub mod nextjs_discovery;
 pub mod oxc_opts;
+pub mod relationships;
 pub mod repeater;
 pub mod scope;
 pub mod sourcemap;

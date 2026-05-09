@@ -19,6 +19,7 @@ use oxc_span::SourceType;
 
 use super::ast_walker::span_to_pos;
 use super::match_kind::{AnalyzerMatch, FileType};
+use super::regex_bank::severity_for_kind;
 
 /// Sink kinds emitted by [`analyze`].
 pub mod kinds {
@@ -77,6 +78,7 @@ impl<'s> SinkVisitor<'s> {
             position: span_to_pos(self.source, start, end),
             file_type: self.file_type,
             file_path: self.file_path.map(str::to_string),
+            severity: severity_for_kind(kind),
             metadata: None,
         });
     }

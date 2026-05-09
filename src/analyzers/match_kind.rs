@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::regex_bank::Severity;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileType {
@@ -91,9 +93,40 @@ pub struct AnalyzerMatch {
     pub position: PositionRange,
     pub file_type: FileType,
     pub file_path: Option<String>,
+    /// Severity classification (jxscout-compatible: info|low|medium|high|critical).
+    /// Populated from [`super::regex_bank::severity_for_kind`] when missing.
+    #[serde(default = "default_severity")]
+    pub severity: Severity,
     /// Optional analyzer-specific metadata as a JSON object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+}
+
+fn default_severity() -> Severity {
+    Severity::Info
+}
+
+impl AnalyzerMatch {
+    /// Stable hash of the `(match_kind, match_value, file_path, metadata)` tuple,
+    /// used for `finding_per_unique_value` deduplication. Mirrors jxscout's
+    /// `metadata_hash` column.
+    #[must_use]
+    pub fn dedup_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut h = DefaultHasher::new();
+        self.match_kind.hash(&mut h);
+        self.match_value.hash(&mut h);
+        if let Some(p) = &self.file_path {
+            p.hash(&mut h);
+        }
+        if let Some(meta) = &self.metadata {
+            // Canonical string form for stable hashing.
+            meta.to_string().hash(&mut h);
+        }
+        h.finish()
+    }
 }
 
 #[cfg(test)]
@@ -129,11 +162,36 @@ mod tests {
             position: PositionRange::new(1, 0, 1, 7),
             file_type: FileType::Js,
             file_path: Some("/x.js".into()),
+            severity: Severity::Critical,
             metadata: None,
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""match_kind":"github_pat""#));
+        assert!(s.contains(r#""severity":"critical""#));
         let back: AnalyzerMatch = serde_json::from_str(&s).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn dedup_hash_is_stable() {
+        let mk = |val: &str| AnalyzerMatch {
+            match_kind: "path".into(),
+            match_value: val.into(),
+            position: PositionRange::new(1, 0, 1, 7),
+            file_type: FileType::Js,
+            file_path: Some("/x.js".into()),
+            severity: Severity::Info,
+            metadata: None,
+        };
+        assert_eq!(mk("/api/users").dedup_hash(), mk("/api/users").dedup_hash());
+        assert_ne!(mk("/api/users").dedup_hash(), mk("/api/admin").dedup_hash());
+    }
+
+    #[test]
+    fn json_default_severity_when_missing() {
+        // Older jxscout payloads without `severity` should still parse.
+        let s = r#"{"match_kind":"path","match_value":"/api","position":{"start":{"line":1,"column":0},"end":{"line":1,"column":4}},"file_type":"js","file_path":null}"#;
+        let m: AnalyzerMatch = serde_json::from_str(s).unwrap();
+        assert_eq!(m.severity, Severity::Info);
     }
 }

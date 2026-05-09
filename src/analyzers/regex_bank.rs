@@ -418,6 +418,8 @@ pub fn severity_for_kind(kind: &str) -> Severity {
         "path" | "hostname" | "url" | "comment_path" | "comment_hostname" => Severity::Info,
         "graphql" => Severity::Low,
         "npm_package" => Severity::Info,
+        "package_json" => Severity::Medium,
+        "package_json_dep" => Severity::Info,
         "api_call" => Severity::Low,
         _ if kind.starts_with("sensitive_property_name:") => Severity::Medium,
         _ if kind.starts_with("custom:") => Severity::Medium,

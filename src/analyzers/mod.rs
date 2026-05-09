@@ -21,9 +21,11 @@ pub mod comment_extractor;
 pub mod derived;
 pub mod graphql_extractor;
 pub mod helpers;
+pub mod hostname_extractor;
 pub mod html_script_extractor;
 pub mod match_kind;
 pub mod npm_package_extractor;
+pub mod package_json_analyzer;
 pub mod path_extractor;
 pub mod regex_bank;
 pub mod secret_scanner;
@@ -31,6 +33,24 @@ pub mod sensitive_property_name;
 pub mod sinks;
 
 pub use match_kind::{AnalyzerMatch, FileType, PositionRange};
+
+/// Deduplicate `matches` so each unique `(match_kind, match_value, file_path,
+/// metadata)` tuple appears only once. Mirrors jxscout's
+/// `finding_per_unique_value` setting (REPORT_03 §"Match → Finding promotion").
+///
+/// The first occurrence wins — its position/severity is preserved. Order is
+/// otherwise stable.
+#[must_use]
+pub fn dedup_unique_values(matches: Vec<AnalyzerMatch>) -> Vec<AnalyzerMatch> {
+    let mut seen: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
+    let mut out = Vec::with_capacity(matches.len());
+    for m in matches {
+        if seen.insert(m.dedup_hash()) {
+            out.push(m);
+        }
+    }
+    out
+}
 
 /// Controls which analyzers are enabled in [`run_all`].
 ///
@@ -118,6 +138,7 @@ pub fn run_all(
     }
     if config.npm_packages {
         out.extend(npm_package_extractor::analyze(source, file_path, file_type));
+        out.extend(package_json_analyzer::analyze(source, file_path, file_type));
     }
     if config.comments {
         out.extend(comment_extractor::analyze(source, file_path, file_type));
