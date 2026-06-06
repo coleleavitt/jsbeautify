@@ -1042,93 +1042,116 @@ impl AstDeobfuscator {
             (Codegen::new().build(&program).code, bun_helper_map)
         };
 
-        // ── Cosmetic half (Phases 13–21): fresh arena, re-parse the structural
-        // output. Re-parsing our own valid codegen yields an equivalent AST and
-        // lets the structural arena's dead nodes be reclaimed.
+        // ── Cosmetic-A half (Phases 13–15): the statement-expansion passes
+        // (empty-stmt, sequence/return/if-body split, multi-var split) that
+        // allocate the most new AST. Runs in its own arena, freed at the Phase
+        // 15.6 checkpoint before Cosmetic-B re-parses. `bun_helper_map` stays in
+        // the fn scope and is consumed at Phase 20, so nothing needs to cross.
+        let intermediate2 = {
+            let allocator = Allocator::default();
+            let parse_result = Parser::new(&allocator, &intermediate, source_type).parse();
+            if !parse_result.errors.is_empty() {
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 12.6: checkpoint re-parse failed ({:?}); returning structural output",
+                    parse_result.errors.first()
+                );
+                return Ok(intermediate);
+            }
+            let mut program = parse_result.program;
+            mem_ck("cosmetic-A start (after re-parse)");
+
+            eprintln!("[DEOBFUSCATE] Phase 13: SemanticBuilder for empty_statement_cleanup");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 13: Running empty_statement_cleanup");
+            traverse_mut_with_ctx(&mut self.empty_statement_cleanup, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 13: Removed {} empty statements",
+                self.empty_statement_cleanup.removed_count()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 13.5: Post-Phase-13 dead-var sweep");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = DeadVarCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let dead_vars = collector.get_dead_vars();
+            if !dead_vars.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
+                traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 13.5: Eliminated {} dead variables",
+                    dead_vars.len()
+                );
+            }
+
+            mem_ck("enter Phase 14 (sequence split)");
+            eprintln!("[DEOBFUSCATE] Phase 14: SemanticBuilder for sequence_expression_split");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 14: Running sequence_expression_splitter");
+            traverse_mut_with_ctx(&mut self.sequence_expression_splitter, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 14: Split {} sequence expressions",
+                self.sequence_expression_splitter.split_count()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 14.5: Return-sequence splitting");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut return_splitter = ReturnSequenceSplitter::new();
+                traverse_mut_with_ctx(&mut return_splitter, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
+                    return_splitter.split_count()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 14.7: If-body comma expression splitting");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut if_splitter = IfBodyCommaSplitter::new();
+                traverse_mut_with_ctx(&mut if_splitter, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 14.7: Split {} if-body comma expressions",
+                    if_splitter.split_count()
+                );
+            }
+
+            mem_ck("enter Phase 15 (multi-var split)");
+            eprintln!("[DEOBFUSCATE] Phase 15: SemanticBuilder for multi_var_split");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 15: Running multi_var_splitter");
+            traverse_mut_with_ctx(&mut self.multi_var_splitter, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 15: Split {} multi-var declarations",
+                self.multi_var_splitter.split_count()
+            );
+
+            // ── Phase 15.6: second checkpoint — codegen Cosmetic-A; this arena is
+            // freed at the closing brace, reclaiming the split-expansion AST.
+            mem_ck("Phase 15.6: cosmetic-A checkpoint codegen");
+            eprintln!("[DEOBFUSCATE] Phase 15.6: cosmetic-A checkpoint (codegen + arena reset)");
+            Codegen::new().build(&program).code
+        };
+
+        // ── Cosmetic-B half (Phases 16–21): fresh arena, re-parse Cosmetic-A output.
         let allocator = Allocator::default();
-        let parse_result = Parser::new(&allocator, &intermediate, source_type).parse();
+        let parse_result = Parser::new(&allocator, &intermediate2, source_type).parse();
         if !parse_result.errors.is_empty() {
             eprintln!(
-                "[DEOBFUSCATE] Phase 12.6: checkpoint re-parse failed ({:?}); returning structural output",
+                "[DEOBFUSCATE] Phase 15.6: re-parse failed ({:?}); returning cosmetic-A output",
                 parse_result.errors.first()
             );
-            return Ok(intermediate);
+            return Ok(intermediate2);
         }
         let mut program = parse_result.program;
-        mem_ck("cosmetic half start (after re-parse)");
-
-        eprintln!("[DEOBFUSCATE] Phase 13: SemanticBuilder for empty_statement_cleanup");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 13: Running empty_statement_cleanup");
-        traverse_mut_with_ctx(&mut self.empty_statement_cleanup, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 13: Removed {} empty statements",
-            self.empty_statement_cleanup.removed_count()
-        );
-
-        eprintln!("[DEOBFUSCATE] Phase 13.5: Post-Phase-13 dead-var sweep");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut collector = DeadVarCollector::new();
-        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-            traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 13.5: Eliminated {} dead variables",
-                dead_vars.len()
-            );
-        }
-
-        mem_ck("enter Phase 14 (sequence split)");
-        eprintln!("[DEOBFUSCATE] Phase 14: SemanticBuilder for sequence_expression_split");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 14: Running sequence_expression_splitter");
-        traverse_mut_with_ctx(&mut self.sequence_expression_splitter, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 14: Split {} sequence expressions",
-            self.sequence_expression_splitter.split_count()
-        );
-
-        eprintln!("[DEOBFUSCATE] Phase 14.5: Return-sequence splitting");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut return_splitter = ReturnSequenceSplitter::new();
-            traverse_mut_with_ctx(&mut return_splitter, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
-                return_splitter.split_count()
-            );
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 14.7: If-body comma expression splitting");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut if_splitter = IfBodyCommaSplitter::new();
-            traverse_mut_with_ctx(&mut if_splitter, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 14.7: Split {} if-body comma expressions",
-                if_splitter.split_count()
-            );
-        }
-
-        mem_ck("enter Phase 15 (multi-var split)");
-        eprintln!("[DEOBFUSCATE] Phase 15: SemanticBuilder for multi_var_split");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 15: Running multi_var_splitter");
-        traverse_mut_with_ctx(&mut self.multi_var_splitter, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 15: Split {} multi-var declarations",
-            self.multi_var_splitter.split_count()
-        );
+        mem_ck("cosmetic-B start (after re-parse)");
 
         mem_ck("enter Phase 16 (ternary-to-if)");
         eprintln!("[DEOBFUSCATE] Phase 16: SemanticBuilder for ternary_to_if_else");
