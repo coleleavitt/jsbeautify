@@ -16,6 +16,7 @@ pub mod boolean_literals;
 pub mod bun_alphabet;
 pub mod bun_cjs_flatten;
 pub mod bun_export_renamer;
+pub mod bun_local_renamer;
 pub mod bun_module_annotator;
 pub mod bun_module_handles;
 pub mod bun_runtime;
@@ -973,6 +974,24 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");
         traverse_mut_with_ctx(&mut self.variable_renamer, &mut program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 12: DONE");
+
+        eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let plan = bun_local_renamer::plan_local_renames(&scoping);
+            if !plan.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut renamer = bun_local_renamer::LocalRenamer::new(plan);
+                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names",
+                    renamer.renamed()
+                );
+            } else {
+                eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
+            }
+        }
 
         eprintln!("[DEOBFUSCATE] Phase 13: SemanticBuilder for empty_statement_cleanup");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
