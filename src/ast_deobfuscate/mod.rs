@@ -297,736 +297,766 @@ impl AstDeobfuscator {
             },
         );
 
-        let allocator = Allocator::default();
         let source_type = SourceType::mjs();
 
-        let parse_result = Parser::new(&allocator, &code, source_type).parse();
+        // ── Structural half (Phases 0–12.5) runs in its own arena that is freed
+        // before the cosmetic half re-parses. The transform passes accumulate a
+        // large volume of dead intermediate AST in oxc's bump arena (which never
+        // frees mid-run); codegen-ing at the Phase 12.6 checkpoint, dropping this
+        // arena, then re-parsing the (valid) output into a fresh arena roughly
+        // halves peak RSS. `bun_helper_map` is the only state that must cross.
+        let (intermediate, bun_helper_map) = {
+            let allocator = Allocator::default();
 
-        if !parse_result.errors.is_empty() {
-            return Err(crate::BeautifyError::BeautificationFailed(format!(
-                "Parse failed: {:?}",
-                parse_result.errors.first()
-            )));
-        }
+            let parse_result = Parser::new(&allocator, &code, source_type).parse();
 
-        let mut program = parse_result.program;
-
-        eprintln!("[DEOBFUSCATE] Phase 0.4: Window-alias propagation");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut collector = WindowAliasCollector::new();
-            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-            let aliases = collector.aliases();
-            if !aliases.is_empty() {
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.4: Found {} window alias(es): {:?}",
-                    aliases.len(),
-                    aliases
-                );
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut propagator = WindowAliasPropagator::new(aliases);
-                traverse_mut_with_ctx(&mut propagator, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.4: Propagated {} window-alias accesses",
-                    propagator.rewrites()
-                );
+            if !parse_result.errors.is_empty() {
+                return Err(crate::BeautifyError::BeautificationFailed(format!(
+                    "Parse failed: {:?}",
+                    parse_result.errors.first()
+                )));
             }
-        }
 
-        eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP detection");
-        let mut akamai = AkamaiDeobfuscator::new();
-        let is_akamai = akamai.detect(&program);
+            let mut program = parse_result.program;
 
-        if is_akamai {
-            eprintln!("[DEOBFUSCATE] Phase 0.5a: Akamai stack-tracker removal");
-            akamai.tracker_remover.detect(&program);
-            if !akamai.tracker_remover.tracker_names().is_empty() {
+            eprintln!("[DEOBFUSCATE] Phase 0.4: Window-alias propagation");
+            {
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                traverse_mut_with_ctx(&mut akamai.tracker_remover, &mut program, &mut ctx);
+                let mut collector = WindowAliasCollector::new();
+                traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+                let aliases = collector.aliases();
+                if !aliases.is_empty() {
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.4: Found {} window alias(es): {:?}",
+                        aliases.len(),
+                        aliases
+                    );
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut propagator = WindowAliasPropagator::new(aliases);
+                    traverse_mut_with_ctx(&mut propagator, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.4: Propagated {} window-alias accesses",
+                        propagator.rewrites()
+                    );
+                }
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP detection");
+            let mut akamai = AkamaiDeobfuscator::new();
+            let is_akamai = akamai.detect(&program);
+
+            if is_akamai {
+                eprintln!("[DEOBFUSCATE] Phase 0.5a: Akamai stack-tracker removal");
+                akamai.tracker_remover.detect(&program);
+                if !akamai.tracker_remover.tracker_names().is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    traverse_mut_with_ctx(&mut akamai.tracker_remover, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.5a: Removed {} stack-tracker calls for trackers {:?}",
+                        akamai.tracker_remover.removed_call_count(),
+                        akamai.tracker_remover.tracker_names()
+                    );
+                } else {
+                    eprintln!("[DEOBFUSCATE] Phase 0.5a: No pure stack-tracker variable identified");
+                }
+
+                eprintln!("[DEOBFUSCATE] Phase 0.5b: Akamai undefined-pattern + boolean-arithmetic folding");
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                traverse_mut_with_ctx(&mut akamai.undef_normalizer, &mut program, &mut ctx);
                 eprintln!(
-                    "[DEOBFUSCATE] Phase 0.5a: Removed {} stack-tracker calls for trackers {:?}",
-                    akamai.tracker_remover.removed_call_count(),
+                    "[DEOBFUSCATE] Phase 0.5b: Replaced {} [][[]] patterns with undefined",
+                    akamai.undef_normalizer.replaced_count()
+                );
+                traverse_mut_with_ctx(&mut akamai.bool_folder, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5b: Folded {} boolean-arithmetic expressions",
+                    akamai.bool_folder.folded_count()
+                );
+
+                eprintln!("[DEOBFUSCATE] Phase 0.5c: Akamai equality-proxy unwrapping");
+                akamai.eq_unwrapper.collect(&program);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.5c: Found {} equality-proxy functions",
+                    akamai.eq_unwrapper.proxies().len()
+                );
+                if !akamai.eq_unwrapper.proxies().is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    traverse_mut_with_ctx(&mut akamai.eq_unwrapper, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.5c: Unwrapped {} equality-proxy call sites",
+                        akamai.eq_unwrapper.unwrapped_count()
+                    );
+                }
+
+                eprintln!("[AKAMAI] ─── summary ───");
+                eprintln!(
+                    "[AKAMAI]   trackers detected     : {:?}",
                     akamai.tracker_remover.tracker_names()
                 );
-            } else {
-                eprintln!("[DEOBFUSCATE] Phase 0.5a: No pure stack-tracker variable identified");
-            }
-
-            eprintln!("[DEOBFUSCATE] Phase 0.5b: Akamai undefined-pattern + boolean-arithmetic folding");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            traverse_mut_with_ctx(&mut akamai.undef_normalizer, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.5b: Replaced {} [][[]] patterns with undefined",
-                akamai.undef_normalizer.replaced_count()
-            );
-            traverse_mut_with_ctx(&mut akamai.bool_folder, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.5b: Folded {} boolean-arithmetic expressions",
-                akamai.bool_folder.folded_count()
-            );
-
-            eprintln!("[DEOBFUSCATE] Phase 0.5c: Akamai equality-proxy unwrapping");
-            akamai.eq_unwrapper.collect(&program);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.5c: Found {} equality-proxy functions",
-                akamai.eq_unwrapper.proxies().len()
-            );
-            if !akamai.eq_unwrapper.proxies().is_empty() {
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                traverse_mut_with_ctx(&mut akamai.eq_unwrapper, &mut program, &mut ctx);
                 eprintln!(
-                    "[DEOBFUSCATE] Phase 0.5c: Unwrapped {} equality-proxy call sites",
+                    "[AKAMAI]   tracker calls removed : {}",
+                    akamai.tracker_remover.removed_call_count()
+                );
+                eprintln!(
+                    "[AKAMAI]   [][[]] -> undefined    : {}",
+                    akamai.undef_normalizer.replaced_count()
+                );
+                eprintln!(
+                    "[AKAMAI]   bool-arith folded      : {}",
+                    akamai.bool_folder.folded_count()
+                );
+                eprintln!(
+                    "[AKAMAI]   eq-proxies identified  : {}",
+                    akamai.eq_unwrapper.proxies().len()
+                );
+                eprintln!(
+                    "[AKAMAI]   eq-proxy calls unwrapped: {}",
                     akamai.eq_unwrapper.unwrapped_count()
                 );
-            }
 
-            eprintln!("[AKAMAI] ─── summary ───");
-            eprintln!(
-                "[AKAMAI]   trackers detected     : {:?}",
-                akamai.tracker_remover.tracker_names()
-            );
-            eprintln!(
-                "[AKAMAI]   tracker calls removed : {}",
-                akamai.tracker_remover.removed_call_count()
-            );
-            eprintln!(
-                "[AKAMAI]   [][[]] -> undefined    : {}",
-                akamai.undef_normalizer.replaced_count()
-            );
-            eprintln!(
-                "[AKAMAI]   bool-arith folded      : {}",
-                akamai.bool_folder.folded_count()
-            );
-            eprintln!(
-                "[AKAMAI]   eq-proxies identified  : {}",
-                akamai.eq_unwrapper.proxies().len()
-            );
-            eprintln!(
-                "[AKAMAI]   eq-proxy calls unwrapped: {}",
-                akamai.eq_unwrapper.unwrapped_count()
-            );
-
-            eprintln!("[DEOBFUSCATE] Phase 0.5d: Akamai self-init-accessor flattener");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut accessor_flattener = SelfInitAccessorFlattener::new();
-            traverse_mut_with_ctx(&mut accessor_flattener, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.5d: Flattened {} self-init accessors",
-                accessor_flattener.rewritten()
-            );
-
-            eprintln!("[DEOBFUSCATE] Phase 0.5e: Akamai lookup-forwarder inliner");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut fwd_collector = LookupForwarderCollector::new();
-            traverse_mut_with_ctx(&mut fwd_collector, &mut program, &mut ctx);
-            let forwarders = fwd_collector.forwarders();
-            eprintln!("[DEOBFUSCATE] Phase 0.5e: Found {} lookup forwarders", forwarders.len());
-            if !forwarders.is_empty() {
+                eprintln!("[DEOBFUSCATE] Phase 0.5d: Akamai self-init-accessor flattener");
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut inliner = LookupForwarderInliner::new(forwarders);
-                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                let mut accessor_flattener = SelfInitAccessorFlattener::new();
+                traverse_mut_with_ctx(&mut accessor_flattener, &mut program, &mut ctx);
                 eprintln!(
-                    "[DEOBFUSCATE] Phase 0.5e: Inlined {} lookup-forwarder call sites",
-                    inliner.inlined()
+                    "[DEOBFUSCATE] Phase 0.5d: Flattened {} self-init accessors",
+                    accessor_flattener.rewritten()
                 );
-            }
 
-            eprintln!("[DEOBFUSCATE] Phase 0.5e2: Akamai 2-arg method-call forwarder inliner");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut mc_collector = MethodCallForwarderCollector::new();
-            traverse_mut_with_ctx(&mut mc_collector, &mut program, &mut ctx);
-            let mc_forwarders = mc_collector.into_forwarders();
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.5e2: Found {} method-call forwarders",
-                mc_forwarders.len()
-            );
-            if !mc_forwarders.is_empty() {
+                eprintln!("[DEOBFUSCATE] Phase 0.5e: Akamai lookup-forwarder inliner");
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut inliner = MethodCallForwarderInliner::new(mc_forwarders);
-                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                let mut fwd_collector = LookupForwarderCollector::new();
+                traverse_mut_with_ctx(&mut fwd_collector, &mut program, &mut ctx);
+                let forwarders = fwd_collector.forwarders();
+                eprintln!("[DEOBFUSCATE] Phase 0.5e: Found {} lookup forwarders", forwarders.len());
+                if !forwarders.is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut inliner = LookupForwarderInliner::new(forwarders);
+                    traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.5e: Inlined {} lookup-forwarder call sites",
+                        inliner.inlined()
+                    );
+                }
+
+                eprintln!("[DEOBFUSCATE] Phase 0.5e2: Akamai 2-arg method-call forwarder inliner");
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut mc_collector = MethodCallForwarderCollector::new();
+                traverse_mut_with_ctx(&mut mc_collector, &mut program, &mut ctx);
+                let mc_forwarders = mc_collector.into_forwarders();
                 eprintln!(
-                    "[DEOBFUSCATE] Phase 0.5e2: Inlined {} method-call-forwarder call sites",
-                    inliner.inlined()
+                    "[DEOBFUSCATE] Phase 0.5e2: Found {} method-call forwarders",
+                    mc_forwarders.len()
                 );
-            }
+                if !mc_forwarders.is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut inliner = MethodCallForwarderInliner::new(mc_forwarders);
+                    traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.5e2: Inlined {} method-call-forwarder call sites",
+                        inliner.inlined()
+                    );
+                }
 
-            eprintln!("[DEOBFUSCATE] Phase 0.5f: Akamai trampoline inliner");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut tramp_collector = TrampolineCollector::new();
-            traverse_mut_with_ctx(&mut tramp_collector, &mut program, &mut ctx);
-            let trampolines = tramp_collector.into_trampolines();
-            eprintln!("[DEOBFUSCATE] Phase 0.5f: Found {} trampolines", trampolines.len());
-            if !trampolines.is_empty() {
+                eprintln!("[DEOBFUSCATE] Phase 0.5f: Akamai trampoline inliner");
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut inliner = TrampolineInliner::new(trampolines);
-                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.5f: Inlined {} trampoline call sites",
-                    inliner.inlined()
-                );
+                let mut tramp_collector = TrampolineCollector::new();
+                traverse_mut_with_ctx(&mut tramp_collector, &mut program, &mut ctx);
+                let trampolines = tramp_collector.into_trampolines();
+                eprintln!("[DEOBFUSCATE] Phase 0.5f: Found {} trampolines", trampolines.len());
+                if !trampolines.is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut inliner = TrampolineInliner::new(trampolines);
+                    traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.5f: Inlined {} trampoline call sites",
+                        inliner.inlined()
+                    );
+                }
             }
-        }
 
-        mem_ck("enter Phase 0.9 (helpers)");
-        eprintln!("[DEOBFUSCATE] Phase 0.9: Bun runtime helper detection & rename");
-        let bun_helper_map = {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut collector = BunRuntimeCollector::new();
-            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-            let map = collector.into_map();
-            if !map.is_empty() {
-                eprintln!("[DEOBFUSCATE] Phase 0.9: Detected {} Bun runtime helpers", map.len());
+            mem_ck("enter Phase 0.9 (helpers)");
+            eprintln!("[DEOBFUSCATE] Phase 0.9: Bun runtime helper detection & rename");
+            let bun_helper_map = {
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut renamer = BunRuntimeRenamer::new(map.clone());
-                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                let mut collector = BunRuntimeCollector::new();
+                traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+                let map = collector.into_map();
+                if !map.is_empty() {
+                    eprintln!("[DEOBFUSCATE] Phase 0.9: Detected {} Bun runtime helpers", map.len());
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut renamer = BunRuntimeRenamer::new(map.clone());
+                    traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.9: Renamed {} declarations, {} references",
+                        renamer.renamed_decls(),
+                        renamer.renamed_refs()
+                    );
+                } else {
+                    eprintln!("[DEOBFUSCATE] Phase 0.9: No Bun helpers detected (not a Bun bundle)");
+                }
+                map
+            };
+
+            eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
+            let flattened_statements = flatten_top_level_cjs_wrapper(&mut program, &allocator);
+            if flattened_statements > 0 {
                 eprintln!(
-                    "[DEOBFUSCATE] Phase 0.9: Renamed {} declarations, {} references",
-                    renamer.renamed_decls(),
-                    renamer.renamed_refs()
+                    "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({} statements)",
+                    flattened_statements
                 );
             } else {
-                eprintln!("[DEOBFUSCATE] Phase 0.9: No Bun helpers detected (not a Bun bundle)");
+                eprintln!("[DEOBFUSCATE] Phase 0.91: No top-level Bun CJS wrapper flattened");
             }
-            map
+
+            eprintln!("[DEOBFUSCATE] Phase 0.95: Bun __export() name extraction & rename");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut collector = ExportNameCollector::new();
+                traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+                let export_map = collector.into_map();
+                if !export_map.is_empty() {
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
+                        export_map.len()
+                    );
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    // Make assigned names legal + unique-per-scope to avoid invalid JS
+                    // (reserved words like `instanceof`, duplicate `ZodType`/`Client`).
+                    let export_map = bun_export_renamer::make_names_unique(export_map, &scoping);
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut renamer = ExportNameRenamer::new(export_map);
+                    traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.95: Renamed {} declarations + {} references = {} total",
+                        renamer.renamed_decls(),
+                        renamer.renamed_refs(),
+                        renamer.total_renamed()
+                    );
+                } else {
+                    eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
+                }
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 0.97: Class name detection (this.name / displayName)");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut class_collector = ClassNameCollector::new();
+                traverse_mut_with_ctx(&mut class_collector, &mut program, &mut ctx);
+                let mut class_map = class_collector.into_map();
+
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut display_collector = DisplayNameCollector::new();
+                traverse_mut_with_ctx(&mut display_collector, &mut program, &mut ctx);
+                for (k, v) in display_collector.into_map() {
+                    class_map.entry(k).or_insert(v);
+                }
+
+                if !class_map.is_empty() {
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
+                        class_map.len()
+                    );
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut renamer = ClassNameRenamer::new(class_map);
+                    traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                    eprintln!("[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers", renamer.renamed());
+                }
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 0.98: Heuristic parameter renaming");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut param_renamer = ParamHeuristicRenamer::new();
+                traverse_mut_with_ctx(&mut param_renamer, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",
+                    param_renamer.renamed()
+                );
+            }
+
+            mem_ck("enter Phase 0.99 (module handles)");
+            eprintln!("[DEOBFUSCATE] Phase 0.99: Bun module-handle renaming");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut collector = BunModuleHandleCollector::new();
+                traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+                let module_handles = collector.into_map();
+                if !module_handles.is_empty() {
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.99: Found {} Bun module wrapper handles",
+                        module_handles.len()
+                    );
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut renamer = BunModuleHandleRenamer::new(module_handles);
+                    traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 0.99: Renamed {} declarations, {} references",
+                        renamer.renamed_decls(),
+                        renamer.renamed_refs()
+                    );
+                } else {
+                    eprintln!("[DEOBFUSCATE] Phase 0.99: No Bun module wrapper handles found");
+                }
+            }
+
+            mem_ck("enter Phase 1 (control-flow unflatten)");
+            eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+
+            eprintln!("[DEOBFUSCATE] Phase 1: Running control_flow_unflattener");
+            traverse_mut_with_ctx(&mut self.control_flow_unflattener, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 1: control_flow_unflattener DONE");
+
+            eprintln!("[DEOBFUSCATE] Phase 2: SemanticBuilder for string_array_rotation");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+
+            eprintln!("[DEOBFUSCATE] Phase 2: Running string_array_rotation");
+            traverse_mut_with_ctx(&mut self.string_array_rotation, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 2: string_array_rotation DONE");
+
+            let mut state = ctx.into_state();
+            self.string_array_rotation.finalize(&mut state);
+
+            eprintln!("[DEOBFUSCATE] Phase 2.5: Self-defending string array (javascript-obfuscator modern)");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
+            traverse_mut_with_ctx(&mut self.self_defending_string_array, &mut program, &mut ctx);
+            let mut state = ctx.into_state();
+            self.self_defending_string_array.finalize(&mut state);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 2.5: Found {} string arrays, {} decoders",
+                state.string_arrays.len(),
+                state.decoders.len()
+            );
+
+            mem_ck("enter Phase 3 (decoder/string-array)");
+            eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for decoder/string_array/dispatcher");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
+
+            eprintln!("[DEOBFUSCATE] Phase 3: Running decoder_inliner");
+            traverse_mut_with_ctx(&mut self.decoder_inliner, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 3: Running string_array_inliner");
+            traverse_mut_with_ctx(&mut self.string_array_inliner, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 3: Running dispatcher_inliner");
+            traverse_mut_with_ctx(&mut self.dispatcher_inliner, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 3: DONE");
+
+            eprintln!("[DEOBFUSCATE] Phase 4: SemanticBuilder for call_proxy");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut call_proxy_collector = CallProxyCollector::new();
+            eprintln!("[DEOBFUSCATE] Phase 4: Running call_proxy_collector");
+            traverse_mut_with_ctx(&mut call_proxy_collector, &mut program, &mut ctx);
+            let call_proxies = call_proxy_collector.get_single_use_proxies();
+            if !call_proxies.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = CallProxyInliner::new(call_proxies);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 5: SemanticBuilder for operator_proxy");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut op_proxy_collector = OperatorProxyCollector::new();
+            eprintln!("[DEOBFUSCATE] Phase 5: Running operator_proxy_collector");
+            traverse_mut_with_ctx(&mut op_proxy_collector, &mut program, &mut ctx);
+            let op_proxies = op_proxy_collector.get_proxies();
+            if !op_proxies.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = OperatorProxyInliner::new(op_proxies);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 5b: SemanticBuilder for unary_proxy");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut un_proxy_collector = UnaryProxyCollector::new();
+            eprintln!("[DEOBFUSCATE] Phase 5b: Running unary_proxy_collector");
+            traverse_mut_with_ctx(&mut un_proxy_collector, &mut program, &mut ctx);
+            let un_proxies = un_proxy_collector.get_proxies();
+            eprintln!("[DEOBFUSCATE] Phase 5b: Found {} unary proxies", un_proxies.len());
+            if !un_proxies.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = UnaryProxyInliner::new(un_proxies);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 5b: Inlined {} unary-proxy call sites",
+                    inliner.inlined_count()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 5c: apply/call simplifier");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut apply_call = ApplyCallSimplifier::new();
+            traverse_mut_with_ctx(&mut apply_call, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 5c: Simplified {} .apply/.call sites",
+                apply_call.rewrites()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 5d: concat canonicaliser + String.fromCharCode folder");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut concat = ConcatCanonicaliser::new();
+            traverse_mut_with_ctx(&mut concat, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 5d: Canonicalised {} .concat(...) calls",
+                concat.rewrites()
+            );
+            let mut fromcc = FromCharCodeFolder::new();
+            traverse_mut_with_ctx(&mut fromcc, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 5d: Folded {} String.fromCharCode(...) calls",
+                fromcc.folded()
+            );
+
+            mem_ck("enter Phase 5d.5 (dyn-concat fixed-point)");
+            eprintln!("[DEOBFUSCATE] Phase 5d.5: dyn-concat resolver (string-var inlining, fixed-point)");
+            let mut dyn_resolver = DynConcatResolver::new();
+            let mut iter = 0u32;
+            loop {
+                dyn_resolver.reset_changed();
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                traverse_mut_with_ctx(&mut dyn_resolver, &mut program, &mut ctx);
+                iter += 1;
+                if !dyn_resolver.changed() || iter >= 8 {
+                    break;
+                }
+            }
+            eprintln!(
+                "[DEOBFUSCATE] Phase 5d.5: {} rewrites over {} iteration(s)",
+                dyn_resolver.rewrites(),
+                iter
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 5e: call-this simplifier");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut call_this = CallThisSimplifier::new();
+            traverse_mut_with_ctx(&mut call_this, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 5e: Simplified {} .call(this, ...) sites",
+                call_this.rewrites()
+            );
+
+            mem_ck("enter Phase 6 (simplify cluster)");
+            eprintln!("[DEOBFUSCATE] Phase 6: SemanticBuilder for simplification passes");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 6: Running expression_simplifier");
+            traverse_mut_with_ctx(&mut self.expression_simplifier, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 6: Running constant_folder");
+            traverse_mut_with_ctx(&mut self.constant_folder, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 6: Running algebraic_simplifier");
+            traverse_mut_with_ctx(&mut self.algebraic_simplifier, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 6: Running strength_reducer");
+            traverse_mut_with_ctx(&mut self.strength_reducer, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 6: Running array_coerce_fold");
+            traverse_mut_with_ctx(&mut self.array_coerce_fold, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 6: Folded {} array-coercion expressions",
+                self.array_coerce_fold.folded()
+            );
+            eprintln!("[DEOBFUSCATE] Phase 6: Running Bun syntax normalizer");
+            let mut bun_syntax = BunSyntaxNormalizer::new();
+            traverse_mut_with_ctx(&mut bun_syntax, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 6: Normalized {} typeof-undefined and {} numeric idiom expressions",
+                bun_syntax.typeof_rewrites(),
+                bun_syntax.numeric_rewrites()
+            );
+            eprintln!("[DEOBFUSCATE] Phase 6: DONE");
+
+            eprintln!("[DEOBFUSCATE] Phase 6.5: comma-return simplifier");
+            traverse_mut_with_ctx(&mut self.comma_return_simplifier, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 6.5: Simplified {} redundant trailing identifiers",
+                self.comma_return_simplifier.simplified()
+            );
+
+            eprintln!("[DEOBFUSCATE] Phase 7: SemanticBuilder for dead_code_eliminator");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 7: Running dead_code_eliminator");
+            traverse_mut_with_ctx(&mut self.dead_code_eliminator, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 7: DONE");
+
+            eprintln!("[DEOBFUSCATE] Phase 8: SemanticBuilder for dead_var");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = DeadVarCollector::new();
+            eprintln!("[DEOBFUSCATE] Phase 8: Running dead_var_collector");
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let dead_vars = collector.get_dead_vars();
+            if !dead_vars.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut eliminator = DeadVarEliminator::new(dead_vars);
+                traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
+            }
+
+            mem_ck("enter Phase 8.5 (CFF unflatten)");
+            eprintln!("[DEOBFUSCATE] Phase 8.5: CFF unflattener");
+            let detector = DispatcherDetector::new();
+            let dispatchers = detector.detect(&program);
+            eprintln!("[DEOBFUSCATE] Phase 8.5: Found {} dispatchers", dispatchers.len());
+            if !dispatchers.is_empty() {
+                let case_bodies = collect_case_bodies(&program, &dispatchers, &allocator);
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);
+                traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 8.5: Inlined {} CFF call sites",
+                    unflattener.inlined()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 8.7: do-while-switch detector");
+            let dowhile_detector = DoWhileSwitchDetector::new();
+            let mut dowhile_dispatchers = dowhile_detector.detect(&program);
+            for (name, info) in &dowhile_dispatchers {
+                eprintln!(
+                    "[DOWHILE] found {}({}, {}) with {} cases, exit_sentinel={}",
+                    name,
+                    info.state_param,
+                    info.args_param,
+                    info.cases.len(),
+                    info.exit_sentinel
+                );
+            }
+
+            mem_ck("enter Phase 9 (function inline)");
+            eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut func_collector = FunctionCollector::new();
+            eprintln!("[DEOBFUSCATE] Phase 9: Running function_collector");
+            traverse_mut_with_ctx(&mut func_collector, &mut program, &mut ctx);
+            let single_use = func_collector.get_single_use_functions();
+            if !single_use.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut inliner = FunctionInliner::new(single_use);
+                traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 9.5: dispatch inliner (string-array-factory resolution)");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut di_collector = DispatchInlinerCollector::new();
+            traverse_mut_with_ctx(&mut di_collector, &mut program, &mut ctx);
+            let (di_factories, di_constants) = di_collector.into_maps();
+            eprintln!(
+                "[DEOBFUSCATE] Phase 9.5: Found {} string-array factories, {} index constants",
+                di_factories.len(),
+                di_constants.len()
+            );
+            let di_constants_i64: FxHashMap<String, i64> =
+                di_constants.iter().map(|(k, &v)| (k.clone(), v as i64)).collect();
+            if !di_factories.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut di_rewriter = DispatchInlinerRewriter::new(di_factories, di_constants);
+                traverse_mut_with_ctx(&mut di_rewriter, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 9.5: Inlined {} dispatch call sites",
+                    di_rewriter.inlined()
+                );
+            }
+
+            if !dowhile_dispatchers.is_empty() {
+                let own_constants = collect_constants(&program);
+                let mut merged = di_constants_i64;
+                for (k, v) in own_constants {
+                    merged.entry(k).or_insert(v);
+                }
+                let mut total_resolved = 0;
+                for info in dowhile_dispatchers.values_mut() {
+                    total_resolved += resolve_compound_transitions(info, &merged);
+                }
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 9.6: Resolved {} compound transitions to sequential",
+                    total_resolved
+                );
+
+                eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
+                let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, &program);
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
+                eprintln!("[DEOBFUSCATE] Phase 9.7: Pruned {} dead cases", cleaner.pruned_cases());
+            }
+
+            mem_ck("enter Phase 10.5 (dead-var sweep)");
+            eprintln!("[DEOBFUSCATE] Phase 10.5: Post-CFF dead-var sweep");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = DeadVarCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let dead_vars = collector.get_dead_vars();
+            if !dead_vars.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
+                traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 10.5: Eliminated {} dead variables",
+                    dead_vars.len()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 10: SemanticBuilder for array/dynamic/ternary/try_catch");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 10: Running array_unpacker");
+            traverse_mut_with_ctx(&mut self.array_unpacker, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 10: Running dynamic_property_converter");
+            traverse_mut_with_ctx(&mut self.dynamic_property_converter, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 10: Running ternary_simplifier");
+            traverse_mut_with_ctx(&mut self.ternary_simplifier, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 10: Running try_catch_remover");
+            traverse_mut_with_ctx(&mut self.try_catch_remover, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 10: DONE");
+
+            eprintln!("[DEOBFUSCATE] Phase 10.7: Post-Phase-10 dead-var sweep");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = DeadVarCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let dead_vars = collector.get_dead_vars();
+            if !dead_vars.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
+                traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 10.7: Eliminated {} dead variables",
+                    dead_vars.len()
+                );
+            }
+
+            // Rebuild scoping after try_catch_remover and dead_code_eliminator
+            // which create new BlockStatement nodes during traversal.
+            mem_ck("enter Phase 11 (unicode/bool/void/sparsing)");
+            eprintln!("[DEOBFUSCATE] Phase 11: SemanticBuilder for unicode/boolean/void/object_sparsing");
+            let semantic_result = SemanticBuilder::new().build(&program);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 11: SemanticBuilder completed, errors: {}",
+                semantic_result.errors.len()
+            );
+            for (i, err) in semantic_result.errors.iter().enumerate().take(5) {
+                eprintln!("[DEOBFUSCATE] Phase 11: Semantic error {i}: {err:?}");
+            }
+            let scoping = semantic_result.semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 11: Running unicode_normalizer");
+            traverse_mut_with_ctx(&mut self.unicode_normalizer, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 11: unicode_normalizer DONE");
+            eprintln!("[DEOBFUSCATE] Phase 11: Running boolean_literal_converter");
+            traverse_mut_with_ctx(&mut self.boolean_literal_converter, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 11: Running void_replacer");
+            traverse_mut_with_ctx(&mut self.void_replacer, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 11: Running object_sparsing_consolidator");
+            traverse_mut_with_ctx(&mut self.object_sparsing_consolidator, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 11: DONE");
+
+            eprintln!("[DEOBFUSCATE] Phase 11.5: Post-Phase-11 dead-var sweep");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = DeadVarCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let dead_vars = collector.get_dead_vars();
+            if !dead_vars.is_empty() {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
+                traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 11.5: Eliminated {} dead variables",
+                    dead_vars.len()
+                );
+            }
+
+            eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");
+            traverse_mut_with_ctx(&mut self.variable_renamer, &mut program, &mut ctx);
+            eprintln!("[DEOBFUSCATE] Phase 12: DONE");
+
+            mem_ck("enter Phase 12.5 (local slot rename)");
+            eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
+            {
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let plan = bun_local_renamer::plan_local_renames(&scoping);
+                if !plan.is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut renamer = bun_local_renamer::LocalRenamer::new(plan);
+                    traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                    eprintln!(
+                        "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names",
+                        renamer.renamed()
+                    );
+                } else {
+                    eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
+                }
+            }
+
+            // ── Phase 12.6: structural checkpoint. Codegen the program, then the
+            // structural arena is freed at the closing brace below — discarding all
+            // dead intermediate AST accumulated by Phases 0–12.5.
+            mem_ck("Phase 12.6: structural checkpoint codegen");
+            eprintln!("[DEOBFUSCATE] Phase 12.6: structural checkpoint (codegen + arena reset)");
+            (Codegen::new().build(&program).code, bun_helper_map)
         };
 
-        eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
-        let flattened_statements = flatten_top_level_cjs_wrapper(&mut program, &allocator);
-        if flattened_statements > 0 {
+        // ── Cosmetic half (Phases 13–21): fresh arena, re-parse the structural
+        // output. Re-parsing our own valid codegen yields an equivalent AST and
+        // lets the structural arena's dead nodes be reclaimed.
+        let allocator = Allocator::default();
+        let parse_result = Parser::new(&allocator, &intermediate, source_type).parse();
+        if !parse_result.errors.is_empty() {
             eprintln!(
-                "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({} statements)",
-                flattened_statements
+                "[DEOBFUSCATE] Phase 12.6: checkpoint re-parse failed ({:?}); returning structural output",
+                parse_result.errors.first()
             );
-        } else {
-            eprintln!("[DEOBFUSCATE] Phase 0.91: No top-level Bun CJS wrapper flattened");
+            return Ok(intermediate);
         }
+        let mut program = parse_result.program;
+        mem_ck("cosmetic half start (after re-parse)");
 
-        eprintln!("[DEOBFUSCATE] Phase 0.95: Bun __export() name extraction & rename");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut collector = ExportNameCollector::new();
-            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-            let export_map = collector.into_map();
-            if !export_map.is_empty() {
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
-                    export_map.len()
-                );
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                // Make assigned names legal + unique-per-scope to avoid invalid JS
-                // (reserved words like `instanceof`, duplicate `ZodType`/`Client`).
-                let export_map = bun_export_renamer::make_names_unique(export_map, &scoping);
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut renamer = ExportNameRenamer::new(export_map);
-                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.95: Renamed {} declarations + {} references = {} total",
-                    renamer.renamed_decls(),
-                    renamer.renamed_refs(),
-                    renamer.total_renamed()
-                );
-            } else {
-                eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
-            }
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 0.97: Class name detection (this.name / displayName)");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut class_collector = ClassNameCollector::new();
-            traverse_mut_with_ctx(&mut class_collector, &mut program, &mut ctx);
-            let mut class_map = class_collector.into_map();
-
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut display_collector = DisplayNameCollector::new();
-            traverse_mut_with_ctx(&mut display_collector, &mut program, &mut ctx);
-            for (k, v) in display_collector.into_map() {
-                class_map.entry(k).or_insert(v);
-            }
-
-            if !class_map.is_empty() {
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
-                    class_map.len()
-                );
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut renamer = ClassNameRenamer::new(class_map);
-                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
-                eprintln!("[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers", renamer.renamed());
-            }
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 0.98: Heuristic parameter renaming");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut param_renamer = ParamHeuristicRenamer::new();
-            traverse_mut_with_ctx(&mut param_renamer, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",
-                param_renamer.renamed()
-            );
-        }
-
-        mem_ck("enter Phase 0.99 (module handles)");
-        eprintln!("[DEOBFUSCATE] Phase 0.99: Bun module-handle renaming");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut collector = BunModuleHandleCollector::new();
-            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-            let module_handles = collector.into_map();
-            if !module_handles.is_empty() {
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.99: Found {} Bun module wrapper handles",
-                    module_handles.len()
-                );
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut renamer = BunModuleHandleRenamer::new(module_handles);
-                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 0.99: Renamed {} declarations, {} references",
-                    renamer.renamed_decls(),
-                    renamer.renamed_refs()
-                );
-            } else {
-                eprintln!("[DEOBFUSCATE] Phase 0.99: No Bun module wrapper handles found");
-            }
-        }
-
-        mem_ck("enter Phase 1 (control-flow unflatten)");
-        eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-
-        eprintln!("[DEOBFUSCATE] Phase 1: Running control_flow_unflattener");
-        traverse_mut_with_ctx(&mut self.control_flow_unflattener, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 1: control_flow_unflattener DONE");
-
-        eprintln!("[DEOBFUSCATE] Phase 2: SemanticBuilder for string_array_rotation");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-
-        eprintln!("[DEOBFUSCATE] Phase 2: Running string_array_rotation");
-        traverse_mut_with_ctx(&mut self.string_array_rotation, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 2: string_array_rotation DONE");
-
-        let mut state = ctx.into_state();
-        self.string_array_rotation.finalize(&mut state);
-
-        eprintln!("[DEOBFUSCATE] Phase 2.5: Self-defending string array (javascript-obfuscator modern)");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
-        traverse_mut_with_ctx(&mut self.self_defending_string_array, &mut program, &mut ctx);
-        let mut state = ctx.into_state();
-        self.self_defending_string_array.finalize(&mut state);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 2.5: Found {} string arrays, {} decoders",
-            state.string_arrays.len(),
-            state.decoders.len()
-        );
-
-        mem_ck("enter Phase 3 (decoder/string-array)");
-        eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for decoder/string_array/dispatcher");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
-
-        eprintln!("[DEOBFUSCATE] Phase 3: Running decoder_inliner");
-        traverse_mut_with_ctx(&mut self.decoder_inliner, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 3: Running string_array_inliner");
-        traverse_mut_with_ctx(&mut self.string_array_inliner, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 3: Running dispatcher_inliner");
-        traverse_mut_with_ctx(&mut self.dispatcher_inliner, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 3: DONE");
-
-        eprintln!("[DEOBFUSCATE] Phase 4: SemanticBuilder for call_proxy");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut call_proxy_collector = CallProxyCollector::new();
-        eprintln!("[DEOBFUSCATE] Phase 4: Running call_proxy_collector");
-        traverse_mut_with_ctx(&mut call_proxy_collector, &mut program, &mut ctx);
-        let call_proxies = call_proxy_collector.get_single_use_proxies();
-        if !call_proxies.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut inliner = CallProxyInliner::new(call_proxies);
-            traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 5: SemanticBuilder for operator_proxy");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut op_proxy_collector = OperatorProxyCollector::new();
-        eprintln!("[DEOBFUSCATE] Phase 5: Running operator_proxy_collector");
-        traverse_mut_with_ctx(&mut op_proxy_collector, &mut program, &mut ctx);
-        let op_proxies = op_proxy_collector.get_proxies();
-        if !op_proxies.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut inliner = OperatorProxyInliner::new(op_proxies);
-            traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 5b: SemanticBuilder for unary_proxy");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut un_proxy_collector = UnaryProxyCollector::new();
-        eprintln!("[DEOBFUSCATE] Phase 5b: Running unary_proxy_collector");
-        traverse_mut_with_ctx(&mut un_proxy_collector, &mut program, &mut ctx);
-        let un_proxies = un_proxy_collector.get_proxies();
-        eprintln!("[DEOBFUSCATE] Phase 5b: Found {} unary proxies", un_proxies.len());
-        if !un_proxies.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut inliner = UnaryProxyInliner::new(un_proxies);
-            traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 5b: Inlined {} unary-proxy call sites",
-                inliner.inlined_count()
-            );
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 5c: apply/call simplifier");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut apply_call = ApplyCallSimplifier::new();
-        traverse_mut_with_ctx(&mut apply_call, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 5c: Simplified {} .apply/.call sites",
-            apply_call.rewrites()
-        );
-
-        eprintln!("[DEOBFUSCATE] Phase 5d: concat canonicaliser + String.fromCharCode folder");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut concat = ConcatCanonicaliser::new();
-        traverse_mut_with_ctx(&mut concat, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 5d: Canonicalised {} .concat(...) calls",
-            concat.rewrites()
-        );
-        let mut fromcc = FromCharCodeFolder::new();
-        traverse_mut_with_ctx(&mut fromcc, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 5d: Folded {} String.fromCharCode(...) calls",
-            fromcc.folded()
-        );
-
-        mem_ck("enter Phase 5d.5 (dyn-concat fixed-point)");
-        eprintln!("[DEOBFUSCATE] Phase 5d.5: dyn-concat resolver (string-var inlining, fixed-point)");
-        let mut dyn_resolver = DynConcatResolver::new();
-        let mut iter = 0u32;
-        loop {
-            dyn_resolver.reset_changed();
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            traverse_mut_with_ctx(&mut dyn_resolver, &mut program, &mut ctx);
-            iter += 1;
-            if !dyn_resolver.changed() || iter >= 8 {
-                break;
-            }
-        }
-        eprintln!(
-            "[DEOBFUSCATE] Phase 5d.5: {} rewrites over {} iteration(s)",
-            dyn_resolver.rewrites(),
-            iter
-        );
-
-        eprintln!("[DEOBFUSCATE] Phase 5e: call-this simplifier");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut call_this = CallThisSimplifier::new();
-        traverse_mut_with_ctx(&mut call_this, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 5e: Simplified {} .call(this, ...) sites",
-            call_this.rewrites()
-        );
-
-        mem_ck("enter Phase 6 (simplify cluster)");
-        eprintln!("[DEOBFUSCATE] Phase 6: SemanticBuilder for simplification passes");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 6: Running expression_simplifier");
-        traverse_mut_with_ctx(&mut self.expression_simplifier, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 6: Running constant_folder");
-        traverse_mut_with_ctx(&mut self.constant_folder, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 6: Running algebraic_simplifier");
-        traverse_mut_with_ctx(&mut self.algebraic_simplifier, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 6: Running strength_reducer");
-        traverse_mut_with_ctx(&mut self.strength_reducer, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 6: Running array_coerce_fold");
-        traverse_mut_with_ctx(&mut self.array_coerce_fold, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 6: Folded {} array-coercion expressions",
-            self.array_coerce_fold.folded()
-        );
-        eprintln!("[DEOBFUSCATE] Phase 6: Running Bun syntax normalizer");
-        let mut bun_syntax = BunSyntaxNormalizer::new();
-        traverse_mut_with_ctx(&mut bun_syntax, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 6: Normalized {} typeof-undefined and {} numeric idiom expressions",
-            bun_syntax.typeof_rewrites(),
-            bun_syntax.numeric_rewrites()
-        );
-        eprintln!("[DEOBFUSCATE] Phase 6: DONE");
-
-        eprintln!("[DEOBFUSCATE] Phase 6.5: comma-return simplifier");
-        traverse_mut_with_ctx(&mut self.comma_return_simplifier, &mut program, &mut ctx);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 6.5: Simplified {} redundant trailing identifiers",
-            self.comma_return_simplifier.simplified()
-        );
-
-        eprintln!("[DEOBFUSCATE] Phase 7: SemanticBuilder for dead_code_eliminator");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 7: Running dead_code_eliminator");
-        traverse_mut_with_ctx(&mut self.dead_code_eliminator, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 7: DONE");
-
-        eprintln!("[DEOBFUSCATE] Phase 8: SemanticBuilder for dead_var");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut collector = DeadVarCollector::new();
-        eprintln!("[DEOBFUSCATE] Phase 8: Running dead_var_collector");
-        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars);
-            traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-        }
-
-        mem_ck("enter Phase 8.5 (CFF unflatten)");
-        eprintln!("[DEOBFUSCATE] Phase 8.5: CFF unflattener");
-        let detector = DispatcherDetector::new();
-        let dispatchers = detector.detect(&program);
-        eprintln!("[DEOBFUSCATE] Phase 8.5: Found {} dispatchers", dispatchers.len());
-        if !dispatchers.is_empty() {
-            let case_bodies = collect_case_bodies(&program, &dispatchers, &allocator);
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);
-            traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 8.5: Inlined {} CFF call sites",
-                unflattener.inlined()
-            );
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 8.7: do-while-switch detector");
-        let dowhile_detector = DoWhileSwitchDetector::new();
-        let mut dowhile_dispatchers = dowhile_detector.detect(&program);
-        for (name, info) in &dowhile_dispatchers {
-            eprintln!(
-                "[DOWHILE] found {}({}, {}) with {} cases, exit_sentinel={}",
-                name,
-                info.state_param,
-                info.args_param,
-                info.cases.len(),
-                info.exit_sentinel
-            );
-        }
-
-        mem_ck("enter Phase 9 (function inline)");
-        eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut func_collector = FunctionCollector::new();
-        eprintln!("[DEOBFUSCATE] Phase 9: Running function_collector");
-        traverse_mut_with_ctx(&mut func_collector, &mut program, &mut ctx);
-        let single_use = func_collector.get_single_use_functions();
-        if !single_use.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut inliner = FunctionInliner::new(single_use);
-            traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 9.5: dispatch inliner (string-array-factory resolution)");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut di_collector = DispatchInlinerCollector::new();
-        traverse_mut_with_ctx(&mut di_collector, &mut program, &mut ctx);
-        let (di_factories, di_constants) = di_collector.into_maps();
-        eprintln!(
-            "[DEOBFUSCATE] Phase 9.5: Found {} string-array factories, {} index constants",
-            di_factories.len(),
-            di_constants.len()
-        );
-        let di_constants_i64: FxHashMap<String, i64> =
-            di_constants.iter().map(|(k, &v)| (k.clone(), v as i64)).collect();
-        if !di_factories.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut di_rewriter = DispatchInlinerRewriter::new(di_factories, di_constants);
-            traverse_mut_with_ctx(&mut di_rewriter, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 9.5: Inlined {} dispatch call sites",
-                di_rewriter.inlined()
-            );
-        }
-
-        if !dowhile_dispatchers.is_empty() {
-            let own_constants = collect_constants(&program);
-            let mut merged = di_constants_i64;
-            for (k, v) in own_constants {
-                merged.entry(k).or_insert(v);
-            }
-            let mut total_resolved = 0;
-            for info in dowhile_dispatchers.values_mut() {
-                total_resolved += resolve_compound_transitions(info, &merged);
-            }
-            eprintln!(
-                "[DEOBFUSCATE] Phase 9.6: Resolved {} compound transitions to sequential",
-                total_resolved
-            );
-
-            eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
-            let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, &program);
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
-            eprintln!("[DEOBFUSCATE] Phase 9.7: Pruned {} dead cases", cleaner.pruned_cases());
-        }
-
-        mem_ck("enter Phase 10.5 (dead-var sweep)");
-        eprintln!("[DEOBFUSCATE] Phase 10.5: Post-CFF dead-var sweep");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut collector = DeadVarCollector::new();
-        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-            traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 10.5: Eliminated {} dead variables",
-                dead_vars.len()
-            );
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 10: SemanticBuilder for array/dynamic/ternary/try_catch");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 10: Running array_unpacker");
-        traverse_mut_with_ctx(&mut self.array_unpacker, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 10: Running dynamic_property_converter");
-        traverse_mut_with_ctx(&mut self.dynamic_property_converter, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 10: Running ternary_simplifier");
-        traverse_mut_with_ctx(&mut self.ternary_simplifier, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 10: Running try_catch_remover");
-        traverse_mut_with_ctx(&mut self.try_catch_remover, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 10: DONE");
-
-        eprintln!("[DEOBFUSCATE] Phase 10.7: Post-Phase-10 dead-var sweep");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut collector = DeadVarCollector::new();
-        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-            traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 10.7: Eliminated {} dead variables",
-                dead_vars.len()
-            );
-        }
-
-        // Rebuild scoping after try_catch_remover and dead_code_eliminator
-        // which create new BlockStatement nodes during traversal.
-        mem_ck("enter Phase 11 (unicode/bool/void/sparsing)");
-        eprintln!("[DEOBFUSCATE] Phase 11: SemanticBuilder for unicode/boolean/void/object_sparsing");
-        let semantic_result = SemanticBuilder::new().build(&program);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 11: SemanticBuilder completed, errors: {}",
-            semantic_result.errors.len()
-        );
-        for (i, err) in semantic_result.errors.iter().enumerate().take(5) {
-            eprintln!("[DEOBFUSCATE] Phase 11: Semantic error {i}: {err:?}");
-        }
-        let scoping = semantic_result.semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 11: Running unicode_normalizer");
-        traverse_mut_with_ctx(&mut self.unicode_normalizer, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 11: unicode_normalizer DONE");
-        eprintln!("[DEOBFUSCATE] Phase 11: Running boolean_literal_converter");
-        traverse_mut_with_ctx(&mut self.boolean_literal_converter, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 11: Running void_replacer");
-        traverse_mut_with_ctx(&mut self.void_replacer, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 11: Running object_sparsing_consolidator");
-        traverse_mut_with_ctx(&mut self.object_sparsing_consolidator, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 11: DONE");
-
-        eprintln!("[DEOBFUSCATE] Phase 11.5: Post-Phase-11 dead-var sweep");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut collector = DeadVarCollector::new();
-        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-            traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 11.5: Eliminated {} dead variables",
-                dead_vars.len()
-            );
-        }
-
-        eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");
-        traverse_mut_with_ctx(&mut self.variable_renamer, &mut program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 12: DONE");
-
-        mem_ck("enter Phase 12.5 (local slot rename)");
-        eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
-        {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let plan = bun_local_renamer::plan_local_renames(&scoping);
-            if !plan.is_empty() {
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut renamer = bun_local_renamer::LocalRenamer::new(plan);
-                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names",
-                    renamer.renamed()
-                );
-            } else {
-                eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
-            }
-        }
-
-        mem_ck("enter Phase 13 (after my 12.5 local-rename)");
         eprintln!("[DEOBFUSCATE] Phase 13: SemanticBuilder for empty_statement_cleanup");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
