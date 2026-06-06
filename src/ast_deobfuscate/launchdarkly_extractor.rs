@@ -47,9 +47,11 @@ pub struct FeatureFlagResult {
 #[must_use]
 pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
     lazy_static::lazy_static! {
-        // variation("FlagName", defaultValue)
+        // Flag evaluation calls: variation/variationDetail and the typed
+        // helpers (boolVariation/stringVariation/numberVariation/jsonVariation).
+        // Group 1 = flag key, group 2 = default value (optional).
         static ref VARIATION_RE: Regex = Regex::new(
-            r#"variation\(\s*"([^"]+)"(?:\s*,\s*([^)]+))?\)"#
+            r#"(?:variation|variationDetail|boolVariation|stringVariation|numberVariation|jsonVariation)\(\s*"([^"]+)"(?:\s*,\s*([^)]+?))?\)"#
         ).unwrap();
 
         // SDK key patterns (LaunchDarkly client IDs are typically 24-char hex)
@@ -57,9 +59,10 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
             r#"["']([0-9a-f]{24})["']"#
         ).unwrap();
 
-        // Flag key used in other contexts
-        static ref FLAG_KEY_RE: Regex = Regex::new(
-            r#"["'](RelTgl_[A-Za-z0-9_-]+)["']"#
+        // Client-side environment id embedded in LD stream/poll/event URLs:
+        // /sdk/evalx/<envId>, /sdk/goals/<envId>, /eval/<envId>, /events/bulk/<envId>.
+        static ref ENV_RE: Regex = Regex::new(
+            r#"/(?:sdk/(?:evalx|goals|eval)|eval|events/bulk)/([a-f0-9]{24})"#
         ).unwrap();
 
         // LaunchDarkly identify call
@@ -105,30 +108,17 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
         }
     }
 
-    // Also catch flags referenced outside variation() calls
-    for caps in FLAG_KEY_RE.captures_iter(source) {
-        let key = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !flags.iter().any(|f| f.key == key) {
-            let ticket = TICKET_RE
-                .captures(&key)
-                .and_then(|c| c.get(1))
-                .map(|m| format!("EMOST-{}", m.as_str()));
-            let deploy_date = DATE_RE
-                .captures(&key)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_string());
-
-            flags.push(FeatureFlag {
-                key,
-                default_value: None,
-                ticket,
-                deploy_date,
-            });
-        }
-    }
+    // Definitive LD fingerprint: the unrenamed `X-LaunchDarkly-User-Agent`
+    // header, plus the SDK identifiers / stream+event hosts.
+    let is_launchdarkly = source.contains("X-LaunchDarkly")
+        || source.contains("LaunchDarkly")
+        || source.contains("ldclient")
+        || source.contains("launchdarkly")
+        || source.contains("clientstream.launchdarkly")
+        || ENV_RE.is_match(source);
 
     // Look for SDK key (24-char hex near LaunchDarkly references)
-    let sdk_key = if source.contains("LaunchDarkly") || source.contains("ldclient") {
+    let sdk_key = if is_launchdarkly {
         SDK_KEY_RE
             .captures(source)
             .and_then(|c| c.get(1))
@@ -137,10 +127,13 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
         None
     };
 
-    let config = LdConfig {
-        sdk_key,
-        environment: None,
-    };
+    // Client-side environment id from LD URLs (the most reliable concrete id).
+    let environment = ENV_RE
+        .captures(source)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+
+    let config = LdConfig { sdk_key, environment };
 
     flags.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -206,14 +199,18 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_flag_keys_outside_variation() {
+    fn test_generic_typed_variations_and_environment() {
+        // Generalized (de-Schwab): typed variation helpers + client-side env id
+        // recovered from the LD streaming/eval URL.
         let source = r#"
-            const flag = "RelTgl_EMOST-306801_A2_20230627";
-            if (this.featureService.isEnabled(flag)) { ... }
+            ldclient.boolVariation("new-checkout-flow", false);
+            ldclient.stringVariation("pricing-tier", "control");
+            fetch("https://clientstream.launchdarkly.com/eval/aabbccddeeff001122334455");
         "#;
 
         let result = extract_feature_flags(source);
-        assert_eq!(result.flags.len(), 1);
-        assert_eq!(result.flags[0].ticket.as_deref(), Some("EMOST-306801"));
+        assert!(result.flags.iter().any(|f| f.key == "new-checkout-flow"));
+        assert!(result.flags.iter().any(|f| f.key == "pricing-tier"));
+        assert_eq!(result.config.environment.as_deref(), Some("aabbccddeeff001122334455"));
     }
 }

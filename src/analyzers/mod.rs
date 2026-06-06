@@ -45,6 +45,7 @@ pub mod fw_solid;
 pub mod fw_svelte;
 pub mod fw_vite;
 pub mod fw_vue;
+pub mod fw_webpack;
 pub mod fw_zustand;
 
 pub use match_kind::{AnalyzerMatch, FileType, PositionRange};

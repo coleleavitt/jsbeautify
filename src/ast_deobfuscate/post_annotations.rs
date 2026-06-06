@@ -152,6 +152,29 @@ pub fn expand_arrow_sequences(code: &str) -> (String, usize) {
         let body = caps.get(1).map_or("", |m| m.as_str());
         let trailing = caps.get(2).map_or("", |m| m.as_str());
 
+        // A parenthesised group immediately followed by `=>` is a CURRIED ARROW's
+        // parameter list (`(H) => ($, q, K) => {...}`), NOT a sequence-expression
+        // body. Rewriting it produces `(H) => { ...; } => {...}` (invalid JS), so
+        // bail. The regex crate has no lookahead, so peek past the match instead.
+        let after = code[caps.get(0).map_or(code.len(), |m| m.end())..].trim_start();
+        if after.starts_with("=>") {
+            return caps[0].to_string();
+        }
+
+        // The greedy `(.+)` can over-capture across a `)(` (e.g. the indirect
+        // call `=> (0, obj.method)(args)`), yielding a body with unbalanced
+        // brackets. Expanding that produces invalid JS, so bail unless the
+        // captured body is bracket-balanced (never goes negative, ends at 0).
+        if !is_bracket_balanced(body) {
+            return caps[0].to_string();
+        }
+        // Also require the group to actually be the whole arrow body: the text
+        // after it must be a body terminator, not a continuation like `(`/`.`/`[`
+        // (call / member access — i.e. the group was a callee, not a sequence).
+        if matches!(after.as_bytes().first(), Some(b'(' | b'.' | b'[' | b'`')) {
+            return caps[0].to_string();
+        }
+
         // Split on top-level commas (respecting paren nesting)
         let parts = split_top_level_commas(body);
         if parts.len() < 3 {
@@ -179,6 +202,28 @@ pub fn expand_arrow_sequences(code: &str) -> (String, usize) {
     });
 
     (result.into_owned(), count)
+}
+
+/// True if `s` is bracket-balanced: depth over `()[]{}` never goes negative and
+/// ends at zero. Used to reject greedy regex over-captures across `)(` (e.g. the
+/// `(0, obj.fn)(args)` indirect-call idiom). Bracket chars inside string
+/// literals can skew this, but the failure mode is a conservatively-skipped
+/// expansion, never invalid output.
+fn is_bracket_balanced(s: &str) -> bool {
+    let mut depth: i32 = 0;
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 /// Split a string on top-level commas (respecting parenthesis nesting).

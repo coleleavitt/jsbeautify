@@ -30,6 +30,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     out.extend(super::fw_preact::analyze(source, file_path, file_type));
     out.extend(super::fw_solid::analyze(source, file_path, file_type));
     out.extend(super::fw_next_rsc::analyze(source, file_path, file_type));
+    out.extend(super::fw_webpack::analyze(source, file_path, file_type));
 
     // Adapters over the (now-compiled) ast_deobfuscate framework extractors.
     out.extend(adapters::ngrx(source, file_path, file_type));
