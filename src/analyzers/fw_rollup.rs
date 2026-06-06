@@ -139,21 +139,28 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // --- ESM chunk facade references (kind: rollup_chunk_facade) ---
-    for caps in CHUNK_FACADE_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
-        let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        out.push(
-            AnalyzerMatch::new(
-                "rollup_chunk_facade",
-                name,
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info)
-            .with_metadata(serde_json::json!({ "detected_from": "reference" })),
-        );
+    // The bare `name-<8hex>.js` shape also matches webpack/Vite hashed chunk
+    // filenames, so only treat in-source references as Rollup facades when a
+    // real Rollup signal (interop helper / UMD / System.register) is present —
+    // otherwise this is a pure false positive on non-Rollup bundles.
+    let has_rollup_signal = !out.is_empty();
+    if has_rollup_signal {
+        for caps in CHUNK_FACADE_RE.captures_iter(source) {
+            let whole = caps.get(0).unwrap();
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            out.push(
+                AnalyzerMatch::new(
+                    "rollup_chunk_facade",
+                    name,
+                    PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info)
+                .with_metadata(serde_json::json!({ "detected_from": "reference" })),
+            );
+        }
     }
 
     // The file path itself may be a Rollup chunk facade.

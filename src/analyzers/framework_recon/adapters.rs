@@ -131,7 +131,14 @@ pub fn angular(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 /// RxJS: operator usage inventory (the reactive plumbing under Angular HttpClient
 /// / async-pipe / NgRx effects).
 pub fn rxjs(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
-    if !(source.contains(".pipe(") || source.contains("pipe(")) {
+    // `.pipe(` alone is a false-positive magnet — Node streams pipe, and the
+    // operator names (map/filter/tap/…) are Array/lodash methods. Require a
+    // framework-exclusive RxJS signal before reporting any operators.
+    let has_rxjs = source.contains("rxjs")
+        || source.contains("BehaviorSubject")
+        || source.contains("ReplaySubject")
+        || source.contains("rxjs/operators");
+    if !has_rxjs || !(source.contains(".pipe(") || source.contains("pipe(")) {
         return Vec::new();
     }
     let fp = || file_path.map(str::to_string);

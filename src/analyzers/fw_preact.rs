@@ -48,6 +48,11 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         // are Preact-compat specific.
         static ref COMPAT_SHIM_RE: Regex =
             Regex::new(r#"["'](ForwardRef|Memo)\("#).unwrap();
+        // Preact's minified VNode object literal carries the `__k`…`__v` mangled
+        // field cluster (create-element.js); React uses none of these names, so
+        // this is a strong, Preact-exclusive presence signal.
+        static ref VNODE_CLUSTER_RE: Regex =
+            Regex::new(r#"__k\s*:[^}]{0,200}__v\s*:"#).unwrap();
     }
 
     for caps in OPTIONS_HOOK_RE.captures_iter(source) {
@@ -82,37 +87,45 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         );
     }
 
-    for caps in VNODE_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
-        let val = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        out.push(
-            AnalyzerMatch::new(
-                "preact_vnode",
-                val,
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info),
-        );
-    }
+    // `constructor: void 0` and the `ForwardRef(`/`Memo(` displayName forms are
+    // NOT Preact-exclusive (React trips both), so only emit them when a strong
+    // Preact signal (option-hook installs / hook container / the "preact"
+    // literal) is already present — otherwise they are pure false positives on
+    // React bundles.
+    let strong_preact = !out.is_empty() || source.contains("preact") || VNODE_CLUSTER_RE.is_match(source);
+    if strong_preact {
+        for caps in VNODE_RE.captures_iter(source) {
+            let whole = caps.get(0).unwrap();
+            let val = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            out.push(
+                AnalyzerMatch::new(
+                    "preact_vnode",
+                    val,
+                    PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info),
+            );
+        }
 
-    for caps in COMPAT_SHIM_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
-        let shim = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        out.push(
-            AnalyzerMatch::new(
-                "preact_compat",
-                shim.clone(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info)
-            .with_metadata(serde_json::json!({ "shim": shim })),
-        );
+        for caps in COMPAT_SHIM_RE.captures_iter(source) {
+            let whole = caps.get(0).unwrap();
+            let shim = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            out.push(
+                AnalyzerMatch::new(
+                    "preact_compat",
+                    shim.clone(),
+                    PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info)
+                .with_metadata(serde_json::json!({ "shim": shim })),
+            );
+        }
     }
 
     out
