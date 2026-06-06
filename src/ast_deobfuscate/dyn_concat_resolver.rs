@@ -24,9 +24,8 @@
 
 use oxc_allocator::CloneIn;
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentOperator, AssignmentTarget, BinaryExpression, BinaryOperator, Expression,
-    MemberExpression, SimpleAssignmentTarget, StringLiteral, TemplateElement, TemplateElementValue, TemplateLiteral,
-    VariableDeclarator,
+    AssignmentExpression, AssignmentOperator, AssignmentTarget, BinaryOperator, Expression, SimpleAssignmentTarget,
+    StringLiteral, TemplateElement, TemplateElementValue, TemplateLiteral, VariableDeclarator,
 };
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
@@ -121,6 +120,37 @@ fn make_string_literal<'a>(value: &str, ctx: &Ctx<'a>) -> Expression<'a> {
         raw: None,
         lone_surrogates: false,
     }))
+}
+
+fn escape_template_raw(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '`' => escaped.push_str("\\`"),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.replace("${", "\\${")
+}
+
+fn make_template_element<'a>(value: &str, tail: bool, ctx: &Ctx<'a>) -> TemplateElement<'a> {
+    let cooked = ctx.ast.str(value);
+    let raw_text = escape_template_raw(value);
+    let raw = ctx.ast.str(&raw_text);
+    TemplateElement {
+        node_id: Cell::new(NodeId::DUMMY),
+        span: SPAN,
+        tail,
+        value: TemplateElementValue {
+            cooked: Some(cooked),
+            raw,
+        },
+        lone_surrogates: false,
+    }
 }
 
 fn try_resolve_to_string(expr: &Expression<'_>, resolver: &DynConcatResolver, ctx: &Ctx<'_>) -> Option<String> {
@@ -249,35 +279,13 @@ fn substitute_in_template<'a>(tmpl: &mut TemplateLiteral<'a>, resolver: &DynConc
                 count += 1;
                 continue;
             }
-            let cooked = ctx.ast.str(&pending_text);
-            let raw = ctx.ast.str(&pending_text);
-            new_quasis.push(TemplateElement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                tail: false,
-                value: TemplateElementValue {
-                    cooked: Some(cooked),
-                    raw,
-                },
-                lone_surrogates: false,
-            });
+            new_quasis.push(make_template_element(&pending_text, false, ctx));
             new_exprs.push(interp.clone_in_with_semantic_ids(ctx.ast.allocator));
             pending_text.clear();
         }
     }
 
-    let cooked = ctx.ast.str(&pending_text);
-    let raw = ctx.ast.str(&pending_text);
-    new_quasis.push(TemplateElement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        tail: true,
-        value: TemplateElementValue {
-            cooked: Some(cooked),
-            raw,
-        },
-        lone_surrogates: false,
-    });
+    new_quasis.push(make_template_element(&pending_text, true, ctx));
 
     if count > 0 {
         tmpl.quasis = ctx.ast.vec_from_iter(new_quasis);
@@ -458,6 +466,23 @@ mod tests {
         assert!(out.contains("/api/v1/Reporting/"), "got: {out}");
         assert!(!out.contains("${BASE}"), "BASE must be inlined: {out}");
         assert!(out.contains("${id}"), "unknown id remains: {out}");
+    }
+
+    #[test]
+    fn escapes_template_raw_when_inlining() {
+        let out = run("const PAT = \"['\\\"`] ${x} \\\\ \"; var u = `${PAT}${id}`;");
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, &out, SourceType::mjs()).parse();
+        assert!(
+            parsed.errors.is_empty(),
+            "output must parse: {out:?} / {:?}",
+            parsed.errors
+        );
+        assert!(out.contains("\\`"), "backtick must be escaped in template raw: {out}");
+        assert!(
+            out.contains("\\${x}"),
+            "template opener must be escaped in template raw: {out}"
+        );
     }
 
     #[test]

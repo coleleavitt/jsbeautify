@@ -1,0 +1,16 @@
+{
+  "next_id": 1,
+  "tasks": {
+    "t1": {
+      "id": "t1",
+      "subject": "Strip Claude co-author trailers from 2 commits",
+      "description": "Rewrite commits 5a31128 and 7990d46 to remove the \"🤖 Generated with [Claude Code]\" line and \"Co-Authored-By: Claude <noreply@anthropic.com>\" trailer, then force-push to origin/master.",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1779384691182,
+      "risk": "medium",
+      "kind": "task"
+    }
+  }
+}

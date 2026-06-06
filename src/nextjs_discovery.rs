@@ -11,8 +11,9 @@
 //! use js_beautify_rs::nextjs_discovery;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let chunks = nextjs_discovery::discover("https://example.com").await?;
-//! for url in &chunks {
+//! let html = r#"<script id="__NEXT_DATA__" type="application/json">{"buildId":"abc123"}</script>"#;
+//! let build = nextjs_discovery::discover_from_html(html, "https://example.com");
+//! for url in &build.chunk_urls {
 //!     println!("{url}");
 //! }
 //! # Ok(())

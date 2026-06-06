@@ -14,9 +14,12 @@ pub mod array_coerce_fold;
 pub mod array_unpack;
 pub mod boolean_literals;
 pub mod bun_alphabet;
+pub mod bun_cjs_flatten;
 pub mod bun_export_renamer;
 pub mod bun_module_annotator;
+pub mod bun_module_handles;
 pub mod bun_runtime;
+pub mod bun_syntax_normalizer;
 pub mod call_proxy;
 pub mod call_this_simplifier;
 pub mod cff_unflattener;
@@ -84,8 +87,11 @@ pub use apply_call_simplifier::ApplyCallSimplifier;
 pub use array_coerce_fold::ArrayCoerceFold;
 pub use array_unpack::ArrayUnpacker;
 pub use boolean_literals::BooleanLiteralConverter;
+pub use bun_cjs_flatten::flatten_top_level_cjs_wrapper;
 pub use bun_export_renamer::{ExportNameCollector, ExportNameRenamer};
 pub use bun_module_annotator::annotate_bun_modules;
+pub use bun_module_handles::{BunModuleHandleCollector, BunModuleHandleRenamer};
+pub use bun_syntax_normalizer::BunSyntaxNormalizer;
 pub use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub use call_this_simplifier::CallThisSimplifier;
 pub use cff_unflattener::{CffUnflattener, collect_case_bodies};
@@ -178,7 +184,6 @@ pub struct AstDeobfuscator {
     void_replacer: VoidReplacer,
     object_sparsing_consolidator: ObjectSparsingConsolidator,
     variable_renamer: VariableRenamer,
-    deterministic_renamer: DeterministicRenamer,
     empty_statement_cleanup: EmptyStatementCleanup,
     sequence_expression_splitter: SequenceExpressionSplitter,
     multi_var_splitter: MultiVarSplitter,
@@ -218,7 +223,6 @@ impl AstDeobfuscator {
             void_replacer: VoidReplacer::new(),
             object_sparsing_consolidator: ObjectSparsingConsolidator::new(),
             variable_renamer: VariableRenamer::new(),
-            deterministic_renamer: DeterministicRenamer::new(),
             empty_statement_cleanup: EmptyStatementCleanup::new(),
             sequence_expression_splitter: SequenceExpressionSplitter::new(),
             multi_var_splitter: MultiVarSplitter::new(),
@@ -460,6 +464,17 @@ impl AstDeobfuscator {
             map
         };
 
+        eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
+        let flattened_statements = flatten_top_level_cjs_wrapper(&mut program, &allocator);
+        if flattened_statements > 0 {
+            eprintln!(
+                "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({} statements)",
+                flattened_statements
+            );
+        } else {
+            eprintln!("[DEOBFUSCATE] Phase 0.91: No top-level Bun CJS wrapper flattened");
+        }
+
         eprintln!("[DEOBFUSCATE] Phase 0.95: Bun __export() name extraction & rename");
         {
             let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
@@ -526,6 +541,32 @@ impl AstDeobfuscator {
                 "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",
                 param_renamer.renamed()
             );
+        }
+
+        eprintln!("[DEOBFUSCATE] Phase 0.99: Bun module-handle renaming");
+        {
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut collector = BunModuleHandleCollector::new();
+            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+            let module_handles = collector.into_map();
+            if !module_handles.is_empty() {
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.99: Found {} Bun module wrapper handles",
+                    module_handles.len()
+                );
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut renamer = BunModuleHandleRenamer::new(module_handles);
+                traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.99: Renamed {} declarations, {} references",
+                    renamer.renamed_decls(),
+                    renamer.renamed_refs()
+                );
+            } else {
+                eprintln!("[DEOBFUSCATE] Phase 0.99: No Bun module wrapper handles found");
+            }
         }
 
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
@@ -689,6 +730,14 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 6: Folded {} array-coercion expressions",
             self.array_coerce_fold.folded()
+        );
+        eprintln!("[DEOBFUSCATE] Phase 6: Running Bun syntax normalizer");
+        let mut bun_syntax = BunSyntaxNormalizer::new();
+        traverse_mut_with_ctx(&mut bun_syntax, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 6: Normalized {} typeof-undefined and {} numeric idiom expressions",
+            bun_syntax.typeof_rewrites(),
+            bun_syntax.numeric_rewrites()
         );
         eprintln!("[DEOBFUSCATE] Phase 6: DONE");
 
@@ -1072,6 +1121,7 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Generating output code");
         let output = Codegen::new().build(&program).code;
         eprintln!("[DEOBFUSCATE] Output generated, {} bytes", output.len());
+        log_output_validity("Phase 19.6", &output, source_type);
 
         if self.skip_annotations {
             eprintln!("[DEOBFUSCATE] Skipping module annotations (alignment mode)");
@@ -1120,9 +1170,39 @@ impl AstDeobfuscator {
             "[DEOBFUSCATE] Phase 21: {} enum annotations, {} namespace annotations, {} arrow expansions",
             enum_count, ns_count, arrow_count
         );
+        log_output_validity("Phase 21.5", &output, source_type);
 
         Ok(output)
     }
+}
+
+fn log_output_validity(label: &str, code: &str, source_type: SourceType) {
+    let allocator = Allocator::default();
+    let parse_result = Parser::new(&allocator, code, source_type).parse();
+    if !parse_result.errors.is_empty() {
+        eprintln!(
+            "[DEOBFUSCATE] {label}: GENERATED OUTPUT IS INVALID JAVASCRIPT ({} parse error(s))",
+            parse_result.errors.len()
+        );
+        for (idx, error) in parse_result.errors.iter().enumerate().take(5) {
+            eprintln!("[DEOBFUSCATE] {label}: parse error {idx}: {error:?}");
+        }
+        return;
+    }
+
+    let semantic_result = SemanticBuilder::new().build(&parse_result.program);
+    if !semantic_result.errors.is_empty() {
+        eprintln!(
+            "[DEOBFUSCATE] {label}: GENERATED OUTPUT HAS {} SEMANTIC ERROR(S)",
+            semantic_result.errors.len()
+        );
+        for (idx, error) in semantic_result.errors.iter().enumerate().take(5) {
+            eprintln!("[DEOBFUSCATE] {label}: semantic error {idx}: {error:?}");
+        }
+        return;
+    }
+
+    eprintln!("[DEOBFUSCATE] {label}: Generated output re-parse succeeded");
 }
 
 fn annotate_webpack_modules(code: &str) -> String {

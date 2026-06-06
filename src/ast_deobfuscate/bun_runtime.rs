@@ -34,7 +34,10 @@
 //! No statements are deleted; this is purely a renaming pass. Subsequent passes
 //! (`bun_esm_inliner`, `bun_commonjs_inliner`) consume the canonical names.
 
-use oxc_ast::ast::{BindingPattern, Expression, Function, IdentifierReference, Program, Statement, VariableDeclarator};
+use oxc_ast::ast::{
+    Argument, BinaryOperator, BindingPattern, CallExpression, Expression, ForOfStatement, ForStatementLeft, Function,
+    IdentifierReference, ObjectPropertyKind, Program, Statement, VariableDeclarator,
+};
 
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
@@ -54,6 +57,7 @@ pub enum BunHelper {
     HasOwnProp,
     AccessProp,
     CopyProps,
+    ReExport,
     CommonJs,
     Esm,
     ToEsm,
@@ -74,6 +78,7 @@ impl BunHelper {
             Self::HasOwnProp => "__hasOwnProp",
             Self::AccessProp => "__accessProp",
             Self::CopyProps => "__copyProps",
+            Self::ReExport => "__reExport",
             Self::CommonJs => "__commonJS",
             Self::Esm => "__esm",
             Self::ToEsm => "__toESM",
@@ -245,7 +250,9 @@ impl BunRuntimeCollector {
             self.record(name, BunHelper::ToEsm);
         } else if is_tocommonjs_helper(arrow) {
             self.record(name, BunHelper::ToCommonJs);
-        } else if is_copyprops_helper(arrow) {
+        } else if is_reexport_helper(arrow, &self.map) {
+            self.record(name, BunHelper::ReExport);
+        } else if is_copyprops_helper(arrow, &self.map) {
             self.record(name, BunHelper::CopyProps);
         } else if is_name_helper_arrow(arrow) {
             self.record(name, BunHelper::Name);
@@ -498,8 +505,8 @@ fn is_export_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>) -> bo
 /// Exactly 3 params (simple identifiers, not destructuring), block body,
 /// first statement is VarDecl with a CallExpression init, has for-of,
 /// does NOT contain `__esModule` (which would indicate __toESM instead).
-fn is_copyprops_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>) -> bool {
-    if arrow.params.items.len() != 3 || arrow.expression {
+fn is_copyprops_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>, helpers: &BunHelperMap) -> bool {
+    if !(3..=4).contains(&arrow.params.items.len()) || arrow.expression {
         return false;
     }
     // All params must be simple identifiers (not destructured)
@@ -508,28 +515,367 @@ fn is_copyprops_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>) ->
             return false;
         }
     }
-    // Must have a for-of but NOT an __esModule check
-    let has_for_of = arrow
+
+    let Some(source_param) = param_name(&arrow.params.items[1].pattern) else {
+        return false;
+    };
+    let Some(keys_name) = reexport_keys_binding(arrow, source_param, helpers) else {
+        return false;
+    };
+    let has_for_of_over_keys =
+        arrow.body.statements.iter().any(
+            |stmt| matches!(stmt, Statement::ForOfStatement(for_of) if expression_is_ident(&for_of.right, keys_name)),
+        );
+
+    // Must NOT contain __esModule (that's __toESM)
+    has_for_of_over_keys && !body_contains_esmodule_check(&arrow.body.statements)
+}
+
+/// `__reExport`: Bun's 3-param export-star helper. It skips the `"default"`
+/// key and conditionally copies descriptors into a second target before
+/// returning the third parameter.
+fn is_reexport_helper<'a>(arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>, helpers: &BunHelperMap) -> bool {
+    if arrow.params.items.len() != 3 || arrow.expression {
+        return false;
+    }
+    if !arrow
+        .params
+        .items
+        .iter()
+        .all(|p| matches!(p.pattern, BindingPattern::BindingIdentifier(_)))
+    {
+        return false;
+    }
+
+    let Some(target_param) = param_name(&arrow.params.items[0].pattern) else {
+        return false;
+    };
+    let Some(source_param) = param_name(&arrow.params.items[1].pattern) else {
+        return false;
+    };
+    let BindingPattern::BindingIdentifier(third) = &arrow.params.items[2].pattern else {
+        return false;
+    };
+    let return_param = third.name.as_str();
+
+    let Some(keys_name) = reexport_keys_binding(arrow, source_param, helpers) else {
+        return false;
+    };
+    let Some(for_of) = arrow.body.statements.iter().find_map(|stmt| match stmt {
+        Statement::ForOfStatement(for_of) if expression_is_ident(&for_of.right, keys_name) => Some(for_of.as_ref()),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let Some(loop_var) = for_of_loop_var_name(for_of) else {
+        return false;
+    };
+
+    let returns_third_param = arrow
         .body
         .statements
         .iter()
-        .any(|s| matches!(s, Statement::ForOfStatement(_)));
-    if !has_for_of {
+        .any(|stmt| stmt_returns_ident(stmt, return_param));
+    let has_default_skip = stmt_has_default_guard_for_loop_var(&for_of.body, loop_var);
+    let has_descriptor_copy =
+        stmt_has_reexport_define_property_copy(&for_of.body, target_param, source_param, loop_var, helpers);
+
+    returns_third_param
+        && has_default_skip
+        && has_descriptor_copy
+        && !body_contains_esmodule_check(&arrow.body.statements)
+}
+
+fn param_name<'a>(pattern: &'a BindingPattern<'a>) -> Option<&'a str> {
+    let BindingPattern::BindingIdentifier(binding) = pattern else {
+        return None;
+    };
+    Some(binding.name.as_str())
+}
+
+fn reexport_keys_binding<'a>(
+    arrow: &'a oxc_ast::ast::ArrowFunctionExpression<'a>,
+    source_param: &str,
+    helpers: &BunHelperMap,
+) -> Option<&'a str> {
+    let Statement::VariableDeclaration(var_decl) = arrow.body.statements.first()? else {
+        return None;
+    };
+    let decl = var_decl.declarations.first()?;
+    let BindingPattern::BindingIdentifier(binding) = &decl.id else {
+        return None;
+    };
+    let Some(Expression::CallExpression(call)) = &decl.init else {
+        return None;
+    };
+    is_get_own_prop_names_call(call, source_param, helpers).then_some(binding.name.as_str())
+}
+
+fn is_get_own_prop_names_call(call: &CallExpression<'_>, source_param: &str, helpers: &BunHelperMap) -> bool {
+    call.arguments
+        .first()
+        .is_some_and(|arg| argument_is_ident(arg, source_param))
+        && call_callee_is_helper_or_object_property(call, helpers, BunHelper::GetOwnPropNames, "getOwnPropertyNames")
+}
+
+fn for_of_loop_var_name<'a>(for_of: &'a ForOfStatement<'a>) -> Option<&'a str> {
+    match &for_of.left {
+        ForStatementLeft::VariableDeclaration(var_decl) => {
+            let decl = var_decl.declarations.first()?;
+            param_name(&decl.id)
+        }
+        ForStatementLeft::AssignmentTargetIdentifier(ident) => Some(ident.name.as_str()),
+        _ => None,
+    }
+}
+
+fn stmt_has_default_guard_for_loop_var(stmt: &Statement<'_>, loop_var: &str) -> bool {
+    match stmt {
+        Statement::IfStatement(if_stmt) => {
+            expr_has_default_guard_for_loop_var(&if_stmt.test, loop_var)
+                || stmt_has_default_guard_for_loop_var(&if_stmt.consequent, loop_var)
+                || if_stmt
+                    .alternate
+                    .as_ref()
+                    .is_some_and(|alternate| stmt_has_default_guard_for_loop_var(alternate, loop_var))
+        }
+        Statement::BlockStatement(block) => block
+            .body
+            .iter()
+            .any(|stmt| stmt_has_default_guard_for_loop_var(stmt, loop_var)),
+        _ => false,
+    }
+}
+
+fn expr_has_default_guard_for_loop_var(expr: &Expression<'_>, loop_var: &str) -> bool {
+    match expr {
+        Expression::BinaryExpression(binary)
+            if matches!(
+                binary.operator,
+                BinaryOperator::Inequality | BinaryOperator::StrictInequality
+            ) =>
+        {
+            (expression_is_ident(&binary.left, loop_var) && expression_is_string(&binary.right, "default"))
+                || (expression_is_string(&binary.left, "default") && expression_is_ident(&binary.right, loop_var))
+        }
+        Expression::LogicalExpression(logical) => {
+            expr_has_default_guard_for_loop_var(&logical.left, loop_var)
+                || expr_has_default_guard_for_loop_var(&logical.right, loop_var)
+        }
+        Expression::ParenthesizedExpression(paren) => expr_has_default_guard_for_loop_var(&paren.expression, loop_var),
+        _ => false,
+    }
+}
+
+fn stmt_has_reexport_define_property_copy(
+    stmt: &Statement<'_>,
+    target_param: &str,
+    source_param: &str,
+    loop_var: &str,
+    helpers: &BunHelperMap,
+) -> bool {
+    match stmt {
+        Statement::ExpressionStatement(expr_stmt) => {
+            expr_has_reexport_define_property_copy(&expr_stmt.expression, target_param, source_param, loop_var, helpers)
+        }
+        Statement::IfStatement(if_stmt) => {
+            stmt_has_reexport_define_property_copy(&if_stmt.consequent, target_param, source_param, loop_var, helpers)
+                || if_stmt.alternate.as_ref().is_some_and(|alternate| {
+                    stmt_has_reexport_define_property_copy(alternate, target_param, source_param, loop_var, helpers)
+                })
+        }
+        Statement::BlockStatement(block) => block
+            .body
+            .iter()
+            .any(|stmt| stmt_has_reexport_define_property_copy(stmt, target_param, source_param, loop_var, helpers)),
+        _ => false,
+    }
+}
+
+fn expr_has_reexport_define_property_copy(
+    expr: &Expression<'_>,
+    target_param: &str,
+    source_param: &str,
+    loop_var: &str,
+    helpers: &BunHelperMap,
+) -> bool {
+    match expr {
+        Expression::CallExpression(call) => {
+            is_define_property_copy_call(call, target_param, source_param, loop_var, helpers)
+        }
+        Expression::ParenthesizedExpression(paren) => {
+            expr_has_reexport_define_property_copy(&paren.expression, target_param, source_param, loop_var, helpers)
+        }
+        Expression::SequenceExpression(seq) => seq
+            .expressions
+            .iter()
+            .any(|expr| expr_has_reexport_define_property_copy(expr, target_param, source_param, loop_var, helpers)),
+        Expression::LogicalExpression(logical) => {
+            expr_has_reexport_define_property_copy(&logical.left, target_param, source_param, loop_var, helpers)
+                || expr_has_reexport_define_property_copy(&logical.right, target_param, source_param, loop_var, helpers)
+        }
+        _ => false,
+    }
+}
+
+fn is_define_property_copy_call(
+    call: &CallExpression<'_>,
+    target_param: &str,
+    source_param: &str,
+    loop_var: &str,
+    helpers: &BunHelperMap,
+) -> bool {
+    if !call_callee_is_helper_or_object_property(call, helpers, BunHelper::DefProp, "defineProperty") {
         return false;
     }
-    // Must start with var decl (the getOwnPropNames call)
-    let Some(Statement::VariableDeclaration(vd)) = arrow.body.statements.first() else {
+    let Some(target_arg) = call.arguments.first() else {
         return false;
     };
-    // The var decl's init must be a call expression (calling getOwnPropNames)
-    let Some(first_decl) = vd.declarations.first() else {
+    let Some(key_arg) = call.arguments.get(1) else {
         return false;
     };
-    let Some(Expression::CallExpression(_)) = &first_decl.init else {
+    let Some(descriptor_arg) = call.arguments.get(2) else {
         return false;
     };
-    // Must NOT contain __esModule (that's __toESM)
-    !body_contains_esmodule_check(&arrow.body.statements)
+
+    argument_is_ident(target_arg, target_param)
+        && argument_is_ident(key_arg, loop_var)
+        && argument_descriptor_getter_reads_source_key(descriptor_arg, source_param, loop_var)
+}
+
+fn call_callee_is_helper_or_object_property(
+    call: &CallExpression<'_>,
+    helpers: &BunHelperMap,
+    helper: BunHelper,
+    object_property: &str,
+) -> bool {
+    match &call.callee {
+        Expression::Identifier(id) => {
+            id.name.as_str() == helper.canonical()
+                || helpers
+                    .get(id.name.as_str())
+                    .is_some_and(|detected_helper| *detected_helper == helper)
+        }
+        Expression::StaticMemberExpression(member) => {
+            matches!(&member.object, Expression::Identifier(obj) if obj.name.as_str() == "Object")
+                && member.property.name.as_str() == object_property
+        }
+        _ => false,
+    }
+}
+
+fn argument_descriptor_getter_reads_source_key(arg: &Argument<'_>, source_param: &str, loop_var: &str) -> bool {
+    let Argument::ObjectExpression(obj) = arg else {
+        return false;
+    };
+    obj.properties.iter().any(|property| {
+        let ObjectPropertyKind::ObjectProperty(prop) = property else {
+            return false;
+        };
+        prop.key.name().is_some_and(|name| name.as_ref() == "get")
+            && expr_contains_source_key(&prop.value, source_param, loop_var)
+    })
+}
+
+fn argument_contains_source_key(arg: &Argument<'_>, source_param: &str, loop_var: &str) -> bool {
+    match arg {
+        Argument::Identifier(id) => id.name.as_str() == source_param,
+        Argument::ComputedMemberExpression(member) => {
+            expression_is_ident(&member.object, source_param) && expression_is_ident(&member.expression, loop_var)
+        }
+        Argument::ObjectExpression(obj) => obj.properties.iter().any(|property| {
+            let ObjectPropertyKind::ObjectProperty(prop) = property else {
+                return false;
+            };
+            expr_contains_source_key(&prop.value, source_param, loop_var)
+        }),
+        _ => false,
+    }
+}
+
+fn expr_contains_source_key(expr: &Expression<'_>, source_param: &str, loop_var: &str) -> bool {
+    match expr {
+        Expression::ComputedMemberExpression(member) => {
+            expression_is_ident(&member.object, source_param) && expression_is_ident(&member.expression, loop_var)
+        }
+        Expression::ArrowFunctionExpression(arrow) => arrow
+            .body
+            .statements
+            .iter()
+            .any(|stmt| stmt_contains_source_key(stmt, source_param, loop_var)),
+        Expression::FunctionExpression(func) => func.body.as_ref().is_some_and(|body| {
+            body.statements
+                .iter()
+                .any(|stmt| stmt_contains_source_key(stmt, source_param, loop_var))
+        }),
+        Expression::ParenthesizedExpression(paren) => {
+            expr_contains_source_key(&paren.expression, source_param, loop_var)
+        }
+        Expression::CallExpression(call) => {
+            expr_contains_source_key(&call.callee, source_param, loop_var)
+                || call
+                    .arguments
+                    .iter()
+                    .any(|arg| argument_contains_source_key(arg, source_param, loop_var))
+        }
+        Expression::ObjectExpression(obj) => obj.properties.iter().any(|property| {
+            let ObjectPropertyKind::ObjectProperty(prop) = property else {
+                return false;
+            };
+            expr_contains_source_key(&prop.value, source_param, loop_var)
+        }),
+        Expression::BinaryExpression(binary) => {
+            expr_contains_source_key(&binary.left, source_param, loop_var)
+                || expr_contains_source_key(&binary.right, source_param, loop_var)
+        }
+        Expression::LogicalExpression(logical) => {
+            expr_contains_source_key(&logical.left, source_param, loop_var)
+                || expr_contains_source_key(&logical.right, source_param, loop_var)
+        }
+        Expression::ConditionalExpression(cond) => {
+            expr_contains_source_key(&cond.test, source_param, loop_var)
+                || expr_contains_source_key(&cond.consequent, source_param, loop_var)
+                || expr_contains_source_key(&cond.alternate, source_param, loop_var)
+        }
+        _ => false,
+    }
+}
+
+fn stmt_contains_source_key(stmt: &Statement<'_>, source_param: &str, loop_var: &str) -> bool {
+    match stmt {
+        Statement::ExpressionStatement(expr_stmt) => {
+            expr_contains_source_key(&expr_stmt.expression, source_param, loop_var)
+        }
+        Statement::ReturnStatement(ret) => ret
+            .argument
+            .as_ref()
+            .is_some_and(|arg| expr_contains_source_key(arg, source_param, loop_var)),
+        Statement::IfStatement(if_stmt) => {
+            expr_contains_source_key(&if_stmt.test, source_param, loop_var)
+                || stmt_contains_source_key(&if_stmt.consequent, source_param, loop_var)
+                || if_stmt
+                    .alternate
+                    .as_ref()
+                    .is_some_and(|alternate| stmt_contains_source_key(alternate, source_param, loop_var))
+        }
+        Statement::BlockStatement(block) => block
+            .body
+            .iter()
+            .any(|stmt| stmt_contains_source_key(stmt, source_param, loop_var)),
+        _ => false,
+    }
+}
+
+fn argument_is_ident(arg: &Argument<'_>, name: &str) -> bool {
+    matches!(arg, Argument::Identifier(id) if id.name.as_str() == name)
+}
+
+fn expression_is_ident(expr: &Expression<'_>, name: &str) -> bool {
+    matches!(expr, Expression::Identifier(id) if id.name.as_str() == name)
+}
+
+fn expression_is_string(expr: &Expression<'_>, value: &str) -> bool {
+    matches!(expr, Expression::StringLiteral(lit) if lit.value.as_str() == value)
 }
 
 /// `__toESM`: `(mod, isNodeMode, target) => …`. 2-3 params, block body, contains __getProtoOf.
@@ -619,6 +965,23 @@ fn contains_str_in_stmt<'a>(stmt: &Statement<'a>, target: &str) -> bool {
         Statement::ForStatement(fs) => contains_str_in_stmt(&fs.body, target),
         Statement::ForInStatement(fs) => contains_str_in_stmt(&fs.body, target),
         Statement::ForOfStatement(fs) => contains_str_in_stmt(&fs.body, target),
+        _ => false,
+    }
+}
+
+fn stmt_returns_ident(stmt: &Statement<'_>, target: &str) -> bool {
+    match stmt {
+        Statement::ReturnStatement(ret) => {
+            matches!(&ret.argument, Some(Expression::Identifier(id)) if id.name.as_str() == target)
+        }
+        Statement::BlockStatement(block) => block.body.iter().any(|stmt| stmt_returns_ident(stmt, target)),
+        Statement::IfStatement(if_stmt) => {
+            stmt_returns_ident(&if_stmt.consequent, target)
+                || if_stmt
+                    .alternate
+                    .as_ref()
+                    .is_some_and(|alternate| stmt_returns_ident(alternate, target))
+        }
         _ => false,
     }
 }
@@ -735,6 +1098,49 @@ mod tests {
     fn detects_commonjs_helper() {
         let map = collect("var n = (H, $) => () => ($ || H(($ = { exports: {} }).exports, $), $.exports);");
         assert_eq!(map.get("n"), Some(&BunHelper::CommonJs));
+    }
+
+    #[test]
+    fn detects_reexport_before_copyprops() {
+        let map = collect(
+            r#"
+            var __defProp = Object.defineProperty;
+            var __getOwnPropNames = Object.getOwnPropertyNames;
+            var R = (H, $, q) => {
+                var K = __getOwnPropNames($);
+                for (let _ of K) if (_ !== "default") __defProp(H, _, { get: () => $[_], enumerable: true });
+                return q;
+            };
+            "#,
+        );
+        assert_eq!(map.get("R"), Some(&BunHelper::ReExport));
+    }
+
+    #[test]
+    fn does_not_detect_broad_reexport_lookalike() {
+        let map = collect(
+            r#"
+            var R = (H, $, q) => {
+                var K = list($);
+                for (let _ of K) if (_ !== "default") H[_] = $[_];
+                return q;
+            };
+            "#,
+        );
+        assert_eq!(map.get("R"), None);
+    }
+
+    #[test]
+    fn detects_copyprops_with_get_own_property_names_loop() {
+        let map = collect(
+            r#"
+            var C = (H, $, q) => {
+                var K = Object.getOwnPropertyNames($);
+                for (let _ of K) H[_] = $[_];
+            };
+            "#,
+        );
+        assert_eq!(map.get("C"), Some(&BunHelper::CopyProps));
     }
 
     #[test]

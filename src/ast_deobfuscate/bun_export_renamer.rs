@@ -24,18 +24,20 @@
 //! function writeToStdout(data) { process.stdout.write(data); }
 //! ```
 
-use oxc_ast::ast::{BindingPattern, Expression, IdentifierReference, ObjectPropertyKind, Program, Statement};
+use oxc_ast::ast::{Expression, IdentifierReference, ObjectPropertyKind, Statement};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
+pub type ExportNameMap = FxHashMap<SymbolId, String>;
 
 /// Collects mangled→original mappings from `__export()` / `j$()` / `MR()` calls.
 pub struct ExportNameCollector {
-    /// Map from mangled name → original export name
-    name_map: FxHashMap<String, String>,
+    /// Map from the resolved exported symbol → original export name.
+    name_map: ExportNameMap,
 }
 
 impl ExportNameCollector {
@@ -47,17 +49,17 @@ impl ExportNameCollector {
     }
 
     #[must_use]
-    pub fn into_map(self) -> FxHashMap<String, String> {
+    pub fn into_map(self) -> ExportNameMap {
         self.name_map
     }
 
     #[must_use]
-    pub fn map(&self) -> &FxHashMap<String, String> {
+    pub fn map(&self) -> &ExportNameMap {
         &self.name_map
     }
 
     /// Check if a call expression is `__export(target, { ... })` or similar.
-    fn try_extract_from_call(&mut self, expr: &Expression<'_>) {
+    fn try_extract_from_call(&mut self, expr: &Expression<'_>, ctx: &Ctx<'_>) {
         let Expression::CallExpression(call) = expr else { return };
 
         // Callee must be an identifier named __export, j$, or MR
@@ -113,6 +115,9 @@ impl ExportNameCollector {
 
             let mangled = mangled_id.name.as_str();
             let original = original_name.as_ref();
+            let Some(symbol_id) = ctx.scoping().get_reference(mangled_id.reference_id()).symbol_id() else {
+                continue;
+            };
 
             // Skip if original == mangled (already named)
             if mangled == original {
@@ -125,33 +130,8 @@ impl ExportNameCollector {
             }
 
             // Don't overwrite existing mappings
-            if !self.name_map.contains_key(mangled) {
-                self.name_map.insert(mangled.to_string(), original.to_string());
-            }
-        }
-    }
-
-    /// Also extract from `this.name = "ClassName"` in constructors.
-    fn try_extract_this_name(&mut self, stmts: &[Statement<'_>]) {
-        for stmt in stmts {
-            if let Statement::ExpressionStatement(es) = stmt {
-                if let Expression::AssignmentExpression(assign) = &es.expression {
-                    if let oxc_ast::ast::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
-                        if let Expression::ThisExpression(_) = &member.object {
-                            if member.property.name.as_str() == "name" {
-                                if let Expression::StringLiteral(s) = &assign.right {
-                                    let class_name = s.value.as_str();
-                                    if !class_name.is_empty() && class_name.len() > 2 {
-                                        // We'd need the enclosing class/function name to map,
-                                        // which requires more context. Skip for now — handled
-                                        // in a separate pass.
-                                        let _ = class_name;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if !self.name_map.contains_key(&symbol_id) {
+                self.name_map.insert(symbol_id, original.to_string());
             }
         }
     }
@@ -164,21 +144,21 @@ impl Default for ExportNameCollector {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for ExportNameCollector {
-    fn enter_expression_statement(&mut self, es: &mut oxc_ast::ast::ExpressionStatement<'a>, _ctx: &mut Ctx<'a>) {
-        self.try_extract_from_call(&es.expression);
+    fn enter_expression_statement(&mut self, es: &mut oxc_ast::ast::ExpressionStatement<'a>, ctx: &mut Ctx<'a>) {
+        self.try_extract_from_call(&es.expression, ctx);
     }
 }
 
-/// Renames all identifiers from mangled→original using the collected map.
+/// Renames exported identifiers by resolved symbol, not by raw minified text.
 pub struct ExportNameRenamer {
-    name_map: FxHashMap<String, String>,
+    name_map: ExportNameMap,
     renamed_refs: usize,
     renamed_decls: usize,
 }
 
 impl ExportNameRenamer {
     #[must_use]
-    pub fn new(name_map: FxHashMap<String, String>) -> Self {
+    pub fn new(name_map: ExportNameMap) -> Self {
         Self {
             name_map,
             renamed_refs: 0,
@@ -201,21 +181,31 @@ impl ExportNameRenamer {
         self.renamed_refs + self.renamed_decls
     }
 
-    fn lookup(&self, mangled: &str) -> Option<&str> {
-        self.name_map.get(mangled).map(String::as_str)
+    fn lookup(&self, symbol_id: SymbolId) -> Option<&str> {
+        self.name_map.get(&symbol_id).map(String::as_str)
     }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for ExportNameRenamer {
     fn exit_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(original) = self.lookup(ident.name.as_str()) {
+        let Some(symbol_id) = ctx.scoping().get_reference(ident.reference_id()).symbol_id() else {
+            return;
+        };
+        if let Some(original) = self.lookup(symbol_id)
+            && ident.name.as_str() != original
+        {
             ident.name = ctx.ast.ident(original);
             self.renamed_refs += 1;
         }
     }
 
     fn exit_binding_identifier(&mut self, ident: &mut oxc_ast::ast::BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(original) = self.lookup(ident.name.as_str()) {
+        let Some(symbol_id) = ident.symbol_id.get() else {
+            return;
+        };
+        if let Some(original) = self.lookup(symbol_id)
+            && ident.name.as_str() != original
+        {
             ident.name = ctx.ast.ident(original);
             self.renamed_decls += 1;
         }
@@ -223,7 +213,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameRenamer {
 
     fn exit_function(&mut self, func: &mut oxc_ast::ast::Function<'a>, ctx: &mut Ctx<'a>) {
         if let Some(id) = &mut func.id {
-            if let Some(original) = self.lookup(id.name.as_str()) {
+            let Some(symbol_id) = id.symbol_id.get() else {
+                return;
+            };
+            if let Some(original) = self.lookup(symbol_id)
+                && id.name.as_str() != original
+            {
                 id.name = ctx.ast.ident(original);
                 self.renamed_decls += 1;
             }
@@ -269,7 +264,7 @@ mod tests {
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
-    fn collect_names(code: &str) -> FxHashMap<String, String> {
+    fn collect_names(code: &str) -> ExportNameMap {
         let alloc = Allocator::default();
         let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
         let mut prog = parsed.program;
@@ -302,14 +297,15 @@ mod tests {
     #[test]
     fn extracts_export_names() {
         let code = r#"
+            var UK, Ba4;
             __export(target, {
                 writeToStdout: () => UK,
                 exitWithError: () => Ba4
             });
         "#;
         let map = collect_names(code);
-        assert_eq!(map.get("UK").map(String::as_str), Some("writeToStdout"));
-        assert_eq!(map.get("Ba4").map(String::as_str), Some("exitWithError"));
+        assert!(map.values().any(|name| name == "writeToStdout"));
+        assert!(map.values().any(|name| name == "exitWithError"));
     }
 
     #[test]
@@ -356,12 +352,13 @@ mod tests {
             var abc = async () => {};
         "#;
         let map = collect_names(code);
-        assert_eq!(map.get("abc").map(String::as_str), Some("fetchData"));
+        assert!(map.values().any(|name| name == "fetchData"));
     }
 
     #[test]
     fn handles_large_export_block() {
         let code = r#"
+            var Fq, XB, Y0, Sg, pE;
             __export(D6, {
                 string: () => Fq,
                 number: () => XB,
@@ -372,8 +369,33 @@ mod tests {
         "#;
         let map = collect_names(code);
         assert_eq!(map.len(), 5);
-        assert_eq!(map.get("Fq").map(String::as_str), Some("string"));
-        assert_eq!(map.get("XB").map(String::as_str), Some("number"));
-        assert_eq!(map.get("Y0").map(String::as_str), Some("boolean"));
+        assert!(map.values().any(|name| name == "string"));
+        assert!(map.values().any(|name| name == "number"));
+        assert!(map.values().any(|name| name == "boolean"));
+    }
+
+    #[test]
+    fn only_renames_resolved_export_symbol() {
+        let code = r#"
+            function exported(c) { return c; }
+            __export(target, { logEvent: () => exported });
+            function unrelated(c) { return c + 1; }
+            exported(1);
+            unrelated(2);
+        "#;
+        let (out, _count) = collect_and_rename(code);
+        assert!(
+            out.contains("function logEvent(c)"),
+            "exported function should rename: {out}"
+        );
+        assert!(out.contains("logEvent(1)"), "exported call should rename: {out}");
+        assert!(
+            out.contains("function unrelated(c)"),
+            "unrelated parameter must stay c: {out}"
+        );
+        assert!(
+            out.contains("return c + 1") || out.contains("return c+1"),
+            "unrelated body must stay c: {out}"
+        );
     }
 }
