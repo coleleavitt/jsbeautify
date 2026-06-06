@@ -1,3 +1,9 @@
+// Heap profiling: with `--features dhat-heap`, dhat replaces the global
+// allocator and records every allocation's call site (see Cargo.toml).
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use clap::Parser;
 use js_beautify_rs::analyzers::match_kind::FileType;
 use js_beautify_rs::analyzers::{AnalyzerConfig, run_all};
@@ -304,6 +310,11 @@ struct Cli {
 }
 
 fn main() {
+    // Keep the dhat profiler alive for the whole run; on drop it writes
+    // dhat-heap.json with per-call-site allocation totals + peak.
+    #[cfg(feature = "dhat-heap")]
+    let _dhat = dhat::Profiler::new_heap();
+
     if let Err(e) = run() {
         eprintln!("Error: {e}");
         std::process::exit(1);

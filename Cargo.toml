@@ -92,3 +92,18 @@ webpki-roots = "0.26"
 futures-util = "0.3"
 async-trait = "0.1"
 cron = "0.12"
+dhat = { version = "0.3", optional = true }
+
+[features]
+# Heap profiling with dhat. Build/run with `--features dhat-heap` to swap in
+# dhat's allocator + profiler; produces `dhat-heap.json` (view at
+# https://nnethercote.github.io/dh_view/dh_view.html) with per-call-site bytes.
+dhat-heap = ["dep:dhat"]
+
+# Dedicated profiling profile — full debug symbols, same optimizations as release.
+# Use: cargo build --profile profiling --features dhat-heap
+# or:  cargo flamegraph --profile profiling
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
