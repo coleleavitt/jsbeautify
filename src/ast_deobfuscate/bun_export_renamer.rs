@@ -25,9 +25,11 @@
 //! ```
 
 use oxc_ast::ast::{Expression, IdentifierReference, ObjectPropertyKind, Statement};
+use oxc_semantic::Scoping;
+use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -224,6 +226,127 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameRenamer {
             }
         }
     }
+}
+
+/// JS reserved words + dangerous globals that must never become a binding name
+/// (renaming a symbol to one of these produces invalid JavaScript, e.g.
+/// `var instanceof = ...` from a Zod `z.instanceof` export key).
+fn is_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "new"
+            | "null"
+            | "return"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "let"
+            | "static"
+            | "implements"
+            | "interface"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "await"
+            | "async"
+            | "undefined"
+            | "arguments"
+            | "eval"
+            | "NaN"
+            | "Infinity"
+            | "globalThis"
+    )
+}
+
+/// Make the collected rename map safe to apply.
+///
+/// Bun reuses the same minified name across non-overlapping scopes, and many
+/// modules export the same public name (`ZodType`, `Client`, `Command`, …).
+/// Applying the raw collected map can therefore (a) assign a JS reserved word
+/// (`instanceof`) or (b) give two distinct symbols that share a scope the same
+/// name — both produce invalid JavaScript (redeclaration / parse errors seen on
+/// the real cli.js bundle). This finalizer guarantees every assigned name is a
+/// legal identifier and unique within its declaring scope (vs. the other
+/// renamed symbols *and* the pre-existing bindings in that scope), suffixing
+/// with `$N` on collision.
+#[must_use]
+pub fn make_names_unique(map: ExportNameMap, scoping: &Scoping) -> ExportNameMap {
+    if map.is_empty() {
+        return map;
+    }
+
+    // Seed each scope's in-use name set with the bindings that are NOT being
+    // renamed away, so a rename can't collide with a pre-existing identifier.
+    let renamed: FxHashSet<SymbolId> = map.keys().copied().collect();
+    let mut used: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    for sym in scoping.symbol_ids() {
+        if renamed.contains(&sym) {
+            continue;
+        }
+        let scope = scoping.symbol_scope_id(sym);
+        used.entry(scope)
+            .or_default()
+            .insert(scoping.symbol_name(sym).to_string());
+    }
+
+    // Deterministic assignment order → stable output across runs / versions.
+    let mut entries: Vec<(SymbolId, String)> = map.into_iter().collect();
+    entries.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
+    });
+
+    let mut out: ExportNameMap = FxHashMap::default();
+    for (sym, desired) in entries {
+        let scope = scoping.symbol_scope_id(sym);
+        let base = if is_reserved_word(&desired) {
+            format!("{desired}$")
+        } else {
+            desired
+        };
+        let set = used.entry(scope).or_default();
+        let mut candidate = base.clone();
+        let mut n = 1u32;
+        while set.contains(&candidate) {
+            candidate = format!("{base}${n}");
+            n += 1;
+        }
+        set.insert(candidate.clone());
+        out.insert(sym, candidate);
+    }
+    out
 }
 
 /// Names that are too generic to be useful when applied as renames.

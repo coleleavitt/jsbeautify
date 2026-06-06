@@ -139,12 +139,10 @@ pub fn annotate_rxjs_operators(source: &str) -> (String, usize) {
     let mut op_count = 0usize;
 
     for line in source.lines() {
-        // Check if this line contains a .pipe( call or is inside one
-        if line.contains(".pipe(") || line.contains("pipe(") {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
+        // NOTE: previously this bailed out on any line containing `.pipe(`,
+        // which skipped annotation on exactly the lines that carry the operator
+        // chain (single-line `x.pipe(map(a), filter(b))` is the common minified
+        // shape). Operator detection now runs on every line.
 
         // Look for operator calls in the line
         let mut annotated_line = line.to_string();

@@ -32,6 +32,21 @@ pub mod secret_scanner;
 pub mod sensitive_property_name;
 pub mod sinks;
 
+// Framework / build-tool recon: per-framework signature analyzers + dispatcher.
+pub mod framework_recon;
+pub mod fw_module_federation;
+pub mod fw_next_rsc;
+pub mod fw_preact;
+pub mod fw_react;
+pub mod fw_redux;
+pub mod fw_rollup;
+pub mod fw_sentry;
+pub mod fw_solid;
+pub mod fw_svelte;
+pub mod fw_vite;
+pub mod fw_vue;
+pub mod fw_zustand;
+
 pub use match_kind::{AnalyzerMatch, FileType, PositionRange};
 
 /// Deduplicate `matches` so each unique `(match_kind, match_value, file_path,
@@ -64,6 +79,7 @@ pub struct AnalyzerConfig {
     pub sinks: bool,
     pub npm_packages: bool,
     pub comments: bool,
+    pub framework_recon: bool,
 }
 
 impl Default for AnalyzerConfig {
@@ -76,6 +92,7 @@ impl Default for AnalyzerConfig {
             sinks: true,
             npm_packages: true,
             comments: true,
+            framework_recon: true,
         }
     }
 }
@@ -91,6 +108,7 @@ impl AnalyzerConfig {
             sinks: false,
             npm_packages: false,
             comments: false,
+            framework_recon: false,
         }
     }
 
@@ -104,6 +122,7 @@ impl AnalyzerConfig {
             sinks: true,
             npm_packages: false,
             comments: false,
+            framework_recon: false,
         }
     }
 }
@@ -142,6 +161,10 @@ pub fn run_all(
     }
     if config.comments {
         out.extend(comment_extractor::analyze(source, file_path, file_type));
+    }
+
+    if config.framework_recon {
+        out.extend(framework_recon::analyze(source, file_path, file_type));
     }
 
     // Always run API call + storage extraction

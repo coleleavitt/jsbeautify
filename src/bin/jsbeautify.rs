@@ -677,6 +677,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 sinks: cli.find_sinks,
                 npm_packages: cli.extract_packages,
                 comments: cli.extract_paths || cli.extract_hostnames,
+                framework_recon: false,
             }
         };
 

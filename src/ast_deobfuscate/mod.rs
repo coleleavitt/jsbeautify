@@ -77,6 +77,22 @@ pub mod variable_rename;
 pub mod void_replacer;
 pub mod window_alias_propagator;
 
+// Framework / build-tool recon extractors. Previously authored but never
+// declared (compile-dead); wired here so they compile and can be driven by
+// the `analyzers::framework_recon` dispatcher (recon, not deobfuscation).
+pub mod angular_decompiler;
+pub mod angular_metadata;
+pub mod angular_route_extractor;
+pub mod bundle_diff;
+pub mod http_interceptor_extractor;
+pub mod launchdarkly_extractor;
+pub mod mfe_registry_extractor;
+pub mod ngrx_extractor;
+pub mod rxjs_annotator;
+pub mod transmit_sdk_decoder;
+pub mod webpack_module_resolver;
+pub mod webpack_runtime_decoder;
+
 pub use self::bun_runtime::{BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer};
 pub use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,
@@ -488,6 +504,9 @@ impl AstDeobfuscator {
                     export_map.len()
                 );
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                // Make assigned names legal + unique-per-scope to avoid invalid JS
+                // (reserved words like `instanceof`, duplicate `ZodType`/`Client`).
+                let export_map = bun_export_renamer::make_names_unique(export_map, &scoping);
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                 let mut renamer = ExportNameRenamer::new(export_map);
                 traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
