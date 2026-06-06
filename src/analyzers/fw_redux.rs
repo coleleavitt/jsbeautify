@@ -29,9 +29,11 @@ use lazy_static::lazy_static;
 use regex::Regex;
 
 lazy_static! {
-    // Redux core reserved action types + the prod-error doc URL.
+    // Redux core reserved action types, prod-error doc URL, and the devtools
+    // extension sentinel (the strongest Redux/Zustand store signal; the path
+    // extractor scrubs it as noise, but this analyzer sees raw source).
     static ref CORE_RE: Regex = Regex::new(
-        r#"(@@redux/(?:INIT|REPLACE|PROBE_UNKNOWN_ACTION)|redux\.js\.org/Errors\?code=)"#
+        r#"(@@redux/(?:INIT|REPLACE|PROBE_UNKNOWN_ACTION)|redux\.js\.org/Errors\?code=|__REDUX_DEVTOOLS_EXTENSION__(?:_COMPOSE__)?)"#
     ).unwrap();
 
     // RTK internal Symbol.for markers (immutable across minification).

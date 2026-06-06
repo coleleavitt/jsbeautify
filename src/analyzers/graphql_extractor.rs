@@ -33,6 +33,40 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     visitor.out
 }
 
+/// Parse the leading GraphQL operation/fragment header into structured metadata
+/// (`operation_type`, `operation_name`, `fragment_name`, `on_type`) so consumers
+/// get an indexed operation catalog rather than just raw SDL.
+fn gql_metadata(body: &str) -> serde_json::Value {
+    lazy_static::lazy_static! {
+        static ref OP_RE: regex::Regex =
+            regex::Regex::new(r"(?m)^\s*(query|mutation|subscription)\s+([A-Za-z_]\w*)").unwrap();
+        static ref FRAG_RE: regex::Regex =
+            regex::Regex::new(r"(?m)^\s*fragment\s+([A-Za-z_]\w*)\s+on\s+([A-Za-z_]\w*)").unwrap();
+        static ref OP_ANON_RE: regex::Regex =
+            regex::Regex::new(r"(?m)^\s*(query|mutation|subscription)\b").unwrap();
+    }
+    let mut op_type: Option<String> = None;
+    let mut op_name: Option<String> = None;
+    let mut frag_name: Option<String> = None;
+    let mut on_type: Option<String> = None;
+    if let Some(c) = OP_RE.captures(body) {
+        op_type = Some(c[1].to_string());
+        op_name = Some(c[2].to_string());
+    } else if let Some(c) = FRAG_RE.captures(body) {
+        op_type = Some("fragment".to_string());
+        frag_name = Some(c[1].to_string());
+        on_type = Some(c[2].to_string());
+    } else if let Some(c) = OP_ANON_RE.captures(body) {
+        op_type = Some(c[1].to_string());
+    }
+    serde_json::json!({
+        "operation_type": op_type,
+        "operation_name": op_name,
+        "fragment_name": frag_name,
+        "on_type": on_type,
+    })
+}
+
 struct GqlVisitor<'s> {
     source: &'s str,
     file_path: Option<&'s str>,
@@ -69,7 +103,7 @@ impl<'s> GqlVisitor<'s> {
             file_path: self.file_path.map(str::to_string),
             severity: Severity::Low,
             provenance: Provenance::Ast,
-            metadata: None,
+            metadata: Some(gql_metadata(body)),
         });
     }
 }
@@ -110,6 +144,7 @@ impl<'a, 's> Visit<'a> for GqlVisitor<'s> {
                 .filter_map(|q| q.value.cooked.as_ref().map(|s| s.as_str()))
                 .collect::<Vec<_>>()
                 .join("");
+            let meta = gql_metadata(&joined);
             self.out.push(AnalyzerMatch {
                 match_kind: "graphql".to_string(),
                 match_value: joined,
@@ -118,7 +153,7 @@ impl<'a, 's> Visit<'a> for GqlVisitor<'s> {
                 file_path: self.file_path.map(str::to_string),
                 severity: Severity::Low,
                 provenance: Provenance::Ast,
-                metadata: None,
+                metadata: Some(meta),
             });
         }
 

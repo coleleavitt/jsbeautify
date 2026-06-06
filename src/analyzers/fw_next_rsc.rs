@@ -38,7 +38,10 @@ lazy_static! {
     /// Flight stream rows: `<hexId>:I[...]` (module import) and `<hexId>:HL[...]`
     /// (preload hint, H-row with code `L`). Captures id, tag, payload prefix.
     static ref FLIGHT_ROW_RE: Regex =
-        Regex::new(r#"\b([0-9a-f]{1,8}):(HL|I)\[([^\n\]]{0,160})"#).unwrap();
+        // No leading `\b`: flight rows are separated by the `\n` escape
+        // (`\` + `n`), so the id is often preceded by a word char (`n`) and a
+        // word boundary would never match the row after the first.
+        Regex::new(r#"([0-9a-f]{1,8}):(HL|I)\[([^\n\]]{0,160})"#).unwrap();
 
     /// `createServerReference("<hexid>", ...)` server-action reference. Matches
     /// both the bare call and the `(0,n.createServerReference)(...)` member form.
