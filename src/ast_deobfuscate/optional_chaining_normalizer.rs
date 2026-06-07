@@ -38,7 +38,7 @@ impl OptionalChainingNormalizer {
     }
 
     /// Count the depth of optional chaining
-    fn count_chain_depth(_chain: &ChainExpression) -> usize {
+    fn count_chain_depth(_chain: &ChainExpression<'_>) -> usize {
         // For now, just return 1 to indicate a chain was detected
         // Full depth analysis would require traversing the chain structure
         1

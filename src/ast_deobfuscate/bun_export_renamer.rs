@@ -298,8 +298,9 @@ fn is_reserved_word(name: &str) -> bool {
 /// (`instanceof`) or (b) give two distinct symbols that share a scope the same
 /// name — both produce invalid JavaScript (redeclaration / parse errors seen on
 /// the real cli.js bundle). This finalizer guarantees every assigned name is a
-/// legal identifier and unique within its declaring scope (vs. the other
-/// renamed symbols *and* the pre-existing bindings in that scope), suffixing
+/// legal identifier and unique along the relevant scope chain: existing
+/// bindings in the declaration scope, ancestor bindings/assigned names, and
+/// descendant bindings that could capture rewritten references. It suffixes
 /// with `$N` on collision.
 #[must_use]
 pub fn make_names_unique(map: ExportNameMap, scoping: &Scoping) -> ExportNameMap {
@@ -307,44 +308,115 @@ pub fn make_names_unique(map: ExportNameMap, scoping: &Scoping) -> ExportNameMap
         return map;
     }
 
-    // Seed each scope's in-use name set with the bindings that are NOT being
-    // renamed away, so a rename can't collide with a pre-existing identifier.
+    // Seed original names for bindings that are NOT being renamed away, so a
+    // rename can't collide with a pre-existing identifier. The subtree index is
+    // conservative: an ancestor rename must avoid descendant names because a
+    // rewritten ancestor reference may be emitted inside that descendant scope.
     let renamed: FxHashSet<SymbolId> = map.keys().copied().collect();
-    let mut used: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    let mut original_by_scope: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    let mut original_subtree: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
     for sym in scoping.symbol_ids() {
         if renamed.contains(&sym) {
             continue;
         }
         let scope = scoping.symbol_scope_id(sym);
-        used.entry(scope)
-            .or_default()
-            .insert(scoping.symbol_name(sym).to_string());
+        let name = scoping.symbol_name(sym).to_string();
+        original_by_scope.entry(scope).or_default().insert(name.clone());
+        for visible in scoping.scope_ancestors(scope) {
+            original_subtree.entry(visible).or_default().insert(name.clone());
+        }
     }
 
     // Deterministic assignment order → stable output across runs / versions.
     let mut entries: Vec<(SymbolId, String)> = map.into_iter().collect();
     entries.sort_by(|a, b| {
-        a.1.cmp(&b.1)
+        scoping
+            .scope_ancestors(scoping.symbol_scope_id(a.0))
+            .count()
+            .cmp(&scoping.scope_ancestors(scoping.symbol_scope_id(b.0)).count())
+            .then_with(|| a.1.cmp(&b.1))
             .then_with(|| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
     });
 
     let mut out: ExportNameMap = FxHashMap::default();
+    let mut assigned: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
     for (sym, desired) in entries {
         let scope = scoping.symbol_scope_id(sym);
-        let base = if is_reserved_word(&desired) {
-            format!("{desired}$")
-        } else {
+        let safe_desired = if is_valid_identifier(&desired) {
             desired
+        } else {
+            sanitize_identifier(&desired)
         };
-        let set = used.entry(scope).or_default();
+        let base = if is_reserved_word(&safe_desired) {
+            format!("{safe_desired}$")
+        } else {
+            safe_desired
+        };
+        let mut blocked = original_subtree.get(&scope).cloned().unwrap_or_default();
+        if let Some(names) = assigned.get(&scope) {
+            blocked.extend(names.iter().cloned());
+        }
+        for anc in scoping.scope_ancestors(scope) {
+            if anc == scope {
+                continue;
+            }
+            if let Some(names) = original_by_scope.get(&anc) {
+                blocked.extend(names.iter().cloned());
+            }
+            if let Some(names) = assigned.get(&anc) {
+                blocked.extend(names.iter().cloned());
+            }
+        }
         let mut candidate = base.clone();
         let mut n = 1u32;
-        while set.contains(&candidate) {
+        while blocked.contains(&candidate) {
             candidate = format!("{base}${n}");
             n += 1;
         }
-        set.insert(candidate.clone());
+        assigned.entry(scope).or_default().insert(candidate.clone());
         out.insert(sym, candidate);
+    }
+    out
+}
+
+fn is_identifier_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
+}
+
+fn is_identifier_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+fn is_valid_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    is_identifier_start(first) && chars.all(is_identifier_continue)
+}
+
+fn sanitize_identifier(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max("exported".len()));
+    for ch in name.chars() {
+        if out.is_empty() {
+            if is_identifier_start(ch) {
+                out.push(ch);
+            } else if is_identifier_continue(ch) {
+                out.push('_');
+                out.push(ch);
+            } else {
+                out.push('_');
+            }
+        } else if is_identifier_continue(ch) {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+
+    if out.is_empty() {
+        out.push_str("exported");
     }
     out
 }
@@ -407,10 +479,10 @@ mod tests {
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
-        let map = collector.into_map();
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let map = make_names_unique(collector.into_map(), &scoping);
 
         let mut renamer = ExportNameRenamer::new(map);
-        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
 
@@ -519,6 +591,62 @@ mod tests {
         assert!(
             out.contains("return c + 1") || out.contains("return c+1"),
             "unrelated body must stay c: {out}"
+        );
+    }
+
+    #[test]
+    fn export_rename_avoids_existing_descendant_binding() {
+        let code = r#"
+            var H;
+            __export(target, { writeToStdout: () => H });
+            function outer() {
+                return function() {
+                    let writeToStdout = 1;
+                    return H + writeToStdout;
+                };
+            }
+        "#;
+        let (out, _count) = collect_and_rename(code);
+        assert!(
+            out.contains("writeToStdout$1"),
+            "export rename should be suffixed: {out}"
+        );
+        assert!(
+            out.contains("return writeToStdout$1 + writeToStdout")
+                || out.contains("return writeToStdout$1+writeToStdout"),
+            "outer reference must not bind to descendant local: {out}"
+        );
+    }
+
+    #[test]
+    fn export_rename_sanitizes_non_identifier_export_keys() {
+        let code = r#"
+            var H;
+            __export(target, { "foo-bar": () => H });
+            H();
+        "#;
+        let (out, count) = collect_and_rename(code);
+        assert!(count >= 2, "Should rename declaration and call: {out}");
+        assert!(out.contains("var foo_bar"), "Should sanitize binding name: {out}");
+        assert!(out.contains("foo_bar()"), "Should sanitize reference name: {out}");
+
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, &out, SourceType::mjs()).parse();
+        assert!(parsed.errors.is_empty(), "sanitized output must parse: {out}");
+    }
+
+    #[test]
+    fn export_rename_sanitizes_numeric_export_keys() {
+        let code = r#"
+            var H;
+            __export(target, { 123: () => H });
+            H();
+        "#;
+        let (out, _count) = collect_and_rename(code);
+        assert!(out.contains("var _123"), "Should prefix numeric key: {out}");
+        assert!(
+            out.contains("_123()"),
+            "Should rename references to prefixed key: {out}"
         );
     }
 }

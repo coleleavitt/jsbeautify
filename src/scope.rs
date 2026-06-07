@@ -19,8 +19,6 @@ pub struct ScopeMatcher {
 
 #[derive(Debug, Clone)]
 struct ScopePattern {
-    /// Original pattern string.
-    raw: String,
     /// How to match.
     kind: PatternKind,
 }
@@ -95,7 +93,6 @@ impl ScopeMatcher {
 
 impl ScopePattern {
     fn parse(pattern: &str) -> Self {
-        let raw = pattern.to_string();
         let p = pattern.trim().to_ascii_lowercase();
 
         let kind = if p.starts_with("*.") {
@@ -115,7 +112,7 @@ impl ScopePattern {
             PatternKind::Exact(p)
         };
 
-        ScopePattern { raw, kind }
+        ScopePattern { kind }
     }
 
     fn matches(&self, hostname: &str) -> bool {

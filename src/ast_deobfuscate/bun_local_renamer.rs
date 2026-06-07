@@ -13,9 +13,10 @@
 //! are distinct symbols and are renamed independently). To avoid introducing a
 //! collision or wrongful shadow — which `node --check` cannot detect because it
 //! is a *semantic* error, not a syntax one — each scope's slot names are chosen
-//! to avoid every name visible in that scope: its own bindings, all ancestor
-//! bindings, and the slot names already handed to ancestor scopes. Scopes are
-//! processed outer-to-inner so ancestor assignments are known first.
+//! to avoid every name that could capture a rewritten reference: its own
+//! bindings, descendant bindings, all ancestor bindings, and the slot names
+//! already handed to ancestor scopes. Scopes are processed outer-to-inner so
+//! ancestor assignments are known first.
 //!
 //! Bun names carry no original-name information, so this is *stabilisation*
 //! (distinct, greppable, diff-stable names), not semantic recovery.
@@ -39,23 +40,35 @@ fn is_single_char_mangled(name: &str) -> bool {
 }
 
 /// Plan collision-free per-scope slot names for single-char mangled locals.
+///
+/// `exclude` lists symbols that must never be renamed (see
+/// [`super::rename_guards`]): direct-`eval`-visible bindings and native ES
+/// exports. Excluded symbols are skipped as *candidates* but still contribute
+/// their original name to the blocked sets, so a slot can never collide with
+/// one of them.
 #[must_use]
-pub fn plan_local_renames(scoping: &Scoping) -> LocalRenameMap {
+pub fn plan_local_renames(scoping: &Scoping, exclude: &FxHashSet<SymbolId>) -> LocalRenameMap {
     // Original binding names per scope (from every symbol's declaring scope).
     let mut scope_names: FxHashMap<ScopeId, Vec<(String, SymbolId)>> = FxHashMap::default();
+    let mut subtree_names: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
     for sym in scoping.symbol_ids() {
         let scope = scoping.symbol_scope_id(sym);
-        scope_names
-            .entry(scope)
-            .or_default()
-            .push((scoping.symbol_name(sym).to_string(), sym));
+        let name = scoping.symbol_name(sym).to_string();
+        scope_names.entry(scope).or_default().push((name.clone(), sym));
+        for visible in scoping.scope_ancestors(scope) {
+            subtree_names.entry(visible).or_default().insert(name.clone());
+        }
     }
+
+    // A symbol is a rename candidate only if it is a single-char mangled local
+    // AND not soundness-excluded.
+    let is_candidate = |name: &str, sym: SymbolId| is_single_char_mangled(name) && !exclude.contains(&sym);
 
     // Scopes that contain at least one candidate, ordered outer-to-inner by depth
     // (ancestor count) so a scope is processed after all its ancestors.
     let mut scopes: Vec<(usize, ScopeId)> = scope_names
         .iter()
-        .filter(|(_, names)| names.iter().any(|(n, _)| is_single_char_mangled(n)))
+        .filter(|(_, names)| names.iter().any(|(n, s)| is_candidate(n, *s)))
         .map(|(&sid, _)| (scoping.scope_ancestors(sid).count(), sid))
         .collect();
     scopes.sort_by(|a, b| {
@@ -67,12 +80,13 @@ pub fn plan_local_renames(scoping: &Scoping) -> LocalRenameMap {
     let mut assigned: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
 
     for (_depth, scope) in scopes {
-        // Names that must not be reused in this scope.
+        // Names that must not be reused in this scope. Descendant bindings are
+        // included because references to this symbol may be emitted inside those
+        // scopes after renaming; choosing a descendant's existing name would be
+        // captured by that descendant binding at runtime.
         let mut blocked: FxHashSet<String> = FxHashSet::default();
-        if let Some(names) = scope_names.get(&scope) {
-            for (n, _) in names {
-                blocked.insert(n.clone());
-            }
+        if let Some(names) = subtree_names.get(&scope) {
+            blocked.extend(names.iter().cloned());
         }
         for anc in scoping.scope_ancestors(scope) {
             if anc == scope {
@@ -91,13 +105,7 @@ pub fn plan_local_renames(scoping: &Scoping) -> LocalRenameMap {
         // Candidates in this scope, deterministic order for stable output.
         let mut cands: Vec<(String, SymbolId)> = scope_names
             .get(&scope)
-            .map(|names| {
-                names
-                    .iter()
-                    .filter(|(n, _)| is_single_char_mangled(n))
-                    .cloned()
-                    .collect()
-            })
+            .map(|names| names.iter().filter(|(n, s)| is_candidate(n, *s)).cloned().collect())
             .unwrap_or_default();
         cands.sort_by(|a, b| {
             a.0.cmp(&b.0)
@@ -190,12 +198,22 @@ mod tests {
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
     fn run(code: &str) -> String {
+        use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+
         let alloc = Allocator::default();
         let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
         let mut prog = parsed.program;
 
+        // Soundness guard (mirrors the Phase 12.5 wiring in `mod.rs`).
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
-        let plan = plan_local_renames(&scoping);
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut guard = RenameGuardCollector::new();
+        traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
+        drop(ctx);
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let guarded = guard.into_guarded(&scoping);
+        let plan = plan_local_renames(&scoping, &guarded);
 
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
@@ -238,5 +256,54 @@ mod tests {
         assert!(out.contains("return"), "got: {out}");
         // Outer q -> v0; inner K must be v1 (v0 blocked by ancestor).
         assert!(out.contains("v1"), "inner local should avoid ancestor slot: {out}");
+    }
+
+    #[test]
+    fn outer_slot_avoids_existing_descendant_binding() {
+        // If outer `H` became `v0`, the reference inside the nested function
+        // would bind to the inner `let v0` after codegen.
+        let out = run("function f(H){ return function(){ let v0 = 1; return H + v0; } }");
+        assert!(
+            !out.contains("return v0 + v0") && !out.contains("return v0+v0"),
+            "outer reference was captured by descendant binding: {out}"
+        );
+    }
+
+    #[test]
+    fn does_not_rename_locals_visible_to_direct_eval() {
+        // A direct `eval` resolves `H` by name; renaming it would dangle the
+        // reference inside the eval string and break at runtime.
+        let out = run("function f(H){ return eval('H + 1'); }");
+        assert!(out.contains("(H)"), "eval-visible param must stay H: {out}");
+        assert!(out.contains("eval(\"H + 1\")"), "eval string must be intact: {out}");
+        assert!(!out.contains("v0"), "no local should be renamed: {out}");
+    }
+
+    #[test]
+    fn does_not_rename_native_export_bindings() {
+        // The binding name IS the public export name; renaming it would change
+        // the module's public surface (importers break).
+        let out = run("export function H(){ return 1 } export const K = 2;");
+        assert!(out.contains("function H("), "exported fn name must be preserved: {out}");
+        assert!(
+            out.contains("K = 2") || out.contains("K=2"),
+            "exported const must stay K: {out}"
+        );
+        assert!(
+            !out.contains("v0") && !out.contains("v1"),
+            "exports must not be renamed: {out}"
+        );
+    }
+
+    #[test]
+    fn still_renames_default_export_local() {
+        // `export default function H(){}` exposes only `default`, so the local
+        // name `H` is free to be renamed.
+        let out = run("export default function H(){ let q = 1; return q }");
+        assert!(
+            !out.contains("function H("),
+            "default export local should rename: {out}"
+        );
+        assert!(out.contains("export default function v0"), "got: {out}");
     }
 }

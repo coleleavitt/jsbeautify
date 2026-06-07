@@ -34,7 +34,7 @@ impl JsonParseEvaluator {
     }
 
     /// Check if this is a JSON.parse() call with a string literal
-    fn is_json_parse_with_string(call: &CallExpression) -> bool {
+    fn is_json_parse_with_string(call: &CallExpression<'_>) -> bool {
         // Check if callee is JSON.parse
         let is_json_parse = if let Expression::StaticMemberExpression(member) = &call.callee {
             if let Expression::Identifier(obj) = &member.object {

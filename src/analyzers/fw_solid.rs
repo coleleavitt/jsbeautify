@@ -38,7 +38,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         // because it is the argument to `Symbol(...)`. Strongest single fingerprint.
         // Confirmed: signal.ts L35/L37/L38 ("solid-proxy"/"solid-track"/"solid-dev-component").
         static ref SOLID_SYMBOL_RE: Regex =
-            Regex::new(r#"Symbol\(\s*"(solid-[a-z][a-z0-9-]*)"\s*\)"#).unwrap();
+            Regex::new(r#"Symbol\(\s*["'`](solid-[a-z][a-z0-9-]*)["'`]\s*\)"#).unwrap();
 
         // dom-expressions runtime helpers emitted by babel-plugin-jsx-dom-expressions.
         // Canonical aliases from `solid-js/web` compiled output.
@@ -132,20 +132,25 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         );
     }
 
-    // solid_dev_name -- dev-build-only markers (low signal; gated behind _SOLID_DEV_).
-    for whole in SOLID_DEV_NAME_RE.find_iter(source) {
-        out.push(
-            AnalyzerMatch::new(
-                "solid_dev_name",
-                whole.as_str().to_string(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info)
-            .with_metadata(serde_json::json!({ "dev_build": true })),
-        );
+    // solid_dev_name -- dev-build-only markers (low signal). Gated behind the
+    // `_SOLID_DEV_` flag: the `{name:"children"}` memo alternative is an ordinary
+    // object literal that occurs in non-Solid bundles, so it is only a Solid
+    // signature when the dev build is actually present.
+    if source.contains("_SOLID_DEV_") {
+        for whole in SOLID_DEV_NAME_RE.find_iter(source) {
+            out.push(
+                AnalyzerMatch::new(
+                    "solid_dev_name",
+                    whole.as_str().to_string(),
+                    PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info)
+                .with_metadata(serde_json::json!({ "dev_build": true })),
+            );
+        }
     }
 
     out
@@ -204,5 +209,37 @@ mod tests {
         let src = r#"const Symbol="x";function template(){return 1} let s="<div></div>";"#;
         let m = analyze(src, None, FileType::Js);
         assert!(m.is_empty(), "unexpected matches: {m:?}");
+    }
+
+    #[test]
+    fn detects_single_quoted_symbol() {
+        // Some minifiers emit single quotes; the `solid-*` token is unchanged.
+        let m = analyze(r#"var e=Symbol('solid-proxy');"#, Some("t.js"), FileType::Js);
+        assert!(
+            m.iter()
+                .any(|x| x.match_kind == "solid_symbol" && x.match_value == "solid-proxy"),
+            "single-quoted Symbol missed: {m:?}"
+        );
+    }
+
+    #[test]
+    fn dev_name_requires_solid_dev_flag() {
+        // A bare `{name:"children"}` object in a non-Solid bundle must NOT be
+        // reported as a Solid dev signature.
+        let plain = analyze(r#"var o={name:"children"};"#, Some("t.js"), FileType::Js);
+        assert!(
+            !plain.iter().any(|x| x.match_kind == "solid_dev_name"),
+            "false-positive on plain object literal: {plain:?}"
+        );
+        // …but with the `_SOLID_DEV_` flag present it IS a Solid dev signature.
+        let dev = analyze(
+            r#"var _SOLID_DEV_=1;var o={name:"children"};"#,
+            Some("t.js"),
+            FileType::Js,
+        );
+        assert!(
+            dev.iter().any(|x| x.match_kind == "solid_dev_name"),
+            "should detect children memo in a dev build: {dev:?}"
+        );
     }
 }

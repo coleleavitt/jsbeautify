@@ -39,9 +39,11 @@ lazy_static! {
             .unwrap();
 
     /// A `chunkId:"chunkName"` pair inside a chunk map. Keys may be bare numbers
-    /// or quoted; values are quoted chunk names. Group 1 = id, group 2 = name.
+    /// or quoted; values are quoted chunk names. Either quote style is accepted
+    /// (minifiers configured for single quotes still emit valid maps). Group 1 =
+    /// numeric id, group 2 = quoted id, group 3 = name.
     static ref CHUNK_PAIR_RE: Regex =
-        Regex::new(r#"(?:(\d+)|"([^"]+)")\s*:\s*"([^"]+)""#).unwrap();
+        Regex::new(r#"(?:(\d+)|["']([^"']+)["'])\s*:\s*["']([^"']+)["']"#).unwrap();
 }
 
 /// A chunk-name value is a real name (vs. a content hash) if it carries a

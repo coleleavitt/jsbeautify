@@ -58,8 +58,20 @@ lazy_static! {
     ).unwrap();
 
     // Per-endpoint definitions: `getPosts: build.query(` / `addPost: build.mutation(`.
+    // The builder parameter is mangled in production bundles (`e.query`/`b.query`),
+    // so it is captured (group 2) and validated against the real `endpoints:(x)=>`
+    // parameter name rather than hardcoding `build` — which would both miss
+    // minified code and, if blindly broadened, false-positive on any
+    // `key: obj.query(`. Group 1 = endpoint name, 2 = builder ident, 3 = kind.
     static ref ENDPOINT_RE: Regex = Regex::new(
-        r#"([\w$]+)\s*:\s*build\.(query|mutation)\s*\("#
+        r#"([\w$]+)\s*:\s*([\w$]+)\.(query|mutation)\s*\("#
+    ).unwrap();
+
+    // The builder parameter name of `endpoints: (build) => ({...})`. `endpoints`
+    // is a fixed RTK Query key (survives minification); only its parameter is
+    // mangled, so capturing it here lets ENDPOINT_RE bind to the real builder.
+    static ref BUILDER_PARAM_RE: Regex = Regex::new(
+        r#"endpoints\s*:\s*(?:async\s+)?(?:function\s*\*?\s*)?\(?\s*([\w$]+)"#
     ).unwrap();
 
     // createApi config fields, scanned once for metadata enrichment.
@@ -163,25 +175,52 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // --- shared RTK Query createApi metadata (scanned once) ---------------
-    let reducer_path = REDUCER_PATH_RE
-        .captures(source)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
-    let tags: Vec<String> = TAG_TYPES_RE
-        .captures(source)
-        .and_then(|c| c.get(1))
-        .map(|m| {
-            STRING_LIT_RE
-                .captures_iter(m.as_str())
-                .filter_map(|c| c.get(1))
-                .map(|x| x.as_str().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    let base_url = BASE_QUERY_RE
-        .captures(source)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
+    // A single file/chunk can bundle several `createApi` blocks (authApi /
+    // userApi / …), each with its own reducerPath/tagTypes/baseUrl. A global
+    // first-match capture would mis-attribute one block's metadata to every
+    // endpoint, so when more than one createApi config is present we drop the
+    // ambiguous file-global fields rather than assert a wrong association.
+    let multiple_apis = REDUCER_PATH_RE.find_iter(source).count() > 1 || BASE_QUERY_RE.find_iter(source).count() > 1;
+
+    let reducer_path = if multiple_apis {
+        None
+    } else {
+        REDUCER_PATH_RE
+            .captures(source)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+    };
+    let tags: Vec<String> = if multiple_apis {
+        Vec::new()
+    } else {
+        TAG_TYPES_RE
+            .captures(source)
+            .and_then(|c| c.get(1))
+            .map(|m| {
+                STRING_LIT_RE
+                    .captures_iter(m.as_str())
+                    .filter_map(|c| c.get(1))
+                    .map(|x| x.as_str().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let base_url = if multiple_apis {
+        None
+    } else {
+        BASE_QUERY_RE
+            .captures(source)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+    };
+
+    // Real `endpoints:(x)=>` builder parameter names — an endpoint match is only
+    // trusted when its builder ident (ENDPOINT_RE group 2) is one of these.
+    let builder_params: Vec<&str> = BUILDER_PARAM_RE
+        .captures_iter(source)
+        .filter_map(|c| c.get(1))
+        .map(|m| m.as_str())
+        .collect();
 
     // --- rtk_query_api: fetchBaseQuery({baseUrl}) -------------------------
     for caps in BASE_QUERY_RE.captures_iter(source) {
@@ -205,11 +244,17 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         );
     }
 
-    // --- rtk_query_endpoint: build.query / build.mutation -----------------
+    // --- rtk_query_endpoint: <builder>.query / <builder>.mutation ---------
     for caps in ENDPOINT_RE.captures_iter(source) {
+        let builder = caps.get(2).map_or("", |m| m.as_str());
+        // Only trust matches whose receiver is the real RTK Query builder param;
+        // this rejects unrelated `key: obj.query(` (DB clients, query builders).
+        if !builder_params.contains(&builder) {
+            continue;
+        }
         let whole = caps.get(0).unwrap();
         let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let kind = caps.get(2).map_or("", |m| m.as_str()).to_string();
+        let kind = caps.get(3).map_or("", |m| m.as_str()).to_string();
         out.push(
             AnalyzerMatch::new(
                 "rtk_query_endpoint",
@@ -288,6 +333,52 @@ mod tests {
         assert!(
             m.iter()
                 .any(|x| x.match_kind == "rtk_query_endpoint" && x.match_value == "addPost")
+        );
+    }
+
+    #[test]
+    fn detects_minified_endpoints_with_mangled_builder() {
+        // Production-minified: the `endpoints:(e)=>` builder is a single char,
+        // so a hardcoded `build.` would miss these entirely.
+        let src = r#"var api=(0,t.createApi)({reducerPath:"a",baseQuery:(0,t.fetchBaseQuery)({baseUrl:"https://x.dev/"}),endpoints:(e)=>({getX:e.query({query:()=>"x"}),setY:e.mutation({query:()=>({url:"y",method:"POST"})})})});"#;
+        let m = analyze(src, Some("t.js"), FileType::Js);
+        assert!(
+            m.iter()
+                .any(|x| x.match_kind == "rtk_query_endpoint" && x.match_value == "getX"),
+            "minified query endpoint missed: {m:?}"
+        );
+        assert!(
+            m.iter()
+                .any(|x| x.match_kind == "rtk_query_endpoint" && x.match_value == "setY"),
+            "minified mutation endpoint missed: {m:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_rtk_query_method_calls() {
+        // No `endpoints:` builder in scope, so `db.query(` / `gql.mutation(`
+        // must NOT be reported as RTK Query endpoints.
+        let src = r#"var rows={fetchAll:db.query("SELECT 1"),apply:gql.mutation("x")};"#;
+        let m = analyze(src, Some("t.js"), FileType::Js);
+        assert!(
+            !m.iter().any(|x| x.match_kind == "rtk_query_endpoint"),
+            "false-positive endpoint on plain method calls: {m:?}"
+        );
+    }
+
+    #[test]
+    fn drops_ambiguous_metadata_for_multiple_createapi() {
+        // Two createApi blocks: a global first-match reducerPath would be wrong
+        // for one of them, so the metadata is dropped rather than mis-attributed.
+        let src = r#"var a=(0,t.createApi)({reducerPath:"authApi",baseQuery:(0,t.fetchBaseQuery)({baseUrl:"https://auth.dev/"}),endpoints:(b)=>({login:b.mutation({})})});var u=(0,t.createApi)({reducerPath:"userApi",baseQuery:(0,t.fetchBaseQuery)({baseUrl:"https://user.dev/"}),endpoints:(b)=>({me:b.query({})})});"#;
+        let m = analyze(src, Some("t.js"), FileType::Js);
+        let ep = m
+            .iter()
+            .find(|x| x.match_kind == "rtk_query_endpoint")
+            .expect("endpoint detected");
+        assert!(
+            ep.metadata.as_ref().unwrap()["reducer_path"].is_null(),
+            "ambiguous reducer_path must not be attributed: {ep:?}"
         );
     }
 }

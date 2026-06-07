@@ -48,8 +48,8 @@ significant_drop_tightening = "allow"
 
 [dependencies]
 regex = "1"
-lazy_static = "1.4"
-thiserror = "2.0.17"
+lazy_static = "1.5"
+thiserror = "2.0.18"
 url = "2"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net", "process"] }
@@ -71,7 +71,7 @@ oxc_syntax = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 oxc_traverse = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 oxc_codegen = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 oxc_cfg = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
-clap = { version = "4.5.57", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 md5 = "0.7"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 chrono = { version = "0.4", features = ["serde"] }

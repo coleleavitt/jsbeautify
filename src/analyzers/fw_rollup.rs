@@ -176,7 +176,13 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
                 )
                 .with_provenance(Provenance::Other)
                 .with_severity(Severity::Info)
-                .with_metadata(serde_json::json!({ "detected_from": "file_path" })),
+                .with_metadata(serde_json::json!({
+                    "detected_from": "file_path",
+                    // The `-<8hex>.js` filename shape is shared by webpack/Vite/
+                    // Rollup output, so a filename alone (no in-source Rollup
+                    // signal) is only weak evidence of Rollup specifically.
+                    "confidence": "low",
+                })),
             );
         }
     }

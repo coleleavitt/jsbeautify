@@ -145,7 +145,11 @@ pub fn rxjs(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<A
     rxjs_annotator::extract_operator_usage(source)
         .into_iter()
         .map(|(op, count)| {
-            AnalyzerMatch::new("rxjs_operator", op.clone(), pos(source, &op), file_type, fp())
+            // Position on the member-access form `.op` (present in both `n.op(`
+            // and `(0,n.op)(`), which avoids landing on an unrelated substring
+            // occurrence of the bare operator name.
+            let needle = format!(".{op}");
+            AnalyzerMatch::new("rxjs_operator", op.clone(), pos(source, &needle), file_type, fp())
                 .with_provenance(Provenance::Other)
                 .with_severity(Severity::Info)
                 .with_metadata(serde_json::json!({ "count": count }))
@@ -177,6 +181,35 @@ pub fn single_spa(source: &str, file_path: Option<&str>, file_type: FileType) ->
                 "route_pattern": app.route_pattern,
                 "source_url": app.source_url,
                 "has_integrity_check": app.has_integrity_check,
+                // Registry-wide security posture (otherwise dropped on the floor).
+                "has_sri": r.has_sri,
+                "has_csp_nonce": r.has_csp_nonce,
+                "shared_auth_scope": r.shared_auth_scope,
+            })),
+        );
+    }
+    // Dynamic `createElement("script")` injections are the security-bearing
+    // signal of this extractor: an MFE that loads remote bundles at runtime with
+    // no SRI/integrity is a supply-chain surface. Surface each one, escalating
+    // severity when neither the injection site nor the registry carries an
+    // integrity check.
+    for si in &r.script_injections {
+        let unverified = !si.has_security_attrs && !r.has_sri;
+        out.push(
+            AnalyzerMatch::new(
+                "single_spa_script_injection",
+                si.url_pattern.clone(),
+                pos(source, &si.url_pattern),
+                file_type,
+                fp(),
+            )
+            .with_provenance(Provenance::Other)
+            .with_severity(if unverified { Severity::Medium } else { Severity::Info })
+            .with_metadata(serde_json::json!({
+                "method": si.method,
+                "has_security_attrs": si.has_security_attrs,
+                "has_sri": r.has_sri,
+                "has_csp_nonce": r.has_csp_nonce,
             })),
         );
     }
@@ -199,9 +232,15 @@ pub fn single_spa(source: &str, file_path: Option<&str>, file_type: FileType) ->
 /// LaunchDarkly: feature-flag keys + client-side SDK key / environment.
 pub fn launchdarkly(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     if !(source.contains("launchdarkly")
+        || source.contains("ldclient")
+        || source.contains("ldClient")
         || source.contains("LDClient")
         || source.contains("X-LaunchDarkly")
-        || source.contains("variationDetail"))
+        || source.contains("variationDetail")
+        || source.contains("boolVariation")
+        || source.contains("stringVariation")
+        || source.contains("numberVariation")
+        || source.contains("jsonVariation"))
     {
         return Vec::new();
     }
@@ -247,6 +286,47 @@ pub fn launchdarkly(source: &str, file_path: Option<&str>, file_type: FileType) 
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launchdarkly_adapter_runs_on_lowercase_ldclient_variation() {
+        let src = r#"ldclient.variation("new-checkout-flow", false);"#;
+        let matches = launchdarkly(src, Some("flags.js"), FileType::Js);
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.match_kind == "launchdarkly_flag" && m.match_value == "new-checkout-flow"),
+            "expected LaunchDarkly flag from lowercase ldclient call: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn launchdarkly_adapter_runs_on_camelcase_ldclient_variation() {
+        let src = r#"ldClient.variation("new-checkout-flow", false);"#;
+        let matches = launchdarkly(src, Some("flags.js"), FileType::Js);
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.match_kind == "launchdarkly_flag" && m.match_value == "new-checkout-flow"),
+            "expected LaunchDarkly flag from camelCase ldClient call: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn launchdarkly_adapter_runs_on_typed_variation_helper() {
+        let src = r#"client.boolVariation("typed-flag", false);"#;
+        let matches = launchdarkly(src, Some("flags.js"), FileType::Js);
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.match_kind == "launchdarkly_flag" && m.match_value == "typed-flag"),
+            "expected LaunchDarkly flag from typed variation helper: {matches:?}"
+        );
+    }
 }
 
 /// HTTP interceptor chains: injected headers + token-storage locations.

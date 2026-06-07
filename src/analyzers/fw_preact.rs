@@ -94,6 +94,22 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     // React bundles.
     let strong_preact = !out.is_empty() || source.contains("preact") || VNODE_CLUSTER_RE.is_match(source);
     if strong_preact {
+        // The `__k…__v` VNode field cluster is itself a strong, Preact-exclusive
+        // signature — surface it as a finding, not merely as a gating signal, so
+        // a bundle carrying only the cluster still yields a Preact result.
+        if let Some(cluster) = VNODE_CLUSTER_RE.find(source) {
+            out.push(
+                AnalyzerMatch::new(
+                    "preact_vnode_cluster",
+                    cluster.as_str().to_string(),
+                    PositionRange::from_byte_range(source, cluster.start(), cluster.end()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info),
+            );
+        }
         for caps in VNODE_RE.captures_iter(source) {
             let whole = caps.get(0).unwrap();
             let val = caps.get(1).map_or("", |m| m.as_str()).to_string();

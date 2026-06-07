@@ -52,15 +52,30 @@ lazy_static! {
         Regex::new(r#"(/@vite/client|/@vite/env|/@fs/|vite-hmr)"#).unwrap();
 }
 
-/// Split a flat JS string-array literal (`["a.js","b.css"]`) into its entries,
-/// stripping surrounding quotes. Used to surface the chunk table in metadata.
+/// Extract the entries of a flat JS string-array literal (`["a.js","b.css"]`).
+///
+/// Parses each quoted string literal directly rather than splitting on commas,
+/// so a comma *inside* a quoted entry (a valid, if rare, path) does not corrupt
+/// the table. Both single- and double-quote styles are handled.
 fn parse_dep_array(arr: &str) -> Vec<String> {
-    let inner = arr.trim().trim_start_matches('[').trim_end_matches(']');
-    inner
-        .split(',')
-        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    let mut out = Vec::new();
+    let mut chars = arr.chars();
+    while let Some(c) = chars.next() {
+        if c == '"' || c == '\'' {
+            let quote = c;
+            let mut entry = String::new();
+            for ch in chars.by_ref() {
+                if ch == quote {
+                    break;
+                }
+                entry.push(ch);
+            }
+            if !entry.is_empty() {
+                out.push(entry);
+            }
+        }
+    }
+    out
 }
 
 /// Scan source for Vite signatures.

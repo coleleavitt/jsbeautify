@@ -58,6 +58,7 @@ pub mod operator_proxy;
 pub mod optional_chaining_normalizer;
 pub mod param_heuristic;
 pub mod post_annotations;
+pub mod rename_guards;
 pub mod return_sequence_split;
 pub mod self_init_accessor;
 pub mod sequence_expression_split;
@@ -529,7 +530,22 @@ impl AstDeobfuscator {
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                 let mut collector = ExportNameCollector::new();
                 traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-                let export_map = collector.into_map();
+                drop(ctx);
+                let mut export_map = collector.into_map();
+
+                // Soundness guard: never rename a binding observable to a direct
+                // `eval` or exposed as a native ES export (see `rename_guards`).
+                if !export_map.is_empty() {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut guard = rename_guards::RenameGuardCollector::new();
+                    traverse_mut_with_ctx(&mut guard, &mut program, &mut ctx);
+                    drop(ctx);
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let guarded = guard.into_guarded(&scoping);
+                    export_map.retain(|sym, _| !guarded.contains(sym));
+                }
+
                 if !export_map.is_empty() {
                     eprintln!(
                         "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
@@ -1018,16 +1034,27 @@ impl AstDeobfuscator {
             mem_ck("enter Phase 12.5 (local slot rename)");
             eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
             {
+                // Soundness guard: exclude bindings visible to a direct `eval`
+                // and native ES exports — renaming either silently breaks
+                // runtime equivalence (see `rename_guards`).
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let plan = bun_local_renamer::plan_local_renames(&scoping);
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                let mut guard = rename_guards::RenameGuardCollector::new();
+                traverse_mut_with_ctx(&mut guard, &mut program, &mut ctx);
+                drop(ctx);
+
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let guarded = guard.into_guarded(&scoping);
+                let plan = bun_local_renamer::plan_local_renames(&scoping, &guarded);
                 if !plan.is_empty() {
                     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                     let mut renamer = bun_local_renamer::LocalRenamer::new(plan);
                     traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
                     eprintln!(
-                        "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names",
-                        renamer.renamed()
+                        "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names ({} guarded)",
+                        renamer.renamed(),
+                        guarded.len()
                     );
                 } else {
                     eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
@@ -1051,11 +1078,10 @@ impl AstDeobfuscator {
             let allocator = Allocator::default();
             let parse_result = Parser::new(&allocator, &intermediate, source_type).parse();
             if !parse_result.errors.is_empty() {
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 12.6: checkpoint re-parse failed ({:?}); returning structural output",
+                return Err(crate::BeautifyError::BeautificationFailed(format!(
+                    "Phase 12.6 checkpoint re-parse failed: {:?}",
                     parse_result.errors.first()
-                );
-                return Ok(intermediate);
+                )));
             }
             let mut program = parse_result.program;
             mem_ck("cosmetic-A start (after re-parse)");
@@ -1144,11 +1170,10 @@ impl AstDeobfuscator {
         let allocator = Allocator::default();
         let parse_result = Parser::new(&allocator, &intermediate2, source_type).parse();
         if !parse_result.errors.is_empty() {
-            eprintln!(
-                "[DEOBFUSCATE] Phase 15.6: re-parse failed ({:?}); returning cosmetic-A output",
+            return Err(crate::BeautifyError::BeautificationFailed(format!(
+                "Phase 15.6 checkpoint re-parse failed: {:?}",
                 parse_result.errors.first()
-            );
-            return Ok(intermediate2);
+            )));
         }
         let mut program = parse_result.program;
         mem_ck("cosmetic-B start (after re-parse)");
@@ -1250,7 +1275,14 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Generating output code");
         let output = Codegen::new().build(&program).code;
         eprintln!("[DEOBFUSCATE] Output generated, {} bytes", output.len());
-        log_output_validity("Phase 19.6", &output, source_type);
+        // Consistency with the arena-split checkpoints: an AST -> codegen boundary
+        // that emits unparseable JS indicates a real defect in a prior pass, so
+        // surface it rather than returning invalid output as success.
+        if !log_output_validity("Phase 19.6", &output, source_type) {
+            return Err(crate::BeautifyError::BeautificationFailed(
+                "Phase 19.6 final codegen produced unparseable JavaScript".to_string(),
+            ));
+        }
 
         if self.skip_annotations {
             eprintln!("[DEOBFUSCATE] Skipping module annotations (alignment mode)");
@@ -1305,7 +1337,12 @@ impl AstDeobfuscator {
     }
 }
 
-fn log_output_validity(label: &str, code: &str, source_type: SourceType) {
+/// Logs validity of generated output and returns whether it re-parses cleanly.
+///
+/// Returns `false` only on a *parse* error (the output is not valid JS);
+/// semantic errors are logged but still return `true`, matching the
+/// parse-only policy the arena-split checkpoints enforce on their own codegen.
+fn log_output_validity(label: &str, code: &str, source_type: SourceType) -> bool {
     let allocator = Allocator::default();
     let parse_result = Parser::new(&allocator, code, source_type).parse();
     if !parse_result.errors.is_empty() {
@@ -1316,7 +1353,7 @@ fn log_output_validity(label: &str, code: &str, source_type: SourceType) {
         for (idx, error) in parse_result.errors.iter().enumerate().take(5) {
             eprintln!("[DEOBFUSCATE] {label}: parse error {idx}: {error:?}");
         }
-        return;
+        return false;
     }
 
     let semantic_result = SemanticBuilder::new().build(&parse_result.program);
@@ -1328,10 +1365,11 @@ fn log_output_validity(label: &str, code: &str, source_type: SourceType) {
         for (idx, error) in semantic_result.errors.iter().enumerate().take(5) {
             eprintln!("[DEOBFUSCATE] {label}: semantic error {idx}: {error:?}");
         }
-        return;
+        return true;
     }
 
     eprintln!("[DEOBFUSCATE] {label}: Generated output re-parse succeeded");
+    true
 }
 
 fn annotate_webpack_modules(code: &str) -> String {
@@ -1367,5 +1405,48 @@ fn annotate_webpack_modules(code: &str) -> String {
 impl Default for AstDeobfuscator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    /// Parse `src` and codegen it back to a string with the same `Codegen`
+    /// configuration the deobfuscation checkpoints use.
+    fn roundtrip(src: &str) -> String {
+        let allocator = Allocator::default();
+        let program = Parser::new(&allocator, src, SourceType::mjs()).parse().program;
+        Codegen::new().build(&program).code
+    }
+
+    /// The arena-split checkpoints (Phases 12.6 / 15.6) codegen the program,
+    /// free the arena, then re-parse the codegen output into a fresh arena. This
+    /// is only a behavioural no-op if oxc's `codegen ∘ parse` is idempotent on
+    /// our own output — i.e. re-parsing and re-codegen-ing yields byte-identical
+    /// text. Because the oxc dependency tracks upstream `main`, a future bump
+    /// could silently break that property (and therefore the "1-vs-2-checkpoint
+    /// output is byte-identical" guarantee); this test pins it.
+    #[test]
+    fn codegen_is_idempotent_across_a_checkpoint_roundtrip() {
+        // Constructs the checkpoints must preserve across a parse/codegen cycle:
+        // hashbang, directives, exports, template literals, regex, comments.
+        let samples = [
+            "#!/usr/bin/env node\n\"use strict\";\nconst a = 1 + 2;\nexport { a };\n",
+            "function f(x){ return x ? `a${x}b` : /re,gex/g.test(x); }\nf(1);\n",
+            "export function g(){ let q = 1; return q; }\nexport const K = 2;\n",
+            "class C { #p = 1; m(){ return this.#p; } }\nnew C().m();\n",
+            "const o = { a: 1, b: 2, ['c']: 3 };\nfor (const k of Object.keys(o)) o[k]++;\n",
+        ];
+
+        for src in samples {
+            let once = roundtrip(src);
+            let twice = roundtrip(&once);
+            assert_eq!(
+                once, twice,
+                "codegen is not idempotent across a checkpoint round-trip for source:\n{src}\n\
+                 first:\n{once}\nsecond:\n{twice}"
+            );
+        }
     }
 }

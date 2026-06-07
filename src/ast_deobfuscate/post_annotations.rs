@@ -137,114 +137,374 @@ pub fn annotate_namespace_modules(code: &str) -> (String, usize) {
 // 3. Arrow Sequence Expansion (post-codegen string replacement)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static ARROW_SEQ_RE: LazyLock<Regex> = LazyLock::new(|| {
-    // Matches: => (BODY) where BODY contains at least 2 top-level commas.
-    // We capture everything inside the outermost parens.
-    Regex::new(r"=>\s*\((.+)\)([;,]?)").expect("valid arrow seq regex")
-});
-
 /// Expands simple arrow sequences with 2+ top-level commas into block form.
 /// `(H) => (a(), b(), c())` → `(H) => { a(); b(); return c(); }`
 #[must_use]
 pub fn expand_arrow_sequences(code: &str) -> (String, usize) {
+    let bytes = code.as_bytes();
+    let mut result = String::with_capacity(code.len());
     let mut count = 0usize;
-    let result = ARROW_SEQ_RE.replace_all(code, |caps: &regex::Captures| {
-        let body = caps.get(1).map_or("", |m| m.as_str());
-        let trailing = caps.get(2).map_or("", |m| m.as_str());
 
-        // A parenthesised group immediately followed by `=>` is a CURRIED ARROW's
-        // parameter list (`(H) => ($, q, K) => {...}`), NOT a sequence-expression
-        // body. Rewriting it produces `(H) => { ...; } => {...}` (invalid JS), so
-        // bail. The regex crate has no lookahead, so peek past the match instead.
-        let after = code[caps.get(0).map_or(code.len(), |m| m.end())..].trim_start();
-        if after.starts_with("=>") {
-            return caps[0].to_string();
+    let mut cursor = 0usize;
+    let mut scan = 0usize;
+    while let Some(arrow) = find_arrow_outside_syntax(code, scan) {
+        let open = skip_ws(bytes, arrow + 2);
+        if bytes.get(open) != Some(&b'(') {
+            scan = arrow + 2;
+            continue;
+        }
+        let Some(close) = find_matching_paren(code, open) else {
+            scan = arrow + 2;
+            continue;
+        };
+
+        let after_ws = skip_ws(bytes, close + 1);
+        if !is_arrow_body_delimiter(bytes, after_ws) {
+            scan = arrow + 2;
+            continue;
         }
 
-        // The greedy `(.+)` can over-capture across a `)(` (e.g. the indirect
-        // call `=> (0, obj.method)(args)`), yielding a body with unbalanced
-        // brackets. Expanding that produces invalid JS, so bail unless the
-        // captured body is bracket-balanced (never goes negative, ends at 0).
-        if !is_bracket_balanced(body) {
-            return caps[0].to_string();
-        }
-        // Also require the group to actually be the whole arrow body: the text
-        // after it must be a body terminator, not a continuation like `(`/`.`/`[`
-        // (call / member access — i.e. the group was a callee, not a sequence).
-        if matches!(after.as_bytes().first(), Some(b'(' | b'.' | b'[' | b'`')) {
-            return caps[0].to_string();
-        }
-
-        // Split on top-level commas (respecting paren nesting)
-        let parts = split_top_level_commas(body);
+        let body = &code[open + 1..close];
+        let Some(parts) = split_top_level_commas(body) else {
+            scan = arrow + 2;
+            continue;
+        };
         if parts.len() < 3 {
-            return caps[0].to_string();
+            scan = arrow + 2;
+            continue;
         }
 
-        // Skip if any part looks complex (contains => or {})
-        if parts.iter().any(|p| p.contains("=>") || p.contains('{')) {
-            return caps[0].to_string();
+        // Skip if any part looks complex outside string/comment/template syntax.
+        if parts
+            .iter()
+            .any(|p| find_arrow_outside_syntax(p, 0).is_some() || contains_block_open_outside_syntax(p))
+        {
+            scan = arrow + 2;
+            continue;
         }
 
+        let (trailing, end) = match bytes.get(after_ws) {
+            Some(b';' | b',') => (&code[after_ws..after_ws + 1], after_ws + 1),
+            _ => ("", close + 1),
+        };
+
+        result.push_str(&code[cursor..arrow]);
         count += 1;
-        let mut out = String::from("=> {\n");
+        result.push_str("=> {\n");
         for (i, part) in parts.iter().enumerate() {
             let trimmed = part.trim();
             if i == parts.len() - 1 {
-                out.push_str(&format!("\t\treturn {trimmed};\n"));
+                result.push_str(&format!("\t\treturn {trimmed};\n"));
             } else {
-                out.push_str(&format!("\t\t{trimmed};\n"));
+                result.push_str(&format!("\t\t{trimmed};\n"));
             }
         }
-        out.push_str("\t}");
-        out.push_str(trailing);
-        out
-    });
+        result.push_str("\t}");
+        result.push_str(trailing);
 
-    (result.into_owned(), count)
+        cursor = end;
+        scan = end;
+    }
+
+    result.push_str(&code[cursor..]);
+    (result, count)
 }
 
-/// True if `s` is bracket-balanced: depth over `()[]{}` never goes negative and
-/// ends at zero. Used to reject greedy regex over-captures across `)(` (e.g. the
-/// `(0, obj.fn)(args)` indirect-call idiom). Bracket chars inside string
-/// literals can skew this, but the failure mode is a conservatively-skipped
-/// expansion, never invalid output.
-fn is_bracket_balanced(s: &str) -> bool {
-    let mut depth: i32 = 0;
-    for c in s.chars() {
-        match c {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+        i += 1;
+    }
+    i
+}
+
+fn skip_quoted(bytes: &[u8], mut i: usize, quote: u8) -> usize {
+    i += 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b if b == quote => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn skip_template(bytes: &[u8], mut i: usize) -> usize {
+    i += 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'$' if bytes.get(i + 1) == Some(&b'{') => i = skip_template_expr(bytes, i + 2),
+            b'`' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn skip_template_expr(bytes: &[u8], mut i: usize) -> usize {
+    let mut depth = 1i32;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+            b'`' => i = skip_template(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
                 depth -= 1;
-                if depth < 0 {
-                    return false;
+                i += 1;
+                if depth == 0 {
+                    return i;
                 }
             }
-            _ => {}
+            _ => i += 1,
         }
     }
-    depth == 0
+    bytes.len()
 }
 
-/// Split a string on top-level commas (respecting parenthesis nesting).
-fn split_top_level_commas(s: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0;
-    let mut last = 0;
+fn skip_line_comment(bytes: &[u8], mut i: usize) -> usize {
+    i += 2;
+    while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+        i += 1;
+    }
+    i
+}
 
-    for (i, c) in s.char_indices() {
-        match c {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                parts.push(&s[last..i]);
-                last = i + 1;
+fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
+    i += 2;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+fn regex_prefix_keyword_before(bytes: &[u8], mut i: usize) -> bool {
+    while i > 0 && matches!(bytes.get(i - 1), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+        i -= 1;
+    }
+    if i == 0 || !is_ident_continue(bytes[i - 1]) {
+        return false;
+    }
+
+    let end = i;
+    while i > 0 && is_ident_continue(bytes[i - 1]) {
+        i -= 1;
+    }
+    matches!(
+        std::str::from_utf8(&bytes[i..end]).ok(),
+        Some("return" | "throw" | "case" | "delete" | "void" | "typeof" | "yield" | "await" | "in" | "instanceof")
+    )
+}
+
+fn is_regex_literal_start(bytes: &[u8], i: usize) -> bool {
+    if bytes.get(i) != Some(&b'/') || matches!(bytes.get(i + 1), Some(b'/' | b'*')) {
+        return false;
+    }
+    if regex_prefix_keyword_before(bytes, i) {
+        return true;
+    }
+    let mut prev = i;
+    while prev > 0 && matches!(bytes.get(prev - 1), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+        prev -= 1;
+    }
+    prev == 0
+        || matches!(
+            bytes[prev - 1],
+            b'(' | b'['
+                | b'{'
+                | b'='
+                | b':'
+                | b','
+                | b';'
+                | b'!'
+                | b'?'
+                | b'&'
+                | b'|'
+                | b'+'
+                | b'-'
+                | b'*'
+                | b'%'
+                | b'~'
+                | b'^'
+                | b'<'
+                | b'>'
+        )
+}
+
+fn skip_regex_literal(bytes: &[u8], mut i: usize) -> usize {
+    let start = i;
+    let mut in_class = false;
+    i += 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'[' if !in_class => {
+                in_class = true;
+                i += 1;
             }
-            _ => {}
+            b']' if in_class => {
+                in_class = false;
+                i += 1;
+            }
+            b'/' if !in_class => {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                return i;
+            }
+            b'\n' | b'\r' => return start + 1,
+            _ => i += 1,
         }
     }
+    start + 1
+}
+
+fn is_arrow_body_delimiter(bytes: &[u8], i: usize) -> bool {
+    i >= bytes.len() || matches!(bytes[i], b';' | b',' | b')' | b']' | b'}')
+}
+
+fn find_arrow_outside_syntax(s: &str, start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = start;
+    while i + 1 < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+            b'`' => i = skip_template(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
+            b'=' if bytes[i + 1] == b'>' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn contains_block_open_outside_syntax(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+            b'`' => i = skip_template(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
+            b'{' => return true,
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+fn find_matching_paren(s: &str, open: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+            b'`' => i = skip_template(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+                if depth < 0 {
+                    return None;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Split a string on top-level commas (respecting nesting and string syntax).
+fn split_top_level_commas(s: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut last = 0;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+            b'`' => i = skip_template(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
+            b'(' => {
+                paren_depth += 1;
+                i += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                i += 1;
+            }
+            b'{' => {
+                brace_depth += 1;
+                i += 1;
+            }
+            b')' => {
+                paren_depth -= 1;
+                if paren_depth < 0 {
+                    return None;
+                }
+                i += 1;
+            }
+            b']' => {
+                bracket_depth -= 1;
+                if bracket_depth < 0 {
+                    return None;
+                }
+                i += 1;
+            }
+            b'}' => {
+                brace_depth -= 1;
+                if brace_depth < 0 {
+                    return None;
+                }
+                i += 1;
+            }
+            b',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                parts.push(&s[last..i]);
+                last = i + 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if paren_depth != 0 || bracket_depth != 0 || brace_depth != 0 {
+        return None;
+    }
     parts.push(&s[last..]);
-    parts
+    Some(parts)
 }
 
 #[cfg(test)]
@@ -276,5 +536,60 @@ mod tests {
         assert_eq!(count, 1);
         assert!(out.contains("validate(H);"), "Should split: {out}");
         assert!(out.contains("return emit(H);"), "Should have return: {out}");
+    }
+
+    #[test]
+    fn expands_arrow_sequence_with_string_commas_safely() {
+        let code = r#"const f = () => ("a,b", work(), done());"#;
+        let (out, count) = expand_arrow_sequences(code);
+        assert_eq!(count, 1);
+        assert!(out.contains(r#""a,b";"#), "string literal must stay intact: {out}");
+        assert!(out.contains("work();"), "Should split second part: {out}");
+        assert!(out.contains("return done();"), "Should return final part: {out}");
+    }
+
+    #[test]
+    fn ignores_arrow_text_inside_string() {
+        let code = r#"const s = "=> (a(), b(), c())";"#;
+        let (out, count) = expand_arrow_sequences(code);
+        assert_eq!(count, 0);
+        assert_eq!(out, code);
+    }
+
+    #[test]
+    fn ignores_expression_continuation_after_parenthesized_sequence() {
+        let code = "const f = () => (a(), b(), c()) + d;";
+        let (out, count) = expand_arrow_sequences(code);
+        assert_eq!(count, 0);
+        assert_eq!(out, code);
+    }
+
+    #[test]
+    fn ignores_arrow_text_inside_regex_literal() {
+        let code = r#"const r = /=> (a(), b(), c())/;"#;
+        let (out, count) = expand_arrow_sequences(code);
+        assert_eq!(count, 0);
+        assert_eq!(out, code);
+    }
+
+    #[test]
+    fn expands_arrow_sequence_with_regex_commas_safely() {
+        let code = r#"const f = () => (/a,b/.test(x), work(), done());"#;
+        let (out, count) = expand_arrow_sequences(code);
+        assert_eq!(count, 1);
+        assert!(
+            out.contains(r#"/a,b/.test(x);"#),
+            "regex literal must stay intact: {out}"
+        );
+        assert!(out.contains("work();"), "Should split second part: {out}");
+        assert!(out.contains("return done();"), "Should return final part: {out}");
+    }
+
+    #[test]
+    fn ignores_arrow_text_inside_nested_template_literal() {
+        let code = "const s = `${`=> (a(), b(), c());`}`;";
+        let (out, count) = expand_arrow_sequences(code);
+        assert_eq!(count, 0);
+        assert_eq!(out, code);
     }
 }

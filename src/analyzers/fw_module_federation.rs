@@ -39,8 +39,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         // (getFederationGlobal.ts builds `{alias,name,entry,shareScope,...}`).
         // Keys may be JSON-quoted or bare object-literal keys. Captures
         // (1)=remote name, (2)=remoteEntry URL.
+        // The entry is either an absolute URL or a relative `remoteEntry`-shaped
+        // path (`/remotes/app/remoteEntry.js`, `./remoteEntry.js`). Requiring one
+        // of those shapes (rather than any string) keeps the `{name,entry}`
+        // adjacency from matching ordinary object literals like `{name,entry:"main"}`.
         static ref MF_REMOTE_RE: Regex = Regex::new(
-            r#"["']?name["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?entry["']?\s*:\s*["'](https?://[^"']+)["']"#
+            r#"["']?name["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?entry["']?\s*:\s*["'](https?://[^"']+|[^"']*remoteEntry[^"']*)["']"#
         ).unwrap();
 
         // mf_expose: an `exposes` array whose first object carries a `./`-prefixed

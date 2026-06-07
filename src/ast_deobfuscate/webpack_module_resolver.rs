@@ -54,11 +54,9 @@ pub fn resolve_module_ids(source: &str) -> ModuleResolutionResult {
     }
 
     let mut resolved: FxHashMap<u32, ResolvedModule> = FxHashMap::default();
-    let mut total_modules = 0usize;
-
     // Split source into module regions and analyze each
     let module_regions = extract_module_regions(source);
-    total_modules = module_regions.len();
+    let total_modules = module_regions.len();
 
     for (id, region) in &module_regions {
         if let Some(package) = identify_module_package(region) {

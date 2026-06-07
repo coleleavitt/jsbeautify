@@ -99,22 +99,6 @@ impl<'s> SinkVisitor<'s> {
         }
     }
 
-    /// Get the static name from a [`StaticMemberExpression`]'s property
-    /// or a [`ComputedMemberExpression`]'s string literal key.
-    fn static_member_name<'a>(member: &MemberExpression<'a>) -> Option<&'a str> {
-        match member {
-            MemberExpression::StaticMemberExpression(sm) => Some(sm.property.name.as_str()),
-            MemberExpression::ComputedMemberExpression(cm) => {
-                if let Expression::StringLiteral(s) = &cm.expression {
-                    Some(s.value.as_str())
-                } else {
-                    None
-                }
-            }
-            MemberExpression::PrivateFieldExpression(_) => None,
-        }
-    }
-
     /// `target.location` or `window.location` or just bare `location`?
     fn is_location_object<'a>(expr: &Expression<'a>) -> bool {
         match expr {

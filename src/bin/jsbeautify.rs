@@ -10,7 +10,7 @@ use js_beautify_rs::analyzers::{AnalyzerConfig, run_all};
 use js_beautify_rs::cross_version::{AlignConfig, CrossVersionAligner};
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
-use js_beautify_rs::{Options, beautify, wordlist};
+use js_beautify_rs::{Options, beautify};
 use regex;
 use serde_json;
 use std::fs;
@@ -689,6 +689,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 npm_packages: cli.extract_packages,
                 comments: cli.extract_paths || cli.extract_hostnames,
                 framework_recon: false,
+                // Preserve prior behaviour: API/storage extraction always ran in
+                // the CLI path regardless of the targeted flags.
+                api_calls: true,
             }
         };
 
@@ -882,10 +885,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if cli.wordlist {
-        use js_beautify_rs::wordlist::extractors::html_extractor::{
-            self as html_ext, HtmlExtractConfig, HtmlSourcedWord,
-        };
-        use js_beautify_rs::wordlist::extractors::js_ast_extractor::{self, ExtractConfig, SourcedWord};
+        use js_beautify_rs::wordlist::extractors::html_extractor::{self as html_ext, HtmlExtractConfig};
+        use js_beautify_rs::wordlist::extractors::js_ast_extractor::{self, ExtractConfig};
 
         let min_len = cli.min_length.unwrap_or(2);
         let max_len = cli.max_length.unwrap_or(0);

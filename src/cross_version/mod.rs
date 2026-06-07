@@ -18,7 +18,7 @@ pub use ast_matcher::{StatementInfo, StatementMatcher};
 pub use canonical_namer::CanonicalNamer;
 pub use sourcemap_parser::{NameMapping, SourcemapParser};
 
-use crate::ast_deobfuscate::bun_alphabet::{BunAlphabet, extract_alphabet_from_source};
+use crate::ast_deobfuscate::bun_alphabet::extract_alphabet_from_source;
 use crate::{Result, bun_extract};
 use rustc_hash::FxHashMap;
 
@@ -45,8 +45,6 @@ impl Default for AlignConfig {
 pub struct CrossVersionAligner {
     config: AlignConfig,
     stable_names: FxHashMap<String, String>,
-    /// Extracted Bun alphabet for slot-based naming
-    source_alphabet: Option<BunAlphabet>,
 }
 
 impl CrossVersionAligner {
@@ -55,7 +53,6 @@ impl CrossVersionAligner {
         Self {
             config,
             stable_names: FxHashMap::default(),
-            source_alphabet: None,
         }
     }
 

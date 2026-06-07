@@ -8,7 +8,6 @@
 //!   - **Pitchfork**: zip across wordlists (1st word from each list together)
 //!   - **Clusterbomb**: cartesian product of all wordlists
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::{fmt, fs};

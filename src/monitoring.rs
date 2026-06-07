@@ -13,7 +13,6 @@
 //! This module provides the runtime engine and notification dispatch. The DB
 //! operations delegate to [`crate::db::monitors`] and [`crate::db::files`].
 
-use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::db::{ProjectDb, monitors as db_monitors};

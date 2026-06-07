@@ -112,7 +112,9 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
     // header, plus the SDK identifiers / stream+event hosts.
     let is_launchdarkly = source.contains("X-LaunchDarkly")
         || source.contains("LaunchDarkly")
+        || source.contains("LDClient")
         || source.contains("ldclient")
+        || source.contains("ldClient")
         || source.contains("launchdarkly")
         || source.contains("clientstream.launchdarkly")
         || ENV_RE.is_match(source);

@@ -41,11 +41,11 @@ pub mod ca;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode, Uri};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::scope::ScopeMatcher;
@@ -554,6 +554,7 @@ fn bad_gateway(msg: &str) -> Response<Full<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     #[test]
     fn config_default_binds_loopback() {

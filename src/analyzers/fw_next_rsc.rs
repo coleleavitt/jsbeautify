@@ -46,7 +46,7 @@ lazy_static! {
     /// `createServerReference("<hexid>", ...)` server-action reference. Matches
     /// both the bare call and the `(0,n.createServerReference)(...)` member form.
     static ref SERVER_ACTION_RE: Regex =
-        Regex::new(r#"createServerReference\(\s*"([0-9a-fA-F]{8,})""#).unwrap();
+        Regex::new(r#"(?:\(\s*0\s*,\s*[A-Za-z_$][0-9A-Za-z_$]*\.createServerReference\s*\)|createServerReference)\s*\(\s*"([0-9a-fA-F]{8,})""#).unwrap();
 
     /// `NEXT_PUBLIC_<NAME>` build-time inlined env identifier.
     static ref PUBLIC_ENV_RE: Regex = Regex::new(r#"\bNEXT_PUBLIC_([A-Z0-9_]+)"#).unwrap();
@@ -232,6 +232,18 @@ mod tests {
         assert_eq!(env.severity, Severity::Low);
 
         assert!(m.iter().any(|x| x.match_kind == "next_webpack_chunk"));
+    }
+
+    #[test]
+    fn detects_server_action_interop_member_call() {
+        let src =
+            r#"var a=(0,n.createServerReference)("abcdef1234567890",callServer,void 0,findSourceMapURL,"submit");"#;
+        let m = analyze(src, Some("chunk.js"), FileType::Js);
+        assert!(
+            m.iter()
+                .any(|x| x.match_kind == "next_server_action" && x.match_value == "abcdef1234567890"),
+            "expected server action from webpack interop member call: {m:?}"
+        );
     }
 
     #[test]

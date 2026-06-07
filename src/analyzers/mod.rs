@@ -81,6 +81,8 @@ pub struct AnalyzerConfig {
     pub npm_packages: bool,
     pub comments: bool,
     pub framework_recon: bool,
+    /// API-call + storage (`localStorage`/`sessionStorage`/…) extraction.
+    pub api_calls: bool,
 }
 
 impl Default for AnalyzerConfig {
@@ -94,6 +96,7 @@ impl Default for AnalyzerConfig {
             npm_packages: true,
             comments: true,
             framework_recon: true,
+            api_calls: true,
         }
     }
 }
@@ -110,6 +113,7 @@ impl AnalyzerConfig {
             npm_packages: false,
             comments: false,
             framework_recon: false,
+            api_calls: false,
         }
     }
 
@@ -124,6 +128,7 @@ impl AnalyzerConfig {
             npm_packages: false,
             comments: false,
             framework_recon: false,
+            api_calls: false,
         }
     }
 }
@@ -168,8 +173,9 @@ pub fn run_all(
         out.extend(framework_recon::analyze(source, file_path, file_type));
     }
 
-    // Always run API call + storage extraction
-    out.extend(api_extractor::analyze(source, file_path, file_type));
+    if config.api_calls {
+        out.extend(api_extractor::analyze(source, file_path, file_type));
+    }
 
     out
 }

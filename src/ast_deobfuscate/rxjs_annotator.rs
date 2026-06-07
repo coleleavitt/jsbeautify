@@ -21,7 +21,7 @@
 //! Combine: withLatestFrom, combineLatestWith, startWith, pairwise
 
 use regex::Regex;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Known RxJS operator names for detection.
 const RXJS_OPERATORS: &[&str] = &[
@@ -179,22 +179,21 @@ pub fn extract_operator_usage(source: &str) -> Vec<(String, usize)> {
     }
 
     let known_ops: FxHashSet<&str> = RXJS_OPERATORS.iter().copied().collect();
-    let mut counts: FxHashSet<String> = FxHashSet::default();
-    let mut usage: Vec<(String, usize)> = Vec::new();
 
+    // Count actual operator *call* sites (`n.map(`, `(0,n.map)(`), not bare
+    // substring occurrences of the name: operator names like `of`/`map`/`share`
+    // are common substrings (`offset`, `mapping`, `shareReplay`) and a raw
+    // `source.matches(name)` grossly over-counts them.
+    let mut counts: FxHashMap<String, usize> = FxHashMap::default();
     for caps in ALL_OPS_RE.captures_iter(source) {
         let name = caps.get(1).map_or("", |m| m.as_str());
         if known_ops.contains(name) {
-            counts.insert(name.to_string());
+            *counts.entry(name.to_string()).or_insert(0) += 1;
         }
     }
 
-    for name in counts {
-        let count = source.matches(&name).count();
-        usage.push((name, count));
-    }
-
-    usage.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut usage: Vec<(String, usize)> = counts.into_iter().collect();
+    usage.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     usage
 }
 
