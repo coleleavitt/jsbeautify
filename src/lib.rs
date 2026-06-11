@@ -24,10 +24,12 @@ pub mod hooks;
 pub mod monitoring;
 pub mod nextjs_discovery;
 pub mod oxc_opts;
+pub mod pipeline;
 pub mod proxy;
 pub mod relationships;
 pub mod repeater;
 pub mod scope;
+pub mod server;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
@@ -50,6 +52,7 @@ pub use chunk_splitter::{ChunkManifest, ChunkSplitter};
 pub use cross_version::{AlignConfig, AlignmentStats, CrossVersionAligner, StatementMatcher};
 pub use options::Options;
 pub use oxc_opts::OxcOptimizer;
+pub use pipeline::{AssetKind, IngestRequest, IngestResult, Pipeline, PipelineConfig, PipelineIngestor};
 pub use token::{Token, TokenType};
 
 #[derive(Debug, thiserror::Error)]

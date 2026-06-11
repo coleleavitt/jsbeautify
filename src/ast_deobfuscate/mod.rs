@@ -46,9 +46,11 @@ pub mod esbuild_helper;
 pub mod expression_simplify;
 pub mod fromcharcode_fold;
 pub mod function_inline;
+pub mod heuristic_rename;
 pub mod if_body_comma_split;
 pub mod iife_unwrap;
 pub mod json_parse_eval;
+pub mod llm_rename;
 pub mod lookup_forwarder;
 pub mod method_call_forwarder;
 pub mod multi_var_split;
@@ -63,6 +65,7 @@ pub mod return_sequence_split;
 pub mod self_init_accessor;
 pub mod sequence_expression_split;
 pub mod short_circuit_to_if;
+pub mod sourcemap_rename;
 pub mod state;
 pub mod strength_reduction;
 pub mod string_array_inline;
@@ -235,6 +238,9 @@ pub struct AstDeobfuscator {
     optional_chaining_normalizer: OptionalChainingNormalizer,
     nullish_coalescing_simplifier: NullishCoalescingSimplifier,
     skip_annotations: bool,
+    /// When set, Phase 12.5 infers readable names for minified locals
+    /// (heuristic_rename) instead of opaque `v{n}` slots.
+    readable_names: bool,
 }
 
 impl AstDeobfuscator {
@@ -274,12 +280,20 @@ impl AstDeobfuscator {
             optional_chaining_normalizer: OptionalChainingNormalizer::new(),
             nullish_coalescing_simplifier: NullishCoalescingSimplifier::new(),
             skip_annotations: false,
+            readable_names: false,
         }
     }
 
     #[must_use]
     pub fn with_skip_annotations(mut self, skip: bool) -> Self {
         self.skip_annotations = skip;
+        self
+    }
+
+    /// Enable readable heuristic naming of minified locals (Phase 12.5).
+    #[must_use]
+    pub fn with_readable_names(mut self, readable: bool) -> Self {
+        self.readable_names = readable;
         self
     }
 
@@ -1045,7 +1059,28 @@ impl AstDeobfuscator {
 
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let guarded = guard.into_guarded(&scoping);
-                let plan = bun_local_renamer::plan_local_renames(&scoping, &guarded);
+
+                // Readable mode: infer heuristic names (and per-scope free-var
+                // names for capture safety) at this same seam so proposals share
+                // one SymbolId space with the apply.
+                let (desired, free_names) = if self.readable_names {
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut collector = heuristic_rename::HeuristicNameCollector::new();
+                    traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+                    drop(ctx);
+                    collector.into_parts()
+                } else {
+                    Default::default()
+                };
+
+                let mode = if self.readable_names {
+                    bun_local_renamer::RenameMode::Readable
+                } else {
+                    bun_local_renamer::RenameMode::Slot
+                };
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let plan = bun_local_renamer::plan_local_renames(&scoping, &guarded, mode, &desired, &free_names);
                 if !plan.is_empty() {
                     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
@@ -1331,7 +1366,15 @@ impl AstDeobfuscator {
             "[DEOBFUSCATE] Phase 21: {} enum annotations, {} namespace annotations, {} arrow expansions",
             enum_count, ns_count, arrow_count
         );
-        log_output_validity("Phase 21.5", &output, source_type);
+        // The Phase 20/21 post-codegen transforms (module annotations, arrow
+        // expansion) rewrite the output string, so the final result is held to
+        // the same parse-validity bar as the AST checkpoints: invalid JS is a
+        // real defect and is surfaced rather than returned as success.
+        if !log_output_validity("Phase 21.5", &output, source_type) {
+            return Err(crate::BeautifyError::BeautificationFailed(
+                "Phase 21.5 post-annotation output is invalid JavaScript".to_string(),
+            ));
+        }
 
         Ok(output)
     }

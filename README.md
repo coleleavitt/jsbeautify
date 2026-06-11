@@ -185,6 +185,66 @@ Patterns detected:
 - `this.name = "ClassName"` in class constructors
 - `Component.displayName = "ComponentName"` assignments
 
+## Serve daemon (browser ingestion backend)
+
+`jsbeautify` is not only a CLI — `--serve` boots a long-running daemon that wires
+together the proxy, WebSocket server, project DB, hooks, and monitoring into one
+process and exposes an HTTP ingestion API. This is the analysis backend for the
+[Mindemon](https://github.com/coleleavitt/mindemon) Firefox DevTools extension,
+which captures every JS/CSS/source-map asset a page loads and POSTs them here.
+
+```bash
+# Boot the daemon (HTTP :3333, WebSocket :9222, MITM proxy :8080)
+jsbeautify --serve --project-name acme
+
+# With TLS interception + a monitoring loop every 5 min
+jsbeautify --serve --project-name acme --intercept-tls --monitor-interval 300
+```
+
+Every ingested asset flows through one shared pipeline:
+
+```
+POST /ingest ─▶ classify ─▶ beautify (+deobfuscate if minified) ─▶ analyzers
+            ─▶ reverse source maps (sourcesContent → originals, re-analyzed)
+            ─▶ persist file + matches to SQLite ─▶ broadcast over WebSocket
+```
+
+Files + DB live under `~/.jsbeautify/projects/<name>/` (`raw/`, `beautified/`,
+`reversed/`, `project.db`).
+
+### Ports
+
+| Port  | Service       | Purpose |
+|-------|---------------|---------|
+| 3333  | HTTP API      | Ingestion (`/ingest`, `/ingest/batch`), `/matches`, `/health`, `/ca.crt`. |
+| 9222  | WebSocket     | Live `js_files_update` / `matches_update` events to editor clients. |
+| 8080  | MITM proxy    | Passive capture; in-scope JS/CSS/HTML feeds the same pipeline. |
+
+### HTTP ingestion contract
+
+`POST /ingest` — one asset:
+
+```json
+{
+  "url": "https://site/app.js",
+  "content_type": "application/javascript",
+  "content": "…source or base64…",
+  "encoding": "utf8",                 // or "base64" for binary
+  "source_map_content": "{…}",        // optional inline source map JSON
+  "source": "fs_ingest"               // fs_ingest | proxy | cli
+}
+```
+
+`POST /ingest/batch` — a full browser dump: `{ "target": "https://site/", "files": [ <asset>, … ] }`.
+
+Response (per asset): `{ url, kind, file_id, stored, findings, reversed_sources, relationships, error }`.
+
+`GET /matches` returns recent stored findings as JSON. `GET /ca.crt` serves the
+MITM CA PEM (when `--intercept-tls` is on) so a browser can trust the proxy.
+
+All responses carry permissive CORS headers so the `moz-extension://` panel can
+call the API cross-origin.
+
 ## Testing
 
 ```bash

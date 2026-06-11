@@ -17,6 +17,10 @@ pub struct Options {
     pub extract_large_assets: bool,
     pub asset_size_threshold: usize,
     pub deobfuscate: bool,
+    /// Infer readable names for minified locals (loop→i/j/k, catch→error,
+    /// require→module name, new Foo→instance, …) instead of `v{n}` slots.
+    /// Effective only with `deobfuscate` (the renamer lives in that pipeline).
+    pub readable_names: bool,
     pub max_line_length: usize,
     pub generate_source_map: bool,
     pub source_map_file_name: Option<String>,
@@ -53,6 +57,7 @@ impl Default for Options {
             extract_large_assets: true,
             asset_size_threshold: 10_000,
             deobfuscate: false,
+            readable_names: false,
             max_line_length: 120,
             generate_source_map: false,
             source_map_file_name: None,

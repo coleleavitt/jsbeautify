@@ -198,8 +198,8 @@ pub fn single_spa(source: &str, file_path: Option<&str>, file_type: FileType) ->
         out.push(
             AnalyzerMatch::new(
                 "single_spa_script_injection",
-                si.url_pattern.clone(),
-                pos(source, &si.url_pattern),
+                si.method.clone(),
+                PositionRange::from_byte_range(source, si.offset, si.offset),
                 file_type,
                 fp(),
             )
@@ -207,6 +207,7 @@ pub fn single_spa(source: &str, file_path: Option<&str>, file_type: FileType) ->
             .with_severity(if unverified { Severity::Medium } else { Severity::Info })
             .with_metadata(serde_json::json!({
                 "method": si.method,
+                "url_pattern": si.url_pattern,
                 "has_security_attrs": si.has_security_attrs,
                 "has_sri": r.has_sri,
                 "has_csp_nonce": r.has_csp_nonce,

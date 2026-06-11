@@ -173,8 +173,11 @@ pub fn annotate_rxjs_operators(source: &str) -> (String, usize) {
 #[must_use]
 pub fn extract_operator_usage(source: &str) -> Vec<(String, usize)> {
     lazy_static::lazy_static! {
+        // Matches an operator call in both the bare member form `n.map(` and the
+        // minified interop form `(0,n.map)(` (note the `)` between the operator
+        // name and the call paren). Group 1 = operator name.
         static ref ALL_OPS_RE: Regex = Regex::new(
-            r#"(?:\(0,\s*\w+\.|\b\w+\.)(\w+)\("#
+            r#"(?:\(0,\s*)?\w+\.(\w+)\s*\)?\s*\("#
         ).unwrap();
     }
 
@@ -227,5 +230,19 @@ mod tests {
         // map appears twice
         let map_usage = usage.iter().find(|(name, _)| name == "map");
         assert!(map_usage.is_some());
+    }
+
+    #[test]
+    fn test_operator_usage_counts_interop_form() {
+        // Minified interop call sites `(0,n.op)(...)` must be counted, not just
+        // the bare `n.op(` member form.
+        let source = r#"x.pipe((0,n.map)(a), (0,n.map)(b), (0,n.filter)(c))"#;
+        let usage = extract_operator_usage(source);
+        let map = usage.iter().find(|(name, _)| name == "map").expect("map counted");
+        assert_eq!(map.1, 2, "interop map calls miscounted: {usage:?}");
+        assert!(
+            usage.iter().any(|(name, _)| name == "filter"),
+            "interop filter missed: {usage:?}"
+        );
     }
 }

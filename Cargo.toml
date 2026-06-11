@@ -52,7 +52,7 @@ lazy_static = "1.5"
 thiserror = "2.0.18"
 url = "2"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net", "process", "signal", "sync"] }
 base64 = "0.22"
 rc4 = "0.1.0"
 serde = { version = "1", features = ["derive"] }

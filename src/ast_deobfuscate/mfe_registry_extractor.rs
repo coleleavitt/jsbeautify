@@ -36,6 +36,8 @@ pub struct ScriptInjection {
     pub has_security_attrs: bool,
     /// The injection method (createElement, innerHTML, etc.)
     pub method: String,
+    /// Byte offset of the injection site in the source (for positioning).
+    pub offset: usize,
 }
 
 /// Result of MFE registry analysis.
@@ -127,13 +129,15 @@ pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
         }
     }
 
-    // Count script injections
-    let injection_count = SCRIPT_CREATE_RE.find_iter(source).count();
-    for _ in 0..injection_count.min(10) {
+    // Dynamic script injections — record each site's offset so callers can
+    // position the finding on the actual `createElement("script")` rather than
+    // a synthetic placeholder.
+    for m in SCRIPT_CREATE_RE.find_iter(source).take(10) {
         script_injections.push(ScriptInjection {
             url_pattern: "dynamic".to_string(),
             has_security_attrs: NONCE_RE.is_match(source),
             method: "createElement('script')".to_string(),
+            offset: m.start(),
         });
     }
 

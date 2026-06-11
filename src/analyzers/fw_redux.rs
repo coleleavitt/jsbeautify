@@ -70,8 +70,10 @@ lazy_static! {
     // The builder parameter name of `endpoints: (build) => ({...})`. `endpoints`
     // is a fixed RTK Query key (survives minification); only its parameter is
     // mangled, so capturing it here lets ENDPOINT_RE bind to the real builder.
+    // The trailing `)`/`=>` requirement ensures the captured token is an actual
+    // callback parameter, not a bare `endpoints: someRef` value.
     static ref BUILDER_PARAM_RE: Regex = Regex::new(
-        r#"endpoints\s*:\s*(?:async\s+)?(?:function\s*\*?\s*)?\(?\s*([\w$]+)"#
+        r#"endpoints\s*:\s*(?:async\b\s*)?(?:function\s*\*?\s*)?\(?\s*([\w$]+)\s*(?:\)|=>)"#
     ).unwrap();
 
     // createApi config fields, scanned once for metadata enrichment.
@@ -363,6 +365,18 @@ mod tests {
         assert!(
             !m.iter().any(|x| x.match_kind == "rtk_query_endpoint"),
             "false-positive endpoint on plain method calls: {m:?}"
+        );
+    }
+
+    #[test]
+    fn endpoints_non_callback_value_does_not_whitelist() {
+        // `endpoints: someRef` is a bare reference, not a builder callback, so a
+        // later `someRef.query(` must not be promoted to an RTK endpoint.
+        let src = r#"var x={endpoints: someRef, other: someRef.query("z")};"#;
+        let m = analyze(src, Some("t.js"), FileType::Js);
+        assert!(
+            !m.iter().any(|x| x.match_kind == "rtk_query_endpoint"),
+            "non-callback endpoints value wrongly whitelisted a builder: {m:?}"
         );
     }
 

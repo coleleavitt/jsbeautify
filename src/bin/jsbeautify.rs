@@ -25,8 +25,9 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "jsbeautify", version, about, long_about = None)]
 struct Cli {
-    /// Input JavaScript file, directory (with --dir), or "-" for stdin
-    #[arg(value_name = "FILE")]
+    /// Input JavaScript file, directory (with --dir), or "-" for stdin.
+    /// Optional in --serve mode.
+    #[arg(value_name = "FILE", default_value = "-")]
     input: String,
 
     /// Write output to a file instead of stdout
@@ -44,6 +45,18 @@ struct Cli {
     /// Enable AST-based deobfuscation (19-phase pipeline)
     #[arg(short, long)]
     deobfuscate: bool,
+
+    /// Infer readable names for minified locals (loop→i/j/k, catch→error,
+    /// require→module, new Foo→instance) instead of v{n} slots. Implies
+    /// --deobfuscate.
+    #[arg(long)]
+    rename_vars: bool,
+
+    /// After heuristic renaming, ask an LLM to name residual minified locals
+    /// (humanify pattern). Requires JSBEAUTIFY_LLM_URL (OpenAI-compatible
+    /// endpoint). Implies --rename-vars.
+    #[arg(long)]
+    rename_llm: bool,
 
     /// Split webpack chunks into separate files
     #[arg(long)]
@@ -307,6 +320,87 @@ struct Cli {
     /// resolve relative paths to absolute URLs.
     #[arg(long)]
     relationships: bool,
+
+    // ── Serve daemon ─────────────────────────────────────────────────────────
+    /// Run the ingestion daemon: HTTP API (:3333) + WebSocket (:9222) + MITM
+    /// proxy (:8080), all feeding the beautify/deobfuscate/analyze pipeline.
+    /// This is the backend the Mindemon Firefox extension POSTs captured
+    /// browser assets to. When set, FILE is ignored.
+    #[arg(long)]
+    serve: bool,
+
+    /// Project name for the serve daemon (DB + files live under
+    /// ~/.jsbeautify/projects/<name>/).
+    #[arg(long, value_name = "NAME", default_value = "default")]
+    project_name: String,
+
+    /// HTTP ingestion API port for --serve.
+    #[arg(long, value_name = "PORT", default_value_t = 3333)]
+    http_port: u16,
+
+    /// WebSocket result-stream port for --serve.
+    #[arg(long, value_name = "PORT", default_value_t = 9222)]
+    ws_port: u16,
+
+    /// MITM proxy port for --serve.
+    #[arg(long, value_name = "PORT", default_value_t = 8080)]
+    serve_proxy_port: u16,
+
+    /// Enable TLS interception in the --serve proxy (generates/uses a CA).
+    #[arg(long)]
+    intercept_tls: bool,
+
+    /// Discord webhook URL for --serve monitoring notifications.
+    #[arg(long, value_name = "URL")]
+    discord_webhook: Option<String>,
+
+    /// Monitoring cycle interval in seconds for --serve (0 disables).
+    #[arg(long, value_name = "SECS", default_value_t = 0)]
+    monitor_interval: u64,
+}
+
+/// Build a tokio runtime and run the ingestion daemon until Ctrl-C.
+fn run_serve(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use js_beautify_rs::server::ServeConfig;
+
+    let scope = cli
+        .in_scope
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let out_of_scope = cli
+        .out_of_scope
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let cfg = ServeConfig {
+        project_name: cli.project_name.clone(),
+        http_bind: format!("127.0.0.1:{}", cli.http_port).parse()?,
+        ws_bind: format!("127.0.0.1:{}", cli.ws_port).parse()?,
+        proxy_bind: format!("127.0.0.1:{}", cli.serve_proxy_port).parse()?,
+        intercept_tls: cli.intercept_tls,
+        scope,
+        out_of_scope,
+        discord_webhook: cli.discord_webhook.clone(),
+        monitor_interval_secs: cli.monitor_interval,
+        deobfuscate: true,
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime
+        .block_on(js_beautify_rs::server::serve(cfg))
+        .map_err(|e| e.into())
 }
 
 fn main() {
@@ -323,6 +417,13 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    // ── Serve daemon mode ─────────────────────────────────────────────────────
+    // The only async entry point. `main()` is otherwise synchronous, so we build
+    // a multi-thread tokio runtime here and block on the daemon.
+    if cli.serve {
+        return run_serve(&cli);
+    }
 
     // ── Asset-relationship graph mode ─────────────────────────────────────────
     if cli.relationships {
@@ -596,7 +697,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    let code = if cli.input == "-" {
+    let mut code = if cli.input == "-" {
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;
         buffer
@@ -605,7 +706,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut options = Options {
-        deobfuscate: cli.deobfuscate,
+        // --rename-vars / --rename-llm imply deobfuscation (the renamer lives in
+        // that pipeline; the LLM tier runs on its output).
+        deobfuscate: cli.deobfuscate || cli.rename_vars || cli.rename_llm,
+        readable_names: cli.rename_vars || cli.rename_llm,
         split_chunks: cli.split_chunks,
         extract_modules: cli.extract_modules,
         generate_source_map: cli.source_maps,
@@ -650,7 +754,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if cli.align_with.is_some() || cli.sourcemap.is_some() || cli.names_json.is_some() || cli.bun_extract {
+    // `--rename-vars --sourcemap x.map` (without an align target): recover real
+    // original names from the sourcemap first, then fall through to the normal
+    // readable deobfuscate pipeline (which names whatever the map didn't cover).
+    let sourcemap_rename = (cli.rename_vars || cli.rename_llm) && cli.sourcemap.is_some() && cli.align_with.is_none();
+    if sourcemap_rename {
+        let sm = fs::read_to_string(cli.sourcemap.as_ref().expect("sourcemap present"))?;
+        eprintln!("[RENAME] Applying sourcemap original names...");
+        code = js_beautify_rs::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(&code, &sm)?;
+    }
+
+    if !sourcemap_rename
+        && (cli.align_with.is_some() || cli.sourcemap.is_some() || cli.names_json.is_some() || cli.bun_extract)
+    {
         options.skip_annotations = true;
         return run_cross_version_align(
             cli.sourcemap.as_ref(),
@@ -1288,7 +1404,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ── Scope filtering on analyze results ───────────────────────────────────
     // (handled inline when --in-scope is combined with --analyze)
 
-    let beautified = beautify(&code, &options)?;
+    let mut beautified = beautify(&code, &options)?;
+
+    // Final LLM tier: name residual minified locals the heuristics couldn't.
+    if cli.rename_llm {
+        match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_env() {
+            Some(suggester) => {
+                eprintln!("[RENAME] Querying LLM for residual minified names...");
+                beautified = js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, &suggester);
+            }
+            None => eprintln!(
+                "[RENAME] --rename-llm set but no endpoint configured (set JSBEAUTIFY_LLM_URL); skipping LLM tier."
+            ),
+        }
+    }
 
     if let Some(output_path) = &cli.output {
         fs::write(output_path, &beautified)?;

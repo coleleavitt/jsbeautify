@@ -39,15 +39,156 @@ fn is_single_char_mangled(name: &str) -> bool {
     b.len() == 1 && (b[0].is_ascii_alphabetic() || b[0] == b'$' || b[0] == b'_')
 }
 
-/// Plan collision-free per-scope slot names for single-char mangled locals.
-///
-/// `exclude` lists symbols that must never be renamed (see
-/// [`super::rename_guards`]): direct-`eval`-visible bindings and native ES
-/// exports. Excluded symbols are skipped as *candidates* but still contribute
-/// their original name to the blocked sets, so a slot can never collide with
-/// one of them.
+/// Idiomatic short names worth keeping even in readable mode — math/graphics/
+/// loop identifiers a positional/usage rename would only make worse. Includes
+/// `i`/`j`/`k` so loop-counter proposals are idempotent across re-runs.
+const MEANINGFUL_SHORT: &[&str] = &[
+    "i", "j", "k", "x", "y", "z", "w", "h", "id", "el", "db", "fs", "os", "fn", "cb", "ok", "ip", "ua", "px", "dx",
+    "dy", "rgb", "rgba",
+];
+
 #[must_use]
-pub fn plan_local_renames(scoping: &Scoping, exclude: &FxHashSet<SymbolId>) -> LocalRenameMap {
+pub fn is_meaningful_short(name: &str) -> bool {
+    MEANINGFUL_SHORT.contains(&name)
+}
+
+/// Looks compiler/minifier-generated (esbuild/webpack/Bun aliases): one or two
+/// bare letters, OR ≤3 letters with trailing digits, OR a `_`/`$` prefix.
+/// Deliberately broad; [`is_meaningful_short`] is applied separately so
+/// idiomatic short names survive.
+#[must_use]
+pub fn is_likely_generated_alias(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 5 {
+        return false;
+    }
+    let stripped = name.trim_start_matches(['_', '$']);
+    let had_prefix = stripped.len() != name.len();
+    if stripped.is_empty() {
+        return name.len() <= 2; // "_", "$", "__"
+    }
+    let letters = stripped.chars().take_while(char::is_ascii_alphabetic).count();
+    if letters == 0 {
+        return false;
+    }
+    let rest = &stripped[letters..];
+    if !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    // 1-2 bare letters (`a`, `ab`).
+    if letters <= 2 && rest.is_empty() && !had_prefix {
+        return true;
+    }
+    // ≤3 letters WITH trailing digits or a `_`/`$` prefix (`ab1`, `_a2`, `$ref`).
+    letters <= 3 && (!rest.is_empty() || had_prefix)
+}
+
+/// A base name usable as a readable identifier: valid JS identifier, not a
+/// reserved word.
+#[must_use]
+pub fn is_usable_base(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$') && !is_reserved_ident(name)
+}
+
+fn is_reserved_ident(name: &str) -> bool {
+    matches!(
+        name,
+        "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "new"
+            | "null"
+            | "return"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "let"
+            | "static"
+            | "enum"
+            | "await"
+            | "arguments"
+            | "eval"
+    )
+}
+
+/// First non-blocked variant of `base`: `base`, `base2`, … `base9`, else `None`.
+fn pick_readable(base: &str, blocked: &FxHashSet<String>, local: &FxHashSet<String>) -> Option<String> {
+    for n in 0..=9 {
+        let cand = if n == 0 { base.to_string() } else { format!("{base}{n}") };
+        if !blocked.contains(&cand) && !local.contains(&cand) {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// How [`plan_local_renames`] chooses names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RenameMode {
+    /// Single-char locals → `v{n}` slots (the original stabilisation behaviour).
+    Slot,
+    /// Heuristic-proposed readable names ([`super::heuristic_rename`]) with a
+    /// `v{n}` slot fallback; the candidate gate widens to all generated aliases.
+    Readable,
+    /// Authoritative names (sourcemap / LLM): rename ONLY symbols with a valid,
+    /// different `desired` name — never slot, never touch unknown bindings.
+    Sourcemap,
+}
+
+/// Plan collision-free, scope-safe rename names for minified locals.
+///
+/// - `exclude`: soundness-guarded symbols ([`super::rename_guards`]) — never
+///   renamed, but still reserve their original name against collisions.
+/// - `mode`: see [`RenameMode`] — slot stabilisation, heuristic readable names,
+///   or authoritative sourcemap/LLM names.
+/// - `desired`: proposed names keyed by `SymbolId` (heuristic / sourcemap / LLM);
+///   ignored in [`RenameMode::Slot`].
+/// - `free_names`: per-scope UNRESOLVED (free/global) reference names — a
+///   readable name is blocked in any scope whose subtree references that name as
+///   a free variable, so a rename can never *capture* a global (e.g. naming a
+///   local `crypto` next to a free `crypto`).
+#[must_use]
+pub fn plan_local_renames(
+    scoping: &Scoping,
+    exclude: &FxHashSet<SymbolId>,
+    mode: RenameMode,
+    desired: &LocalRenameMap,
+    free_names: &FxHashMap<ScopeId, FxHashSet<String>>,
+) -> LocalRenameMap {
     // Original binding names per scope (from every symbol's declaring scope).
     let mut scope_names: FxHashMap<ScopeId, Vec<(String, SymbolId)>> = FxHashMap::default();
     let mut subtree_names: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
@@ -60,9 +201,44 @@ pub fn plan_local_renames(scoping: &Scoping, exclude: &FxHashSet<SymbolId>) -> L
         }
     }
 
-    // A symbol is a rename candidate only if it is a single-char mangled local
-    // AND not soundness-excluded.
-    let is_candidate = |name: &str, sym: SymbolId| is_single_char_mangled(name) && !exclude.contains(&sym);
+    // Free (unresolved) reference names per scope SUBTREE: propagate each free
+    // name up to all ancestor scopes (a binding is visible to its descendants,
+    // so a rename in scope S can capture a free reference anywhere under S).
+    let mut free_subtree: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    for (&scope, names) in free_names {
+        for anc in scoping.scope_ancestors(scope) {
+            let bucket = free_subtree.entry(anc).or_default();
+            for n in names {
+                bucket.insert(n.clone());
+            }
+        }
+    }
+
+    // A symbol is a rename candidate only if it looks minifier-generated (gate
+    // widens in readable mode) AND is not soundness-excluded.
+    let is_candidate = |name: &str, sym: SymbolId| {
+        if exclude.contains(&sym) {
+            return false;
+        }
+        // Already at its desired name (loop var already `i`, sourcemap name
+        // already applied): leave it. Without this, re-running drifts
+        // (`i`→`i1`) because the binding's own name sits in the blocked set.
+        if desired.get(&sym).map(String::as_str) == Some(name) {
+            return false;
+        }
+        match mode {
+            RenameMode::Slot => is_single_char_mangled(name),
+            // A meaningful-short name (`h`, `i`, …) is preserved UNLESS a
+            // heuristic proposed a concrete name for it (`h = new
+            // URLSearchParams()` → `urlSearchParams` beats the "height" guess).
+            RenameMode::Readable => {
+                is_likely_generated_alias(name) && (!is_meaningful_short(name) || desired.contains_key(&sym))
+            }
+            // Sourcemap is authoritative: rename any binding it names, minified
+            // or not, as long as the original name is a usable identifier.
+            RenameMode::Sourcemap => desired.get(&sym).is_some_and(|d| is_usable_base(d)),
+        }
+    };
 
     // Scopes that contain at least one candidate, ordered outer-to-inner by depth
     // (ancestor count) so a scope is processed after all its ancestors.
@@ -87,6 +263,11 @@ pub fn plan_local_renames(scoping: &Scoping, exclude: &FxHashSet<SymbolId>) -> L
         let mut blocked: FxHashSet<String> = FxHashSet::default();
         if let Some(names) = subtree_names.get(&scope) {
             blocked.extend(names.iter().cloned());
+        }
+        // Capture safety: never pick a readable name that matches a free/global
+        // reference used in this scope's subtree.
+        if let Some(free) = free_subtree.get(&scope) {
+            blocked.extend(free.iter().cloned());
         }
         for anc in scoping.scope_ancestors(scope) {
             if anc == scope {
@@ -114,16 +295,39 @@ pub fn plan_local_renames(scoping: &Scoping, exclude: &FxHashSet<SymbolId>) -> L
 
         let mut local: FxHashSet<String> = FxHashSet::default();
         let mut counter = 0usize;
-        for (_name, sym) in cands {
-            let cand = loop {
-                let c = format!("v{counter}");
-                counter += 1;
-                if !blocked.contains(&c) && !local.contains(&c) {
-                    break c;
-                }
+        for (cur_name, sym) in cands {
+            // A binding may always reuse its OWN current name (it cannot capture
+            // itself), so lift it out of `blocked` for this choice. Without this,
+            // re-running drifts (`v0`→`v1`, `i`→`i1`) because the binding's own
+            // name sits in the subtree-blocked set.
+            let self_blocked = blocked.remove(&cur_name);
+            // Readable/Sourcemap: try the proposed base (and base2…base9).
+            // Readable/Slot then fall back to the next `v{n}` slot; Sourcemap
+            // does NOT slot — if its name is fully blocked, the binding is left
+            // unchanged (skipped).
+            let proposed = (mode != RenameMode::Slot)
+                .then(|| desired.get(&sym))
+                .flatten()
+                .filter(|b| is_usable_base(b))
+                .and_then(|base| pick_readable(base, &blocked, &local));
+            let cand = match (proposed, mode) {
+                (Some(name), _) => Some(name),
+                (None, RenameMode::Sourcemap) => None, // leave unchanged
+                (None, _) => Some(loop {
+                    let c = format!("v{counter}");
+                    counter += 1;
+                    if !blocked.contains(&c) && !local.contains(&c) {
+                        break c;
+                    }
+                }),
             };
-            local.insert(cand.clone());
-            plan.insert(sym, cand);
+            if self_blocked {
+                blocked.insert(cur_name);
+            }
+            if let Some(cand) = cand {
+                local.insert(cand.clone());
+                plan.insert(sym, cand);
+            }
         }
         if !local.is_empty() {
             assigned.insert(scope, local);
@@ -213,13 +417,99 @@ mod tests {
 
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let guarded = guard.into_guarded(&scoping);
-        let plan = plan_local_renames(&scoping, &guarded);
+        // Slot mode (the original behaviour these tests pin): no proposals.
+        let plan = plan_local_renames(
+            &scoping,
+            &guarded,
+            RenameMode::Slot,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+        );
 
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         let mut renamer = LocalRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
         Codegen::new().build(&prog).code
+    }
+
+    /// Readable mode: run the heuristic collector + capture-safe planner.
+    fn run_readable(code: &str) -> String {
+        use crate::ast_deobfuscate::heuristic_rename::HeuristicNameCollector;
+        use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+        let mut prog = parsed.program;
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut guard = RenameGuardCollector::new();
+        traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
+        drop(ctx);
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let guarded = guard.into_guarded(&scoping);
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut collector = HeuristicNameCollector::new();
+        traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+        drop(ctx);
+        let (desired, free_names) = collector.into_parts();
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let plan = plan_local_renames(&scoping, &guarded, RenameMode::Readable, &desired, &free_names);
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut renamer = LocalRenamer::new(plan);
+        traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
+        Codegen::new().build(&prog).code
+    }
+
+    #[test]
+    fn readable_infers_loop_catch_require_new() {
+        let out = run_readable(
+            "function f(){ for(let a=0;a<n;a++){g(a)} try{h()}catch(b){j(b)} var c=require('crypto'); var d=new Map(); }",
+        );
+        assert!(out.contains("let i = 0") && out.contains("i < n"), "loop: {out}");
+        assert!(
+            out.contains("catch (error)") && out.contains("j(error)"),
+            "catch: {out}"
+        );
+        assert!(out.contains("crypto = require("), "require: {out}");
+        assert!(out.contains("map = new Map("), "new: {out}");
+    }
+
+    #[test]
+    fn readable_rename_never_captures_a_free_global() {
+        // `a` would be named `crypto` (require heuristic), but a FREE `crypto`
+        // global is referenced in the same scope — naming the local `crypto`
+        // would capture that reference. It must fall back instead.
+        let out = run_readable("function f(){ var a = require('crypto'); return crypto.subtle.digest(a); }");
+        // The free global `crypto` reference must remain a free `crypto`, and the
+        // local must NOT have been named `crypto` (which would shadow it).
+        assert!(out.contains("crypto.subtle"), "free global ref lost: {out}");
+        assert!(
+            !out.contains("var crypto = require"),
+            "local captured the free global crypto: {out}"
+        );
+    }
+
+    #[test]
+    fn readable_preserves_idiomatic_short_names() {
+        // `x`/`y` are allowlisted (coordinates) and have no proposal → kept.
+        let out = run_readable("function dist(x, y){ return Math.sqrt(x*x + y*y) }");
+        assert!(out.contains("dist(x, y)"), "idiomatic shorts clobbered: {out}");
+    }
+
+    #[test]
+    fn readable_is_idempotent() {
+        let code = "function f(){ for(let a=0;a<n;a++){g(a)} try{x()}catch(b){j(b)} }";
+        let once = run_readable(code);
+        let twice = run_readable(&once);
+        assert_eq!(once, twice, "second pass changed output:\n{once}\n---\n{twice}");
     }
 
     #[test]

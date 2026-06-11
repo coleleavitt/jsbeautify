@@ -90,7 +90,7 @@ pub struct MatchFilter {
     pub offset: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredMatch {
     pub id: i64,
     pub match_kind: String,
