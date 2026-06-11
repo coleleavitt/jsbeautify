@@ -1,14 +1,16 @@
 # Mindemon ↔ js-beautify-rs integration
 
-Two projects, one workflow: **Mindemon** captures everything a web page actually
-loads in the browser; **js-beautify-rs** beautifies, deobfuscates, analyzes, and
-reverses source maps on the backend. This document describes how they connect.
+One repository, two halves: the **Mindemon** Firefox extension (in `frontend/`)
+captures everything a web page actually loads in the browser; the
+**js-beautify-rs** Rust crate + daemon (repo root) beautifies, deobfuscates,
+analyzes, and reverses source maps on the backend. This document describes how
+they connect.
 
 ## The two halves
 
-| | Mindemon | js-beautify-rs |
+| | Mindemon (capture) | js-beautify-rs (analysis) |
 |---|---|---|
-| Repo | `~/WebstormProjects/active/mindemon` | `~/RustProjects/active/js-beautify-rs` |
+| Location | `frontend/` (this repo) | repo root (`src/`, `Cargo.toml`) |
 | Role | Firefox DevTools extension — **capture** | Rust daemon — **analysis** |
 | Strength | Sees the real runtime: lazy chunks, workers, WASM, source maps, hydration globals | 20-phase AST deobfuscator, oxc-powered beautifier, 14 security analyzers, source-map reversal, cross-version alignment |
 
@@ -56,7 +58,7 @@ and connects them to Mindemon.
    It prints the listening ports and the project workdir.
 
 2. **Load Mindemon** in Firefox (`about:debugging` → Load Temporary Add-on →
-   `manifest.json`), open DevTools → **Mindemon Dump** panel.
+   `frontend/manifest.json`), open DevTools → **Mindemon Dump** panel.
 
 3. **Capture & send:** click *Scan Current Target*, then *Send to Backend*
    (the Backend URL field defaults to `http://127.0.0.1:3333`). The panel log
@@ -82,4 +84,4 @@ over a socket or polling for events over HTTP.
 
 See the **HTTP ingestion contract** section of `README.md` for the exact JSON
 schema of `/ingest` and `/ingest/batch`. The Mindemon side builds that payload in
-`panel/panel.js` → `buildBackendPayload()` / `sendToBackend()`.
+`frontend/panel/panel.js` → `buildBackendPayload()` / `sendToBackend()`.

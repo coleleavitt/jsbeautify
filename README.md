@@ -8,6 +8,23 @@ A fast JavaScript beautifier and deobfuscator written in Rust, powered by [oxc](
 Takes minified, obfuscated webpack/esbuild/Bun bundles and produces readable JavaScript.
 Handles real-world production bundles — tested against 11MB+ builds.
 
+## Repository layout
+
+This is a monorepo with a Rust **backend** and a browser-extension **frontend**:
+
+```
+js-beautify-rs/
+├── src/            # Rust crate: beautifier, deobfuscator, analyzers, daemon
+├── Cargo.toml      # `jsbeautify` CLI + `jsbeautify --serve` ingestion daemon
+└── frontend/       # Mindemon — Firefox DevTools extension (browser capture)
+    ├── manifest.json, panel/, lib/, test/
+    └── README.md   # extension-specific docs
+```
+
+The backend ingests assets the frontend captures (HTTP `:3333`) and streams
+results back over WebSocket (`:9222`). See `INTEGRATION.md` for the full data
+flow and `frontend/README.md` for the extension.
+
 ## Installation
 
 ```bash

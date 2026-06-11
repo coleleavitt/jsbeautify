@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "Mindemon Runtime Dumper",
+  "version": "0.1.0",
+  "description": "Firefox DevTools panel for dumping JS/CSS/resources, lazy chunks, runtime load events, and source-map originals.",
+  "permissions": [
+    "<all_urls>",
+    "downloads",
+    "nativeMessaging"
+  ],
+  "devtools_page": "devtools/devtools.html",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "mindemon-runtime-dumper@local",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
+}

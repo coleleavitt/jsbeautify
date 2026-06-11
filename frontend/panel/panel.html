@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Mindemon Dump</title>
+    <link rel="stylesheet" href="panel.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="toolbar">
+        <div class="title">
+          <h1>Mindemon Dump</h1>
+          <p id="targetLabel">No scan yet</p>
+        </div>
+        <div class="actions">
+          <button id="installHookButton" type="button">Install Runtime Hook</button>
+          <button id="reloadButton" type="button" title="Reload the page with the runtime hook injected at document-start, so resources loaded before the panel opened are captured.">Reload &amp; Capture</button>
+          <button id="scanButton" type="button">Scan Current Target</button>
+          <button id="dumpFolderButton" type="button" disabled>Dump to /tmp</button>
+          <button id="downloadButton" type="button" disabled>Download ZIP</button>
+          <button id="sendBackendButton" type="button" disabled>Send to Backend</button>
+          <button id="clearButton" type="button">Clear</button>
+        </div>
+      </header>
+
+      <section class="options" aria-label="Dump options">
+        <label><input id="includeGenerated" type="checkbox" checked> Generated/resources</label>
+        <label><input id="resolveSourceMaps" type="checkbox" checked> Resolve source maps</label>
+        <label><input id="fetchMissingSources" type="checkbox" checked> Fetch missing originals</label>
+        <label><input id="prettyFallback" type="checkbox" checked> Pretty fallback</label>
+        <label title="Fetch in-scope page, loaded-origin, and first-party-family resources with browser session credentials.">
+          <input id="credentialedFetches" type="checkbox" checked> Use session cookies
+        </label>
+        <label title="Recursively mine the inspected page's registrable domain and optional comma-separated domains in addition to loaded origins.">
+          <input id="firstPartyFamily" type="checkbox" checked> First-party family
+        </label>
+        <label title="When off, recursive bundle mining only follows the page origin, first-party family (if enabled), and origins the page actually loaded.">
+          <input id="deepExternalOrigins" type="checkbox"> Deep crawl external origins
+        </label>
+        <label title="Optional comma-separated registrable domains to treat as first-party for this scan.">
+          Family domains <input id="familyDomains" type="text" placeholder="auto from target">
+        </label>
+        <label title="Maximum number of recursively discovered resource URLs to enqueue.">
+          Deep cap <input id="deepCrawlMaxCandidates" type="number" min="0" max="10000" step="100" value="2000">
+        </label>
+        <label title="Optional Cloudflare Access service token client id. Values are used for fetches only and are redacted from dump metadata.">
+          CF client id <input id="cfAccessClientId" type="password" autocomplete="off" placeholder="optional">
+        </label>
+        <label title="Optional Cloudflare Access service token client secret. Values are used for fetches only and are redacted from dump metadata.">
+          CF client secret <input id="cfAccessClientSecret" type="password" autocomplete="off" placeholder="optional">
+        </label>
+        <label title="Optional comma-separated hosts/domains for CF Access headers. Blank means in-scope page, loaded-origin, and first-party-family origins only.">
+          CF domains <input id="cfAccessDomains" type="text" placeholder="blank = in-scope">
+        </label>
+        <label title="Prefer the actual response bodies the page received (captured via devtools.network) over re-fetching. Re-fetch can return different bytes or fail on one-time/auth/CSP URLs.">
+          <input id="preferNetworkCapture" type="checkbox" checked> Prefer network capture
+        </label>
+        <label title="js-beautify-rs daemon URL. Run `jsbeautify --serve`; assets POST to /ingest/batch for beautify+deobfuscate+analysis.">
+          Backend URL <input id="backendUrl" type="text" placeholder="http://127.0.0.1:3333" value="http://127.0.0.1:3333">
+        </label>
+      </section>
+
+      <section class="stats" aria-label="Scan stats">
+        <div><strong id="generatedCount">0</strong><span>generated/resources</span></div>
+        <div><strong id="originalCount">0</strong><span>originals</span></div>
+        <div><strong id="inlineCount">0</strong><span>inline</span></div>
+        <div><strong id="eventCount">0</strong><span>runtime events</span></div>
+        <div><strong id="capturedCount">0</strong><span>network captured</span></div>
+      </section>
+
+      <section class="content">
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Kind</th>
+                <th>Type</th>
+                <th>URL</th>
+                <th>Bytes</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody id="resourceRows">
+              <tr><td colspan="5" class="empty">Run a scan to collect resources.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre id="log" class="log" aria-label="Log"></pre>
+      </section>
+    </main>
+
+    <script src="../lib/patterns.js"></script>
+    <script src="../lib/zip.js"></script>
+    <script src="../lib/source-map.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>
