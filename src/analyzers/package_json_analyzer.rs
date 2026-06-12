@@ -145,10 +145,7 @@ impl<'s> PkgVisitor<'s> {
                 };
                 let version = match &ip.value {
                     Expression::StringLiteral(s) => s.value.to_string(),
-                    other => {
-                        let sp = other.span();
-                        self.source[sp.start as usize..sp.end as usize].to_string()
-                    }
+                    other => other.span().source_text(self.source).to_string(),
                 };
                 names.push(pkg_name.to_string());
                 entries.push((pkg_name.to_string(), version));

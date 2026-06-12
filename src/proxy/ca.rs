@@ -81,7 +81,7 @@ impl CertificateAuthority {
     /// # Errors
     /// rcgen / rustls errors.
     pub fn leaf_for(&self, host: &str) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), String> {
-        if let Some(cached) = self.leaf_cache.lock().expect("ca poisoned").get(host) {
+        if let Some(cached) = self.leaf_cache.lock().unwrap_or_else(|e| e.into_inner()).get(host) {
             // Clone PrivateKeyDer manually since it doesn't impl Clone.
             return Ok((cached.0.clone(), clone_key(&cached.1)));
         }
@@ -105,7 +105,7 @@ impl CertificateAuthority {
         let cached_key = clone_key(&key);
         self.leaf_cache
             .lock()
-            .expect("ca poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(host.to_string(), (chain.clone(), cached_key));
         Ok((chain, key))
     }

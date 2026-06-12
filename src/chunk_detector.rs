@@ -60,13 +60,18 @@ impl ChunkMetadata {
         trace_chunk!("added module {} to chunk {}", module_id, self.id);
     }
 
-    /// # Panics
-    /// Panics if `start >= end`.
-    pub fn set_bounds(&mut self, start: usize, end: usize) {
-        assert!(start < end, "invalid bounds: start={start} >= end={end}");
+    /// # Errors
+    /// Returns [`ChunkDetectorError::BoundaryDetectionFailed`] if `start >= end`.
+    pub fn set_bounds(&mut self, start: usize, end: usize) -> Result<(), ChunkDetectorError> {
+        if start >= end {
+            return Err(ChunkDetectorError::BoundaryDetectionFailed {
+                reason: format!("invalid bounds: start={start} >= end={end}"),
+            });
+        }
         self.start_pos = start;
         self.end_pos = end;
         trace_chunk!("set bounds for chunk {}: {}..{}", self.id, start, end);
+        Ok(())
     }
 }
 
@@ -614,7 +619,7 @@ impl ChunkDetector {
                     );
 
                     if let Some(chunk) = self.chunks.get_mut(&chunk_id) {
-                        chunk.set_bounds(start, end);
+                        chunk.set_bounds(start, end)?;
                         found_boundaries = found_boundaries.checked_add(1).ok_or_else(|| {
                             ChunkDetectorError::BoundaryDetectionFailed {
                                 reason: "found boundaries counter overflow".to_string(),

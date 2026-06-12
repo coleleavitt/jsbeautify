@@ -62,7 +62,10 @@ def decode_content(file_entry):
     content = file_entry.get("content", "")
     encoding = file_entry.get("encoding", "utf-8")
     if encoding == "base64":
-      return base64.b64decode(content)
+        try:
+            return base64.b64decode(content)
+        except Exception as exc:
+            raise RuntimeError(f"base64 decode failed: {exc}") from exc
     if isinstance(content, str):
         return content.encode("utf-8")
     raise RuntimeError("Unsupported file content type")

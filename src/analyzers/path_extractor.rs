@@ -33,7 +33,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 
     // Comment scan
     for c in &parse.program.comments {
-        let text = &source[c.span.start as usize..c.span.end as usize];
+        let text = c.span.source_text(source);
         visitor.harvest_comment(text, c.span.start);
     }
 

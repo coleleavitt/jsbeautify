@@ -210,7 +210,9 @@ mod tests {
         let _ev = publish(&db, "js_file_saved", &serde_json::json!({"url": "/x.js"})).unwrap();
         let _ev2 = publish(&db, "js_file_saved", &serde_json::json!({"url": "/y.js"})).unwrap();
 
-        let (job, ev) = claim(&db, "analyzer").unwrap().expect("expected job");
+        let (job, ev) = claim(&db, "analyzer")
+            .expect("claim db error")
+            .expect("expected a pending job for analyzer");
         assert_eq!(job.status, "running");
         assert_eq!(ev.topic, "js_file_saved");
         complete(&db, job.id).unwrap();

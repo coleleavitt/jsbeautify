@@ -112,7 +112,7 @@ impl ProjectDb {
     where
         F: FnOnce(&Connection) -> T,
     {
-        let g = self.conn.lock().expect("project db poisoned");
+        let g = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&g)
     }
 

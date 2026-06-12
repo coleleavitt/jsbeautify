@@ -58,7 +58,7 @@ impl<'a> ApiVisitor<'a> {
     fn extract_string_arg(&self, arg: &Argument<'a>) -> Option<String> {
         match arg {
             Argument::StringLiteral(s) => Some(s.value.to_string()),
-            Argument::TemplateLiteral(t) => Some(self.source[t.span.start as usize..t.span.end as usize].to_string()),
+            Argument::TemplateLiteral(t) => Some(t.span.source_text(self.source).to_string()),
             _ => None,
         }
     }

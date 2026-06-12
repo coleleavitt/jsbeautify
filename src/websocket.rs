@@ -181,9 +181,10 @@ mod tests {
     fn ws_message_serializes() {
         let msg = WsMessage::MatchesUpdate(serde_json::json!([{"id": 1}]));
         let frame = msg.to_frame();
-        let text = match frame {
-            Message::Text(t) => t.to_string(),
-            _ => panic!("expected text frame"),
+        let text = if let Message::Text(t) = frame {
+            t.to_string()
+        } else {
+            panic!("expected Message::Text, got {frame:?}");
         };
         assert!(text.contains("matches_update"));
         assert!(text.contains(r#""id":1"#));

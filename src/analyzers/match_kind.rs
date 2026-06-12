@@ -66,6 +66,10 @@ impl PositionRange {
 }
 
 /// Convert byte offset → (1-indexed line, 0-indexed column).
+///
+/// Column counts Unicode codepoints, not raw bytes.  UTF-8 continuation
+/// bytes (0x80–0xBF) are skipped so that a 4-byte emoji increments the
+/// column counter by 1 rather than by 4.
 fn byte_offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
     let offset = offset.min(source.len());
     let mut line = 1u32;
@@ -77,7 +81,9 @@ fn byte_offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
         if *b == b'\n' {
             line += 1;
             col = 0;
-        } else {
+        } else if *b & 0xC0 != 0x80 {
+            // Skip UTF-8 continuation bytes; only count leading bytes so
+            // that multi-byte codepoints contribute exactly 1 to the column.
             col += 1;
         }
     }
