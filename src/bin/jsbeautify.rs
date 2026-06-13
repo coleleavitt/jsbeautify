@@ -652,7 +652,18 @@ fn run_vuln_scan(
     vulns
         .into_iter()
         .map(|v| {
-            let severity = if v.kev { Severity::Critical } else { Severity::High };
+            // Severity: KEV ⇒ Critical; else escalate by CVSS base score.
+            let severity = if v.kev {
+                Severity::Critical
+            } else {
+                match v.cvss {
+                    Some(s) if s >= 9.0 => Severity::Critical,
+                    Some(s) if s >= 7.0 => Severity::High,
+                    Some(s) if s >= 4.0 => Severity::Medium,
+                    Some(_) => Severity::Low,
+                    None => Severity::High,
+                }
+            };
             AnalyzerMatch::new(
                 "known_cve",
                 format!("{}@{} {}", v.component, v.version, v.id),
@@ -669,6 +680,9 @@ fn run_vuln_scan(
                 "aliases": v.aliases,
                 "summary": v.summary,
                 "kev": v.kev,
+                "cvss": v.cvss,
+                "cvss_vector": v.cvss_vector,
+                "epss": v.epss,
             }))
         })
         .collect()

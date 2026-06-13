@@ -17,7 +17,7 @@
 //! KEV flag) ready to feed back through [`crate::analyzers::taxonomy`].
 #![allow(clippy::doc_markdown)] // module docs name catalogs (OSV, CISA KEV)
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
@@ -44,7 +44,7 @@ impl Component {
 }
 
 /// A known vulnerability affecting a component.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct KnownVuln {
     pub component: String,
     pub version: String,
@@ -55,6 +55,12 @@ pub struct KnownVuln {
     pub summary: String,
     /// Whether the CVE is in CISA's Known Exploited Vulnerabilities catalog.
     pub kev: bool,
+    /// CVSS base score (0.0–10.0) parsed from the OSV `severity` vector, if present.
+    pub cvss: Option<f64>,
+    /// CVSS vector string (e.g. `CVSS:3.1/AV:N/...`), if present.
+    pub cvss_vector: Option<String>,
+    /// EPSS exploit-probability (0.0–1.0) for the CVE, if available.
+    pub epss: Option<f64>,
 }
 
 // ── OSV response model (only the fields we use) ──────────────────────────────
@@ -76,6 +82,102 @@ struct OsvVuln {
     aliases: Vec<String>,
     #[serde(default)]
     summary: String,
+    /// OSV `severity` array: `[{type: "CVSS_V3", score: "CVSS:3.1/..."}]`.
+    #[serde(default)]
+    severity: Vec<OsvSeverity>,
+}
+#[derive(Debug, Deserialize)]
+struct OsvSeverity {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    score: String,
+}
+
+/// Compute the CVSS v3.1 **base score** from a `CVSS:3.x/AV:.../...` vector.
+///
+/// Implements the published CVSS v3.1 base-score formula (deterministic, so it's
+/// unit-tested). Returns `None` for a non-v3 vector or one missing base metrics;
+/// the raw vector string is surfaced separately for display either way.
+#[must_use]
+pub fn cvss_v3_base_score(vector: &str) -> Option<f64> {
+    if !vector.starts_with("CVSS:3") {
+        return None;
+    }
+    let mut m = std::collections::HashMap::new();
+    for part in vector.split('/').skip(1) {
+        if let Some((k, v)) = part.split_once(':') {
+            m.insert(k, v);
+        }
+    }
+    let av = match *m.get("AV")? {
+        "N" => 0.85,
+        "A" => 0.62,
+        "L" => 0.55,
+        "P" => 0.2,
+        _ => return None,
+    };
+    let ac = match *m.get("AC")? {
+        "L" => 0.77,
+        "H" => 0.44,
+        _ => return None,
+    };
+    let ui = match *m.get("UI")? {
+        "N" => 0.85,
+        "R" => 0.62,
+        _ => return None,
+    };
+    let scope_changed = *m.get("S")? == "C";
+    // Privileges Required depends on scope.
+    let pr = match (*m.get("PR")?, scope_changed) {
+        ("N", _) => 0.85,
+        ("L", false) => 0.62,
+        ("L", true) => 0.68,
+        ("H", false) => 0.27,
+        ("H", true) => 0.5,
+        _ => return None,
+    };
+    let imp = |s: &str| match s {
+        "H" => 0.56,
+        "L" => 0.22,
+        "N" => 0.0,
+        _ => f64::NAN,
+    };
+    let (c, i, a) = (imp(m.get("C")?), imp(m.get("I")?), imp(m.get("A")?));
+    if c.is_nan() || i.is_nan() || a.is_nan() {
+        return None;
+    }
+
+    let iscbase = ((1.0 - c) * (1.0 - i)).mul_add(-(1.0 - a), 1.0);
+    let impact = if scope_changed {
+        7.52f64.mul_add(iscbase - 0.029, -3.25 * (iscbase - 0.02).powi(15))
+    } else {
+        6.42 * iscbase
+    };
+    let exploitability = 8.22 * av * ac * pr * ui;
+    if impact <= 0.0 {
+        return Some(0.0);
+    }
+    let raw = if scope_changed {
+        (1.08 * (impact + exploitability)).min(10.0)
+    } else {
+        (impact + exploitability).min(10.0)
+    };
+    // CVSS rounds up to one decimal place.
+    Some((raw * 10.0).ceil() / 10.0)
+}
+
+/// Best CVSS (score, vector) from an OSV vuln's severity array (prefer V3).
+fn cvss_of(v: &OsvVuln) -> (Option<f64>, Option<String>) {
+    let pick = v
+        .severity
+        .iter()
+        .find(|s| s.kind.starts_with("CVSS_V3"))
+        .or_else(|| v.severity.first());
+    match pick {
+        Some(s) if !s.score.is_empty() => (cvss_v3_base_score(&s.score), Some(s.score.clone())),
+        _ => (None, None),
+    }
 }
 
 /// Pick the best display id: prefer a CVE alias, else the OSV id.
@@ -110,6 +212,7 @@ pub fn merge_results(components: &[Component], osv: &[OsvResult], kev: &BTreeSet
                 .chain(std::iter::once(id.as_str()))
                 .chain(v.aliases.iter().map(String::as_str))
                 .any(|a| kev.contains(a));
+            let (cvss, cvss_vector) = cvss_of(v);
             out.push(KnownVuln {
                 component: comp.name.clone(),
                 version: comp.version.clone(),
@@ -117,17 +220,58 @@ pub fn merge_results(components: &[Component], osv: &[OsvResult], kev: &BTreeSet
                 aliases: v.aliases.clone(),
                 summary: v.summary.clone(),
                 kev: kev_hit,
+                cvss,
+                cvss_vector,
+                epss: None, // filled in by enrich_epss after the EPSS fetch
             });
         }
     }
-    // KEV-flagged first, then by component, then by id for stable ordering.
+    // KEV first, then highest CVSS, then component, then id (stable).
     out.sort_by(|a, b| {
         b.kev
             .cmp(&a.kev)
+            .then(b.cvss.unwrap_or(0.0).total_cmp(&a.cvss.unwrap_or(0.0)))
             .then(a.component.cmp(&b.component))
             .then(a.id.cmp(&b.id))
     });
     out
+}
+
+/// Parse an EPSS API response (`api.first.org/data/v1/epss`) into a
+/// `CVE -> probability` map. Pure + testable.
+#[must_use]
+pub fn parse_epss(json: &str) -> HashMap<String, f64> {
+    #[derive(Deserialize)]
+    struct Epss {
+        #[serde(default)]
+        data: Vec<EpssEntry>,
+    }
+    #[derive(Deserialize)]
+    struct EpssEntry {
+        cve: String,
+        epss: String,
+    }
+    serde_json::from_str::<Epss>(json)
+        .map(|e| {
+            e.data
+                .into_iter()
+                .filter_map(|d| d.epss.parse::<f64>().ok().map(|p| (d.cve, p)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Attach EPSS scores to vulns whose id is a CVE present in `epss`.
+pub fn enrich_epss<S: std::hash::BuildHasher>(vulns: &mut [KnownVuln], epss: &HashMap<String, f64, S>) {
+    for v in vulns.iter_mut() {
+        // The CVE id may be the preferred id or hide among the aliases.
+        let cve = std::iter::once(&v.id)
+            .chain(v.aliases.iter())
+            .find(|a| a.starts_with("CVE-"));
+        if let Some(p) = cve.and_then(|c| epss.get(c)) {
+            v.epss = Some(*p);
+        }
+    }
 }
 
 /// Parse a CISA KEV JSON document into the set of exploited CVE ids.
@@ -192,7 +336,29 @@ pub async fn scan(components: &[Component]) -> Result<Vec<KnownVuln>, String> {
         _ => BTreeSet::new(),
     };
 
-    Ok(merge_results(components, &results, &kev))
+    let mut vulns = merge_results(components, &results, &kev);
+
+    // EPSS enrichment (best-effort): one request for all matched CVE ids.
+    let cve_ids: Vec<String> = vulns
+        .iter()
+        .flat_map(|v| std::iter::once(&v.id).chain(v.aliases.iter()))
+        .filter(|a| a.starts_with("CVE-"))
+        .cloned()
+        .collect();
+    if !cve_ids.is_empty() {
+        let mut deduped: Vec<String> = cve_ids;
+        deduped.sort();
+        deduped.dedup();
+        let url = format!("https://api.first.org/data/v1/epss?cve={}", deduped.join(","));
+        if let Ok(r) = client.get(&url).send().await
+            && r.status().is_success()
+            && let Ok(body) = r.text().await
+        {
+            enrich_epss(&mut vulns, &parse_epss(&body));
+        }
+    }
+
+    Ok(vulns)
 }
 
 /// Query OSV `/v1/query` for one component, returning its full vuln records.
@@ -218,6 +384,7 @@ mod tests {
                 id: id.to_string(),
                 aliases: aliases.iter().map(|s| (*s).to_string()).collect(),
                 summary: summary.to_string(),
+                severity: Vec::new(),
             }],
         }
     }
@@ -277,6 +444,86 @@ mod tests {
         let kev = parse_kev(json);
         assert_eq!(kev.len(), 2);
         assert!(kev.contains("CVE-2021-1"));
+    }
+
+    #[test]
+    fn computes_cvss_v3_base_scores() {
+        // Known reference vectors → published base scores.
+        // CVE-2014-0160 (Heartbleed) example vector → 7.5.
+        assert_eq!(
+            cvss_v3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+            Some(7.5)
+        );
+        // Full critical (all High, scope unchanged) → 9.8.
+        assert_eq!(
+            cvss_v3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+            Some(9.8)
+        );
+        // Scope-changed XSS-style → 6.1.
+        assert_eq!(
+            cvss_v3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"),
+            Some(6.1)
+        );
+        // Non-v3 vector → None.
+        assert_eq!(cvss_v3_base_score("CVSS:2.0/AV:N/AC:L/Au:N/C:P/I:P/A:P"), None);
+    }
+
+    #[test]
+    fn parses_epss_and_enriches() {
+        let json = r#"{"status":"OK","data":[
+            {"cve":"CVE-2020-11022","epss":"0.00432","percentile":"0.7"},
+            {"cve":"CVE-2019-10744","epss":"0.97","percentile":"0.99"}
+        ]}"#;
+        let epss = parse_epss(json);
+        assert!((epss["CVE-2020-11022"] - 0.00432).abs() < 1e-9);
+
+        let mut vulns = vec![
+            KnownVuln {
+                component: "jquery".into(),
+                version: "1.7.0".into(),
+                id: "CVE-2020-11022".into(),
+                aliases: vec![],
+                summary: String::new(),
+                kev: false,
+                cvss: Some(6.1),
+                cvss_vector: None,
+                epss: None,
+            },
+            KnownVuln {
+                component: "x".into(),
+                version: "1".into(),
+                id: "GHSA-only".into(),
+                aliases: vec!["CVE-2019-10744".into()],
+                summary: String::new(),
+                kev: false,
+                cvss: None,
+                cvss_vector: None,
+                epss: None,
+            },
+        ];
+        enrich_epss(&mut vulns, &epss);
+        assert_eq!(vulns[0].epss, Some(0.00432));
+        // EPSS found via an alias CVE.
+        assert_eq!(vulns[1].epss, Some(0.97));
+    }
+
+    #[test]
+    fn merge_extracts_cvss_from_severity() {
+        let comps = vec![Component::npm("jquery", "1.7.0")];
+        let osv = vec![OsvResult {
+            vulns: vec![OsvVuln {
+                id: "GHSA-x".into(),
+                aliases: vec!["CVE-2020-11022".into()],
+                summary: "XSS".into(),
+                severity: vec![OsvSeverity {
+                    kind: "CVSS_V3".into(),
+                    score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N".into(),
+                }],
+            }],
+        }];
+        let vulns = merge_results(&comps, &osv, &BTreeSet::new());
+        assert_eq!(vulns[0].cvss, Some(6.1));
+        assert!(vulns[0].cvss_vector.as_deref().unwrap().starts_with("CVSS:3.1"));
     }
 
     #[test]
