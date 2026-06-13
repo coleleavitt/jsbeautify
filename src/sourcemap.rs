@@ -30,7 +30,7 @@ pub struct ReversedSource {
     pub content: String,
 }
 
-/// Parse a `.map` JSON blob and extract every (source_path, content) pair
+/// Parse a `.map` JSON blob and extract every `(source_path, content)` pair
 /// that has a non-null entry in `sourcesContent`.
 ///
 /// Returns an empty vec if the map has no `sourcesContent` (older or
@@ -45,16 +45,104 @@ pub fn reverse(map_json: &str) -> Result<Vec<ReversedSource>, serde_json::Error>
     let contents = map.sources_content.unwrap_or_default();
     let mut out = Vec::with_capacity(map.sources.len());
     for (i, src) in map.sources.iter().enumerate() {
-        if let Some(Some(content)) = contents.get(i) {
-            if !content.is_empty() {
-                out.push(ReversedSource {
-                    source_path: src.clone(),
-                    content: content.clone(),
-                });
-            }
+        if let Some(Some(content)) = contents.get(i)
+            && !content.is_empty()
+        {
+            out.push(ReversedSource {
+                source_path: src.clone(),
+                content: content.clone(),
+            });
         }
     }
     Ok(out)
+}
+
+/// Normalize a sourcemap `sources[]` path into a **safe relative path** suitable
+/// for writing under an output directory.
+///
+/// Bundler source paths come in many shapes:
+/// - `webpack://my-app/./src/index.ts`
+/// - `webpack://_N_E/./components/Button.tsx`
+/// - `rollup:///src/main.js`, `vite:///@fs/...`
+/// - absolute URLs (`https://app/static/x.js`) or absolute FS paths (`/home/...`)
+/// - `../../node_modules/...` traversal
+///
+/// We strip the scheme + bundler-namespace authority, drop `webpack-internal:`
+/// and `?` query suffixes, collapse `./` and `../` so nothing escapes the output
+/// root, and guarantee the result is relative (never starts with `/` or a drive).
+#[must_use]
+pub fn normalize_source_path(raw: &str) -> String {
+    let mut s = raw.trim();
+
+    // Strip `webpack-internal:///` and similar internal prefixes entirely.
+    for prefix in [
+        "webpack-internal://",
+        "webpack://",
+        "rollup://",
+        "vite://",
+        "turbopack://",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+    // Strip a generic `scheme://authority/` for http(s)/file URLs.
+    if let Some(idx) = s.find("://") {
+        let after = &s[idx + 3..];
+        s = after.split_once('/').map_or("", |(_, p)| p);
+    }
+    // Drop query/hash suffixes (e.g. `?v=hash`).
+    let s = s.split(['?', '#']).next().unwrap_or(s);
+
+    // Some webpack namespaces look like `_N_E/./src/x` or `./src/x`.
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in s.split(['/', '\\']) {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                // Never escape the root: pop if possible, else ignore.
+                segments.pop();
+            }
+            // Drop Windows drive letters like `C:`.
+            d if d.len() == 2 && d.ends_with(':') && d.as_bytes()[0].is_ascii_alphabetic() => {}
+            other => segments.push(other),
+        }
+    }
+    let joined = segments.join("/");
+    if joined.is_empty() {
+        "unknown_source".to_string()
+    } else {
+        joined
+    }
+}
+
+/// Reconstruct a source-map's original file tree under `output_dir/reversed/`.
+///
+/// Parses `map_json`, normalizes every `sources[]` path to a safe relative path,
+/// and writes each `sourcesContent[i]` to `output_dir/reversed/<rel_path>`,
+/// creating intermediate directories. Returns the relative paths written.
+///
+/// # Errors
+/// I/O errors creating directories / writing files, or a malformed map.
+pub fn reconstruct_tree(map_json: &str, output_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let sources = reverse(map_json).map_err(|e| format!("parse sourcemap: {e}"))?;
+    let root = output_dir.join("reversed");
+    let mut written = Vec::new();
+    for src in sources {
+        let rel = normalize_source_path(&src.source_path);
+        let target = root.join(&rel);
+        // Defense in depth: ensure the resolved path stays under `root`.
+        if !target.starts_with(&root) {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&target, src.content.as_bytes()).map_err(|e| format!("write {}: {e}", target.display()))?;
+        written.push(rel);
+    }
+    Ok(written)
 }
 
 impl SourceMap {
@@ -149,6 +237,57 @@ mod tests {
         assert_eq!(map.version, 3);
         assert_eq!(map.sources.len(), 1);
         assert_eq!(map.sources[0], "input.js");
+    }
+
+    #[test]
+    fn normalizes_bundler_source_paths() {
+        assert_eq!(
+            normalize_source_path("webpack://my-app/./src/index.ts"),
+            "my-app/src/index.ts"
+        );
+        assert_eq!(
+            normalize_source_path("webpack://_N_E/./components/Button.tsx"),
+            "_N_E/components/Button.tsx"
+        );
+        assert_eq!(normalize_source_path("rollup:///src/main.js"), "src/main.js");
+        assert_eq!(normalize_source_path("webpack-internal:///./util.js"), "util.js");
+        assert_eq!(
+            normalize_source_path("https://app.com/static/app.js?v=abc"),
+            "static/app.js"
+        );
+        // Drive letter + backslashes.
+        assert_eq!(normalize_source_path("C:\\Users\\x\\app.ts"), "Users/x/app.ts");
+    }
+
+    #[test]
+    fn path_traversal_cannot_escape_root() {
+        // `..` segments are popped, never allowed to climb out.
+        assert_eq!(normalize_source_path("../../etc/passwd"), "etc/passwd");
+        assert_eq!(normalize_source_path("/abs/../../x"), "x");
+        assert_eq!(normalize_source_path("webpack://app/../../../secret"), "secret");
+        assert_eq!(normalize_source_path("./"), "unknown_source");
+    }
+
+    #[test]
+    fn reconstruct_tree_writes_files() {
+        let dir = std::env::temp_dir().join(format!("jsb-smtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let map = serde_json::json!({
+            "version": 3,
+            "sources": ["webpack://app/./src/a.ts", "webpack://app/./src/util/b.ts"],
+            "sourcesContent": ["export const a = 1;", "export const b = 2;"],
+            "names": [],
+            "mappings": ""
+        })
+        .to_string();
+
+        let written = reconstruct_tree(&map, &dir).unwrap();
+        assert_eq!(written.len(), 2);
+        let a = dir.join("reversed/app/src/a.ts");
+        let b = dir.join("reversed/app/src/util/b.ts");
+        assert!(a.exists() && b.exists());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "export const a = 1;");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -131,6 +131,11 @@ struct Cli {
     #[arg(long)]
     bun_extract: bool,
 
+    /// Reconstruct the original source tree from a .js.map into <dir>/reversed/
+    /// (walks sourcesContent, normalizes webpack:// paths). Value is the output dir.
+    #[arg(long, value_name = "DIR")]
+    reconstruct_sourcemap: Option<String>,
+
     // ── Security analysis ────────────────────────────────────────────────────
     /// Run all security analyzers (secrets, sinks, paths, GraphQL, npm packages)
     #[arg(long)]
@@ -849,6 +854,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ── Recursive recon-brain mode (the self-driving loop) ────────────────────
     if let Some(domain) = cli.recon.clone() {
         return run_recon(&cli, &domain);
+    }
+
+    // ── Source-map tree reconstruction ────────────────────────────────────────
+    if let Some(out_dir) = cli.reconstruct_sourcemap.clone() {
+        let map_json = if cli.input == "-" {
+            let mut buf = String::new();
+            io::stdin().read_to_string(&mut buf)?;
+            buf
+        } else {
+            fs::read_to_string(&cli.input)?
+        };
+        let dir = std::path::Path::new(&out_dir);
+        let written = js_beautify_rs::sourcemap::reconstruct_tree(&map_json, dir)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        eprintln!(
+            "Reconstructed {} source file(s) into {}/reversed/",
+            written.len(),
+            dir.display()
+        );
+        for w in &written {
+            println!("{w}");
+        }
+        return Ok(());
     }
 
     // ── Asset-relationship graph mode ─────────────────────────────────────────
