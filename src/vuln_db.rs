@@ -20,6 +20,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 
 /// A detected component to look up (name + version + ecosystem).
@@ -58,13 +59,11 @@ pub struct KnownVuln {
 
 // ── OSV response model (only the fields we use) ──────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct OsvBatchResponse {
-    results: Vec<OsvResult>,
-}
-
-/// One component's OSV result (the vulns affecting it). Public so the pure
-/// [`merge_results`] core can be exercised in tests + by callers.
+/// One component's OSV result (the vulns affecting it).
+///
+/// Matches the `/v1/query` response body and each element of a `/v1/querybatch`
+/// result. Public so the pure [`merge_results`] core can be exercised by tests
+/// and callers without the network.
 #[derive(Debug, Deserialize, Default)]
 pub struct OsvResult {
     #[serde(default)]
@@ -90,15 +89,27 @@ fn preferred_id(osv_id: &str, aliases: &[String]) -> String {
 
 /// Merge OSV results (parallel to `components`) + a KEV id set into findings.
 ///
-/// Pure: this is the testable core. `osv_json` is the raw OSV `/v1/querybatch`
-/// **or** `/v1/query` per-component response bodies, already deserialized.
+/// Pure: this is the testable core. Each `OsvResult` is a `/v1/query` response
+/// (or one `/v1/querybatch` result), already deserialized. If `osv` is shorter
+/// than `components` the surplus components simply contribute nothing — but the
+/// live [`scan`] always passes a vector of exactly `components.len()` (one entry
+/// per query, empty on failure), so no finding is silently dropped.
 #[must_use]
 pub fn merge_results(components: &[Component], osv: &[OsvResult], kev: &BTreeSet<String>) -> Vec<KnownVuln> {
+    debug_assert!(
+        osv.len() == components.len() || osv.len() <= components.len(),
+        "osv results should be aligned 1:1 with components",
+    );
     let mut out = Vec::new();
     for (comp, result) in components.iter().zip(osv) {
         for v in &result.vulns {
             let id = preferred_id(&v.id, &v.aliases);
-            let kev_hit = std::iter::once(&id).chain(v.aliases.iter()).any(|a| kev.contains(a));
+            // KEV can list the CVE *or* the GHSA id, so check the raw OSV id and
+            // the preferred id and every alias — not just the preferred id.
+            let kev_hit = std::iter::once(v.id.as_str())
+                .chain(std::iter::once(id.as_str()))
+                .chain(v.aliases.iter().map(String::as_str))
+                .any(|a| kev.contains(a));
             out.push(KnownVuln {
                 component: comp.name.clone(),
                 version: comp.version.clone(),
@@ -109,8 +120,13 @@ pub fn merge_results(components: &[Component], osv: &[OsvResult], kev: &BTreeSet
             });
         }
     }
-    // KEV-flagged first, then by component.
-    out.sort_by(|a, b| b.kev.cmp(&a.kev).then(a.component.cmp(&b.component)));
+    // KEV-flagged first, then by component, then by id for stable ordering.
+    out.sort_by(|a, b| {
+        b.kev
+            .cmp(&a.kev)
+            .then(a.component.cmp(&b.component))
+            .then(a.id.cmp(&b.id))
+    });
     out
 }
 
@@ -134,9 +150,17 @@ pub fn parse_kev(json: &str) -> BTreeSet<String> {
 
 /// Live OSV + KEV lookup. Network-bound; intended to run behind a CLI flag.
 ///
+/// Uses OSV's per-component `/v1/query` endpoint rather than `/v1/querybatch`:
+/// the batch endpoint returns only `{id, modified}` per vuln (no aliases, no
+/// summary), which would make CVE-id preference and KEV matching non-functional.
+/// `/v1/query` returns the full vulnerability records. Queries run concurrently
+/// and the result vector is kept aligned 1:1 with `components` (a failed query
+/// yields an empty result, never a dropped component).
+///
 /// # Errors
-/// Propagates HTTP/client construction errors. A failed KEV fetch is non-fatal
-/// (vulns are still returned, just without exploited-in-the-wild flags).
+/// Propagates HTTP-client construction errors. Per-component query failures and
+/// a failed KEV fetch are non-fatal (that component just contributes no vulns /
+/// no exploited-in-the-wild flags).
 pub async fn scan(components: &[Component]) -> Result<Vec<KnownVuln>, String> {
     if components.is_empty() {
         return Ok(Vec::new());
@@ -147,27 +171,16 @@ pub async fn scan(components: &[Component]) -> Result<Vec<KnownVuln>, String> {
         .build()
         .map_err(|e| format!("build http client: {e}"))?;
 
-    // OSV batch query: one POST with all components.
-    let queries: Vec<serde_json::Value> = components
-        .iter()
+    // One /v1/query per component, concurrently. Order is preserved so the
+    // results stay 1:1 with `components`.
+    let results: Vec<OsvResult> = stream::iter(components.iter())
         .map(|c| {
-            serde_json::json!({
-                "version": c.version,
-                "package": { "name": c.name, "ecosystem": c.ecosystem },
-            })
+            let client = client.clone();
+            async move { query_one(&client, c).await }
         })
-        .collect();
-    let body = serde_json::json!({ "queries": queries });
-    let resp = client
-        .post("https://api.osv.dev/v1/querybatch")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("osv request failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("osv returned HTTP {}", resp.status()));
-    }
-    let osv: OsvBatchResponse = resp.json().await.map_err(|e| format!("osv decode: {e}"))?;
+        .buffered(8)
+        .collect()
+        .await;
 
     // KEV is best-effort.
     let kev = match client
@@ -179,7 +192,20 @@ pub async fn scan(components: &[Component]) -> Result<Vec<KnownVuln>, String> {
         _ => BTreeSet::new(),
     };
 
-    Ok(merge_results(components, &osv.results, &kev))
+    Ok(merge_results(components, &results, &kev))
+}
+
+/// Query OSV `/v1/query` for one component, returning its full vuln records.
+/// Any failure yields an empty result so the caller's 1:1 alignment is kept.
+async fn query_one(client: &reqwest::Client, c: &Component) -> OsvResult {
+    let body = serde_json::json!({
+        "version": c.version,
+        "package": { "name": c.name, "ecosystem": c.ecosystem },
+    });
+    match client.post("https://api.osv.dev/v1/query").json(&body).send().await {
+        Ok(resp) if resp.status().is_success() => resp.json::<OsvResult>().await.unwrap_or_default(),
+        _ => OsvResult::default(),
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +245,30 @@ mod tests {
         assert!(vulns[0].kev);
         assert_eq!(vulns[0].component, "lodash");
         assert!(!vulns[1].kev);
+    }
+
+    #[test]
+    fn flags_kev_when_only_ghsa_id_listed() {
+        // KEV lists the GHSA id, not the CVE alias — must still flag.
+        let comps = vec![Component::npm("jquery", "1.7.0")];
+        let osv = vec![osv_with("GHSA-jq-111", &["CVE-2020-11022"], "jQuery XSS")];
+        let mut kev = BTreeSet::new();
+        kev.insert("GHSA-jq-111".to_string());
+        let vulns = merge_results(&comps, &osv, &kev);
+        assert_eq!(vulns.len(), 1);
+        assert!(vulns[0].kev, "raw GHSA id present in KEV must set kev=true");
+        // Display id still prefers the CVE alias.
+        assert_eq!(vulns[0].id, "CVE-2020-11022");
+    }
+
+    #[test]
+    fn surplus_components_without_results_are_safe() {
+        // Fewer OSV results than components must not panic or misalign.
+        let comps = vec![Component::npm("a", "1.0.0"), Component::npm("b", "2.0.0")];
+        let osv = vec![osv_with("GHSA-a", &[], "a vuln")]; // only one result
+        let vulns = merge_results(&comps, &osv, &BTreeSet::new());
+        assert_eq!(vulns.len(), 1);
+        assert_eq!(vulns[0].component, "a");
     }
 
     #[test]
