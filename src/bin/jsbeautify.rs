@@ -53,10 +53,23 @@ struct Cli {
     rename_vars: bool,
 
     /// After heuristic renaming, ask an LLM to name residual minified locals
-    /// (humanify pattern). Requires JSBEAUTIFY_LLM_URL (OpenAI-compatible
-    /// endpoint). Implies --rename-vars.
+    /// (humanify pattern). Works with a standard OPENAI_API_KEY, or any
+    /// OpenAI-compatible endpoint via --llm-url / env. Implies --rename-vars.
     #[arg(long)]
     rename_llm: bool,
+
+    /// OpenAI-compatible endpoint URL (overrides OPENAI_BASE_URL /
+    /// JSBEAUTIFY_LLM_URL). A bare base gets `/chat/completions` appended.
+    #[arg(long, value_name = "URL", global = true)]
+    llm_url: Option<String>,
+
+    /// LLM model id (overrides OPENAI_MODEL / JSBEAUTIFY_LLM_MODEL).
+    #[arg(long, value_name = "MODEL", global = true)]
+    llm_model: Option<String>,
+
+    /// LLM API key (overrides OPENAI_API_KEY / JSBEAUTIFY_LLM_KEY).
+    #[arg(long, value_name = "KEY", global = true)]
+    llm_key: Option<String>,
 
     /// Split webpack chunks into separate files
     #[arg(long)]
@@ -956,6 +969,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // Preserve prior behaviour: API/storage extraction always ran in
                 // the CLI path regardless of the targeted flags.
                 api_calls: true,
+                // Entropy + taint follow the secret/sink intent of this scan.
+                entropy_secrets: cli.scan_secrets,
+                taint: cli.find_sinks,
             }
         };
 
@@ -1565,13 +1581,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Final LLM tier: name residual minified locals the heuristics couldn't.
     if cli.rename_llm {
-        match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_env() {
+        let overrides = js_beautify_rs::llm::LlmOverrides {
+            url: cli.llm_url.clone(),
+            model: cli.llm_model.clone(),
+            key: cli.llm_key.clone(),
+        };
+        match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {
             Some(suggester) => {
                 eprintln!("[RENAME] Querying LLM for residual minified names...");
                 beautified = js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, &suggester);
             }
             None => eprintln!(
-                "[RENAME] --rename-llm set but no endpoint configured (set JSBEAUTIFY_LLM_URL); skipping LLM tier."
+                "[RENAME] --rename-llm set but no endpoint configured \
+                 (set OPENAI_API_KEY, or --llm-url / JSBEAUTIFY_LLM_URL); skipping LLM tier."
             ),
         }
     }

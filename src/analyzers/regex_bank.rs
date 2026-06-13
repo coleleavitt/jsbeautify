@@ -412,6 +412,10 @@ pub fn severity_for_kind(kind: &str) -> Severity {
     // Analyzer-specific defaults
     match kind {
         "html_manipulation" | "dangerously_set_inner_html" => Severity::High,
+        // Taint-flow + entropy findings (severity usually set explicitly).
+        "dom_xss" => Severity::High,
+        "open_redirect" => Severity::Medium,
+        "high_entropy_secret" => Severity::Medium,
         "location_assignment" => Severity::Medium,
         "window_onmessage" | "post_message" => Severity::Medium,
         "url_search_params" | "storage_access" => Severity::Low,

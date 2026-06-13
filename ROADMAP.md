@@ -17,6 +17,15 @@ papers, full text in `txt/`) and mapped to concrete Rust + oxc work.
   enumeration, `--crtsh`) and `recon_engine` (recursive crt.sh → fetch
   JS/HTML/source-maps → deobfuscate → analyze → harvest new hosts/endpoints/
   secrets → loop, `--recon`).
+- **NEW — taint-lite source→sink analysis** (`analyzers/taint.rs`): intra-procedural
+  DOM-XSS / open-redirect detection (`dom_xss`, `open_redirect` findings). First
+  step of the P0 taint engine below. ✅ shipped.
+- **NEW — entropy secret scoring** (`analyzers/entropy_secret.rs`): Shannon-entropy
+  + charset heuristics flag high-entropy credential-shaped strings and ignore the
+  low-entropy URL/prose noise that drowns regex scanners. ✅ shipped.
+- **NEW — unified LLM client** (`llm.rs`): one OpenAI-compatible client honoring
+  standard `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` plus `--llm-url/
+  --llm-model/--llm-key` flags; powers the `--rename-llm` tier. ✅ shipped.
 
 The capture extension only ever mined assets the inspected page referenced
 (`frontend/panel/panel.js` `createDeepCrawlScope` seeds `allowedOrigins` from the
@@ -25,11 +34,17 @@ that gap from the backend.
 
 ---
 
-## P0 — Static taint analysis (the single biggest leap)
+## P0 — Static taint analysis (the single biggest leap) — STARTED ✅
 
-Today the analyzers are **pattern matchers**: they flag `el.innerHTML = x` but
-can't tell if `x` is attacker-controlled. Real client-side bug finding needs
-**source → sink dataflow**. This is what separates us from grep-with-regex tools.
+A first **intra-procedural, flow-insensitive** pass ships in `analyzers/taint.rs`
+(sources: `location.*`, `document.URL/cookie/referrer`, `window.name`, message
+`.data`; sinks: `innerHTML`/`outerHTML`/`document.write`/`eval`/`location` assign
++ `assign`/`replace`). It already catches the BlackRock `idpRedirect` open-redirect
+shape. Remaining work to reach the full bar below:
+
+Today the rest of the analyzers are **pattern matchers**: they flag
+`el.innerHTML = x` but can't tell if `x` is attacker-controlled. Real client-side
+bug finding needs **inter-procedural source → sink dataflow** — the next steps:
 
 - **IFDS taint with access paths** (`taint-ifds-accesspaths-2021.pdf`) — the
   practical algorithm: model taint as an IFDS graph-reachability problem over
@@ -42,11 +57,11 @@ can't tell if `x` is attacker-controlled. Real client-side bug finding needs
   `taint-djangochecker-2020.pdf`) — bootstrap source/sink/sanitizer specs instead
   of hand-listing them.
 
-**Rust+oxc plan**: build a CFG + def-use over oxc's AST (oxc already has
-`oxc_semantic` with scopes/symbols); implement an IFDS solver on access paths;
-seed sources (`location.hash`, `postMessage` data, `document.cookie`, URL params)
-and sinks (`innerHTML`, `eval`, `document.write`, `location` assignment) from a
-config. Output: source→sink traces, not just sink hits.
+**Rust+oxc plan**: extend `analyzers/taint.rs` from name-based intra-procedural
+tracking to a CFG + def-use IFDS solver over `oxc_semantic` (resolved `SymbolId`s,
+access paths), add inter-procedural propagation via a call graph, and model
+sanitizers. Output: full source→sink traces, not just the single-function hits we
+report today.
 
 ## P0 — DOM XSS + open-redirect detection (first taint client)
 

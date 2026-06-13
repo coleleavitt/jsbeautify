@@ -22,6 +22,7 @@ pub mod diff;
 pub mod domain_recon;
 pub mod fuzz;
 pub mod hooks;
+pub mod llm;
 pub mod monitoring;
 pub mod nextjs_discovery;
 pub mod oxc_opts;

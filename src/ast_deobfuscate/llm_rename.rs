@@ -8,11 +8,10 @@
 //! resolved, and unusable suggestions are dropped.
 //!
 //! Off by default. Enabled with `--rename-llm` plus an OpenAI-compatible
-//! endpoint configured via environment:
-//! - `JSBEAUTIFY_LLM_URL`   — e.g. `http://localhost:11434/v1/chat/completions`
-//!   (Ollama), `https://openrouter.ai/api/v1/chat/completions`, …
-//! - `JSBEAUTIFY_LLM_MODEL` — model id (default `gpt-4o-mini`)
-//! - `JSBEAUTIFY_LLM_KEY`   — bearer token (optional, e.g. for local Ollama)
+//! endpoint. Configuration is resolved by [`crate::llm`] — standard
+//! `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`, the project-specific
+//! `JSBEAUTIFY_LLM_*` vars, or explicit `--llm-url/--llm-model/--llm-key` CLI
+//! flags (which take precedence).
 //!
 //! [humanify]: https://github.com/jehna/humanify
 
@@ -25,7 +24,6 @@ use oxc_span::SourceType;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
-use serde::Deserialize;
 
 use crate::ast_deobfuscate::bun_local_renamer::{
     LocalRenameMap, LocalRenamer, RenameMode, is_likely_generated_alias, is_meaningful_short, is_usable_base,
@@ -34,6 +32,7 @@ use crate::ast_deobfuscate::bun_local_renamer::{
 use crate::ast_deobfuscate::heuristic_rename::HeuristicNameCollector;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::llm::{LlmClient, LlmOverrides};
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -56,47 +55,27 @@ pub trait NameSuggester {
 
 // ── OpenAI-compatible HTTP provider ──────────────────────────────────────────
 
-/// Suggester backed by an OpenAI-compatible `/v1/chat/completions` endpoint
-/// (OpenAI, OpenRouter, Ollama, llama.cpp server, …).
+/// Suggester backed by the shared [`LlmClient`] (any OpenAI-compatible
+/// endpoint: OpenAI, OpenRouter, Ollama, llama.cpp, …).
 pub struct OpenAiCompatSuggester {
-    url: String,
-    model: String,
-    key: Option<String>,
-    client: reqwest::blocking::Client,
+    client: LlmClient,
 }
 
 impl OpenAiCompatSuggester {
-    /// Build from `JSBEAUTIFY_LLM_URL` / `JSBEAUTIFY_LLM_MODEL` /
-    /// `JSBEAUTIFY_LLM_KEY`. Returns `None` when no endpoint is configured.
+    /// Build from CLI overrides falling back to env (`OPENAI_*` /
+    /// `JSBEAUTIFY_LLM_*`). Returns `None` when no endpoint is configured.
     #[must_use]
-    pub fn from_env() -> Option<Self> {
-        let url = std::env::var("JSBEAUTIFY_LLM_URL").ok()?;
-        let model = std::env::var("JSBEAUTIFY_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-        let key = std::env::var("JSBEAUTIFY_LLM_KEY").ok();
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .ok()?;
+    pub fn from_overrides(ov: &LlmOverrides) -> Option<Self> {
         Some(Self {
-            url,
-            model,
-            key,
-            client,
+            client: LlmClient::from_overrides(ov)?,
         })
     }
-}
 
-#[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
-}
-#[derive(Deserialize)]
-struct ChatMessage {
-    content: String,
+    /// Convenience: build purely from environment (no CLI overrides).
+    #[must_use]
+    pub fn from_env() -> Option<Self> {
+        Self::from_overrides(&LlmOverrides::default())
+    }
 }
 
 impl NameSuggester for OpenAiCompatSuggester {
@@ -114,28 +93,11 @@ impl NameSuggester for OpenAiCompatSuggester {
             based on how the variable is used in its context. Keep already-meaningful names. \
             Use only valid JS identifiers; never reserved words. Respond with ONLY a JSON array \
             of strings, one per input, in the same order.";
-        let body = serde_json::json!({
-            "model": self.model,
-            "temperature": 0,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": serde_json::Value::Array(user_items).to_string() },
-            ],
-        });
-
-        let mut req = self.client.post(&self.url).json(&body);
-        if let Some(key) = &self.key {
-            req = req.bearer_auth(key);
+        let user = serde_json::Value::Array(user_items).to_string();
+        match self.client.chat(system, &user) {
+            Ok(content) => parse_name_array(&content, requests.len()),
+            Err(_) => vec![None; requests.len()],
         }
-        let none = || vec![None; requests.len()];
-        let Ok(resp) = req.send() else { return none() };
-        let Ok(parsed) = resp.json::<ChatResponse>() else {
-            return none();
-        };
-        let Some(content) = parsed.choices.first().map(|c| c.message.content.clone()) else {
-            return none();
-        };
-        parse_name_array(&content, requests.len())
     }
 }
 

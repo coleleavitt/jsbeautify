@@ -19,6 +19,7 @@ pub mod api_extractor;
 pub mod ast_walker;
 pub mod comment_extractor;
 pub mod derived;
+pub mod entropy_secret;
 pub mod graphql_extractor;
 pub mod helpers;
 pub mod hostname_extractor;
@@ -31,6 +32,7 @@ pub mod regex_bank;
 pub mod secret_scanner;
 pub mod sensitive_property_name;
 pub mod sinks;
+pub mod taint;
 
 // Framework / build-tool recon: per-framework signature analyzers + dispatcher.
 pub mod framework_recon;
@@ -83,6 +85,10 @@ pub struct AnalyzerConfig {
     pub framework_recon: bool,
     /// API-call + storage (`localStorage`/`sessionStorage`/…) extraction.
     pub api_calls: bool,
+    /// Entropy-based high-entropy-secret detection (complements regex bank).
+    pub entropy_secrets: bool,
+    /// Taint-lite source→sink analysis (DOM-XSS / open-redirect).
+    pub taint: bool,
 }
 
 impl Default for AnalyzerConfig {
@@ -97,12 +103,14 @@ impl Default for AnalyzerConfig {
             comments: true,
             framework_recon: true,
             api_calls: true,
+            entropy_secrets: true,
+            taint: true,
         }
     }
 }
 
 impl AnalyzerConfig {
-    /// Only enable the secret/credential scanner.
+    /// Only enable the secret/credential scanner (regex + entropy).
     pub fn secrets_only() -> Self {
         Self {
             secrets: true,
@@ -114,6 +122,8 @@ impl AnalyzerConfig {
             comments: false,
             framework_recon: false,
             api_calls: false,
+            entropy_secrets: true,
+            taint: false,
         }
     }
 
@@ -129,6 +139,8 @@ impl AnalyzerConfig {
             comments: false,
             framework_recon: false,
             api_calls: false,
+            entropy_secrets: false,
+            taint: true,
         }
     }
 }
@@ -175,6 +187,14 @@ pub fn run_all(
 
     if config.api_calls {
         out.extend(api_extractor::analyze(source, file_path, file_type));
+    }
+
+    if config.entropy_secrets {
+        out.extend(entropy_secret::analyze(source, file_path, file_type));
+    }
+
+    if config.taint && matches!(file_type, FileType::Js) {
+        out.extend(taint::analyze(source, file_path, file_type));
     }
 
     out
