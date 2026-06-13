@@ -225,6 +225,38 @@ mod tests {
     }
 
     #[test]
+    fn line_col_counts_codepoints_not_bytes() {
+        // "é" is 2 UTF-8 bytes, "🔥" is 4. The column counter must advance by
+        // one codepoint each, not one per byte.
+        let src = "é🔥x";
+        // Byte layout: é = [0..2), 🔥 = [2..6), x = [6..7), end = 7.
+        // After both multi-byte chars, `x` sits at column 2 (codepoints), not 6.
+        let r = PositionRange::from_byte_range(src, 6, 7);
+        assert_eq!(
+            r.start,
+            Position { line: 1, column: 2 },
+            "x should be column 2 by codepoint count"
+        );
+        assert_eq!(r.end, Position { line: 1, column: 3 });
+
+        // A byte offset landing mid-character is clamped/handled without
+        // over-counting: the emoji start (byte 2) is column 1.
+        let emoji = PositionRange::from_byte_range(src, 2, 6);
+        assert_eq!(emoji.start, Position { line: 1, column: 1 });
+        assert_eq!(emoji.end, Position { line: 1, column: 2 });
+    }
+
+    #[test]
+    fn line_col_multibyte_across_newlines() {
+        // Column resets per line and still counts codepoints on later lines.
+        let src = "café\nrésumé";
+        // Second line starts after the '\n'. "résumé" — the 'r' is column 0.
+        let r_byte = src.find("résumé").unwrap();
+        let r = PositionRange::from_byte_range(src, r_byte, r_byte + 1);
+        assert_eq!(r.start, Position { line: 2, column: 0 });
+    }
+
+    #[test]
     fn file_type_from_path() {
         assert_eq!(FileType::from_path("a.js"), FileType::Js);
         assert_eq!(FileType::from_path("a.html"), FileType::Html);

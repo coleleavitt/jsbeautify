@@ -172,6 +172,32 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn leaf_for_recovers_from_poisoned_cache() {
+        let dir = tempfile_dir();
+        let ca = CertificateAuthority::load_or_generate(&dir).unwrap();
+
+        // Poison the leaf-cache mutex by panicking while holding its lock.
+        let cache = ca.leaf_cache.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = cache.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        }));
+        assert!(ca.leaf_cache.lock().is_err(), "mutex should now be poisoned");
+
+        // Despite poisoning, leaf issuance must still succeed (graceful recovery
+        // via `unwrap_or_else(|e| e.into_inner())`).
+        let (chain, _key) = ca
+            .leaf_for("example.com")
+            .expect("leaf issuance should recover from a poisoned cache");
+        assert_eq!(chain.len(), 1);
+
+        // And a second cached lookup also works.
+        let (chain2, _) = ca.leaf_for("example.com").expect("cached lookup after recovery");
+        assert_eq!(chain, chain2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn tempfile_dir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);

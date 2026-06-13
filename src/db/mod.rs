@@ -186,4 +186,28 @@ mod tests {
             assert_eq!(dir, "/tmp/acme-v2");
         });
     }
+
+    #[test]
+    fn with_conn_recovers_from_poisoned_lock() {
+        let db = ProjectDb::open_in_memory().unwrap();
+
+        // A panic inside a `with_conn` closure poisons the connection mutex.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.with_conn(|_c| panic!("intentional panic inside with_conn"));
+        }));
+        assert!(result.is_err(), "closure panic should propagate");
+        assert!(db.conn.lock().is_err(), "mutex should now be poisoned");
+
+        // The next caller must still get a working connection (graceful
+        // recovery via `unwrap_or_else(|e| e.into_inner())`) rather than
+        // cascading the panic.
+        db.upsert_project("after", "/tmp/after").unwrap();
+        let dir: String = db.with_conn(|c| {
+            c.query_row("SELECT working_directory FROM projects WHERE name = 'after'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        });
+        assert_eq!(dir, "/tmp/after");
+    }
 }

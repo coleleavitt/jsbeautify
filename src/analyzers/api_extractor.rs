@@ -179,4 +179,29 @@ mod tests {
         let m = analyze(src, None, FileType::Js);
         assert!(m.iter().any(|x| x.match_value == "/api/internal/admin"));
     }
+
+    #[test]
+    fn extracts_template_literal_argument_via_source_text() {
+        // The template-literal branch of extract_string_arg uses
+        // span.source_text(); cover it (incl. an interpolation) so the
+        // raw-slice → source_text() change stays exercised.
+        let src = "fetch(`/api/v2/users/${id}/profile`);";
+        let m = analyze(src, None, FileType::Js);
+        let call = m
+            .iter()
+            .find(|x| x.match_kind == "api_call")
+            .expect("template-literal fetch should be captured");
+        // source_text() returns the literal *including* the backticks and the
+        // `${id}` interpolation, verbatim from the source.
+        assert!(
+            call.match_value.contains("/api/v2/users/"),
+            "got {:?}",
+            call.match_value
+        );
+        assert!(
+            call.match_value.contains("${id}"),
+            "interpolation retained: {:?}",
+            call.match_value
+        );
+    }
 }

@@ -843,6 +843,31 @@ mod tests {
     }
 
     #[test]
+    fn set_bounds_accepts_valid_range() {
+        let mut chunk = ChunkMetadata::new(1, "A".to_string(), "h".to_string());
+        chunk.set_bounds(10, 20).expect("valid bounds should be accepted");
+        assert_eq!(chunk.start_pos, 10);
+        assert_eq!(chunk.end_pos, 20);
+    }
+
+    #[test]
+    fn set_bounds_rejects_inverted_and_empty_range() {
+        let mut chunk = ChunkMetadata::new(1, "A".to_string(), "h".to_string());
+
+        // start == end (empty) is rejected.
+        let eq = chunk.set_bounds(5, 5);
+        assert!(matches!(eq, Err(ChunkDetectorError::BoundaryDetectionFailed { .. })));
+
+        // start > end (inverted) is rejected.
+        let inv = chunk.set_bounds(20, 10);
+        assert!(matches!(inv, Err(ChunkDetectorError::BoundaryDetectionFailed { .. })));
+
+        // A rejected call must not mutate the chunk.
+        assert_eq!(chunk.start_pos, 0);
+        assert_eq!(chunk.end_pos, 0);
+    }
+
+    #[test]
     fn test_detector_initialization() {
         let detector = ChunkDetector::new();
 
