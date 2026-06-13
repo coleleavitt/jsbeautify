@@ -192,6 +192,11 @@ struct Cli {
     #[arg(long, value_name = "PATTERNS")]
     validate_scope: Option<String>,
 
+    /// With --analyze: write a triager-ready Markdown PoC report (findings +
+    /// chains + any validations, with copyable repro commands) to this file.
+    #[arg(long, value_name = "FILE")]
+    report: Option<String>,
+
     /// Detect sensitive property names (secret, authorization, aws_secret_key, …)
     #[arg(long)]
     find_sensitive_props: bool,
@@ -1454,6 +1459,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Vec::new()
         };
+
+        // --report: write a triager-ready Markdown PoC report.
+        if let Some(report_path) = &cli.report {
+            // Chains for the report even if --chains wasn't explicitly set.
+            let report_chains = if attack_chains.is_empty() {
+                js_beautify_rs::chains::correlate(&matches)
+            } else {
+                attack_chains.clone()
+            };
+            let evidence: Vec<js_beautify_rs::report::ProbeEvidence> = validations
+                .iter()
+                .map(|v| js_beautify_rs::report::ProbeEvidence {
+                    finding_kind: v.finding_kind.clone(),
+                    target: v.target.clone(),
+                    verdict: v.verdict_str.clone(),
+                    evidence: v.evidence.clone(),
+                    repro: None,
+                })
+                .collect();
+            let label = file_path.unwrap_or("target");
+            let md = js_beautify_rs::report::render_markdown(label, &matches, &report_chains, &evidence);
+            fs::write(report_path, md)?;
+            eprintln!("PoC report written to {report_path}");
+        }
 
         let output_text = if cli.json {
             serde_json::to_string_pretty(&serde_json::json!({

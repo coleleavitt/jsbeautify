@@ -56,6 +56,11 @@ papers, full text in `txt/`) and mapped to concrete Rust + oxc work.
 - **NEW — inter-procedural taint** (`analyzers/taint.rs`): a function-param map +
   call-propagation pass in the fixpoint flows taint across function boundaries
   (source in caller → sink in callee). ✅ shipped.
+- **NEW — triager-ready PoC report** (`report.rs`, `--report <file>`): renders
+  findings + correlated chains + live validations into a self-contained Markdown
+  report with copyable `curl` repro commands and per-finding impact statements.
+  Evidence-first: unconfirmed findings are explicitly marked as leads, not
+  proven impact (the antidote to confident-but-false AI reports). ✅ shipped.
 
 The capture extension only ever mined assets the inspected page referenced
 (`frontend/panel/panel.js` `createDeepCrawlScope` seeds `allowedOrigins` from the

@@ -33,6 +33,7 @@ pub mod proxy;
 pub mod recon_engine;
 pub mod relationships;
 pub mod repeater;
+pub mod report;
 pub mod scope;
 pub mod server;
 pub mod sourcemap;
