@@ -10,7 +10,10 @@
 //! `alias.in` → `in`, which would emit a reserved word and produce unparseable
 //! output.)
 
-use oxc_ast::ast::{AssignmentExpression, AssignmentTarget, Expression, IdentifierReference, VariableDeclarator};
+use oxc_ast::ast::{
+    AssignmentExpression, AssignmentTarget, Expression, ForInStatement, ForOfStatement, IdentifierReference,
+    SimpleAssignmentTarget, UpdateExpression, VariableDeclarator,
+};
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
 use oxc_syntax::symbol::SymbolId;
@@ -23,9 +26,12 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 fn is_global_like(expr: &Expression<'_>) -> bool {
+    // NOTE: `this` is deliberately NOT global-like. `var self = this; self.foo`
+    // inside a method/class reads an instance property — rewriting it to bare
+    // `foo` silently turns it into a global lookup (a real miscompile). Only the
+    // genuine global objects qualify.
     matches!(expr, Expression::Identifier(id)
         if matches!(id.name.as_str(), "window" | "globalThis" | "global" | "self"))
-        || matches!(expr, Expression::ThisExpression(_))
 }
 
 /// A reserved word can never be emitted as a bare identifier, so rewriting
@@ -122,14 +128,17 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         let Some(symbol_id) = id.symbol_id.get() else {
             return;
         };
-        let Some(init) = &decl.init else {
-            return;
-        };
-        // `var X = window` makes X a candidate; a different binding named X in an
-        // inner scope is a distinct SymbolId, so it is never confused with this
-        // one. We only record candidates here, never poison.
-        if is_global_like(init) {
-            self.candidates.insert(symbol_id);
+        // `var X = window` makes X a candidate. A `var X = other()` (or a bare
+        // `var X`) poisons it: under `var` hoisting both declarations share ONE
+        // SymbolId, so a later non-global redeclaration must cancel the alias.
+        // A different binding named X in another scope is a distinct SymbolId.
+        match decl.init.as_ref() {
+            Some(init) if is_global_like(init) => {
+                self.candidates.insert(symbol_id);
+            }
+            _ => {
+                self.poisoned.insert(symbol_id);
+            }
         }
     }
 
@@ -143,13 +152,51 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         let Some(symbol_id) = ctx.scoping().get_reference(reference_id).symbol_id() else {
             return;
         };
-        // `X = window` promotes X to a candidate; `X = <anything else>` means X is
-        // no longer a pure global alias and must never be propagated.
-        if is_global_like(&assign.right) {
+        // Only a *simple* `X = window` promotes X. A compound assignment
+        // (`X += window` computes `X + window`, a number) or any non-global RHS
+        // means X no longer holds a pure global object and must be poisoned.
+        if assign.operator.is_assign() && is_global_like(&assign.right) {
             self.candidates.insert(symbol_id);
         } else {
             self.poisoned.insert(symbol_id);
         }
+    }
+
+    fn enter_update_expression(&mut self, update: &mut UpdateExpression<'a>, ctx: &mut Ctx<'a>) {
+        // `X++` / `--X` rebinds X to a number — it can never stay a global alias.
+        let SimpleAssignmentTarget::AssignmentTargetIdentifier(id) = &update.argument else {
+            return;
+        };
+        if let Some(reference_id) = id.reference_id.get()
+            && let Some(symbol_id) = ctx.scoping().get_reference(reference_id).symbol_id()
+        {
+            self.poisoned.insert(symbol_id);
+        }
+    }
+
+    fn enter_for_in_statement(&mut self, stmt: &mut ForInStatement<'a>, ctx: &mut Ctx<'a>) {
+        poison_for_loop_target(&stmt.left, ctx, &mut self.poisoned);
+    }
+
+    fn enter_for_of_statement(&mut self, stmt: &mut ForOfStatement<'a>, ctx: &mut Ctx<'a>) {
+        poison_for_loop_target(&stmt.left, ctx, &mut self.poisoned);
+    }
+}
+
+/// `for (X in obj)` / `for (X of it)` rebinds the existing variable `X` on every
+/// iteration, so an aliased `X` no longer holds a global object.
+fn poison_for_loop_target(
+    left: &oxc_ast::ast::ForStatementLeft<'_>,
+    ctx: &Ctx<'_>,
+    poisoned: &mut FxHashSet<SymbolId>,
+) {
+    let oxc_ast::ast::ForStatementLeft::AssignmentTargetIdentifier(id) = left else {
+        return;
+    };
+    if let Some(reference_id) = id.reference_id.get()
+        && let Some(symbol_id) = ctx.scoping().get_reference(reference_id).symbol_id()
+    {
+        poisoned.insert(symbol_id);
     }
 }
 
@@ -263,6 +310,43 @@ mod tests {
     }
 
     #[test]
+    fn poisons_compound_assignment_with_global_rhs() {
+        // `w += window` computes `w + window` (a number/NaN) — w is NOT a global
+        // alias, so `w.document` must stay qualified.
+        let out = run("var w = window; w += window; var y = w.document;");
+        assert!(
+            out.contains("w.document"),
+            "compound-assigned var must not propagate: {out}"
+        );
+    }
+
+    #[test]
+    fn poisons_var_redeclaration_to_non_global() {
+        // `var` hoisting: both decls share one SymbolId; the later non-global
+        // redeclaration cancels the alias.
+        let out = run("var X = window; var X = other(); var y = X.document;");
+        assert!(out.contains("X.document"), "redeclared var must not propagate: {out}");
+    }
+
+    #[test]
+    fn poisons_update_expression() {
+        let out = run("var X = window; X++; var y = X.document;");
+        assert!(out.contains("X.document"), "incremented var must not propagate: {out}");
+    }
+
+    #[test]
+    fn poisons_for_in_loop_target() {
+        let out = run("var X = window; for (X in obj) {} var y = X.document;");
+        assert!(out.contains("X.document"), "for-in loop var must not propagate: {out}");
+    }
+
+    #[test]
+    fn poisons_for_of_loop_target() {
+        let out = run("var X = window; for (X of arr) {} var y = X.document;");
+        assert!(out.contains("X.document"), "for-of loop var must not propagate: {out}");
+    }
+
+    #[test]
     fn preserves_computed_access() {
         let out = run("var Q6 = window; var x = Q6[\"doc\"];");
         assert!(
@@ -273,15 +357,28 @@ mod tests {
 
     #[test]
     fn does_not_clobber_same_named_binding_in_other_scope() {
-        // A `var props = this` in one function must NOT cause an unrelated
+        // A `var props = window` in one function must NOT cause an unrelated
         // function's `props` PARAMETER to have its `props.in` stripped to the
-        // reserved word `in` (which would crash the re-parse checkpoint).
-        let code = "function a(){ var props = this; return props.foo; } \
+        // reserved word `in` (which would crash the re-parse checkpoint). This is
+        // the core SymbolId-scoping guarantee.
+        let code = "function a(){ var props = window; return props.foo; } \
                     function b(props){ if (props.in) { return props.enter; } }";
         let out = run(code);
         assert!(out.contains("props.in"), "param props.in must survive: {out}");
         assert!(out.contains("props.enter"), "param props.enter must survive: {out}");
         assert!(!out.contains("if (in)"), "must never emit bare reserved word: {out}");
+    }
+
+    #[test]
+    fn does_not_alias_this_as_global() {
+        // `var self = this; self.value` reads an instance property — it must NOT
+        // become a bare global `value`. `this` is not a global object.
+        let out = run("class C { m(){ var self = this; return self.value; } }");
+        assert!(
+            out.contains("self.value"),
+            "this-alias receiver must be preserved: {out}"
+        );
+        assert!(!out.contains("return value"), "must not strip the this receiver: {out}");
     }
 
     #[test]
@@ -315,6 +412,13 @@ mod tests {
             "protected",
             "public",
             "static",
+            "let",
+            "await",
+            "yield",
+            "in",
+            "for",
+            "class",
+            "return",
         ] {
             let out = run(&format!("var w = window; var r = w.{kw};"));
             assert!(
