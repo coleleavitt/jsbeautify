@@ -35,8 +35,11 @@ papers, full text in `txt/`) and mapped to concrete Rust + oxc work.
   (`known_cve` findings). ✅ shipped.
 - **NEW — attack-chain correlation** (`chains.rs`, `--chains`): links findings
   into scored multi-step chains (account_takeover, xss_to_idor, …). ✅ shipped.
-- **NEW — live validation** (`validate.rs`): `judge_*` decision logic confirms
-  open-redirect / reflected-XSS / IDOR / known-CVE against the live target. ✅ shipped.
+- **NEW — live validation** (`validate.rs`, `--validate`): `judge_*` decision
+  logic + a scope- and rate-limited `LiveProber` that actively confirms
+  open-redirect / reflected-XSS / IDOR / known-CVE against an authorized target.
+  Two hard safety rails: only hosts matching `--validate-scope` are ever
+  contacted, and a min-delay rate limit between every request. ✅ shipped.
 - **NEW — agentic LLM loop** (`agent.rs`, `--agent`): ReAct/ADK tool-loop that
   chains findings into attack paths + writes a report. ✅ shipped.
 - **NEW — prototype pollution** (`analyzers/proto_pollution.rs`, CWE-1321). ✅ shipped.

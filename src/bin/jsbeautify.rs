@@ -176,6 +176,17 @@ struct Cli {
     #[arg(long)]
     agent: bool,
 
+    /// With --analyze: actively confirm findings against the live target by
+    /// probing (open-redirect, reflection, IDOR, known-CVE). ONLY hosts matching
+    /// --validate-scope are ever contacted. Requires authorization for the target.
+    #[arg(long)]
+    validate: bool,
+
+    /// Comma-separated in-scope host patterns for --validate (e.g.
+    /// "*.target.com,target.com"). Nothing outside this allowlist is requested.
+    #[arg(long, value_name = "PATTERNS")]
+    validate_scope: Option<String>,
+
     /// Detect sensitive property names (secret, authorization, aws_secret_key, …)
     #[arg(long)]
     find_sensitive_props: bool,
@@ -687,6 +698,111 @@ fn run_agent(
             None
         }
     }
+}
+
+/// A single live-validation result row for output.
+#[derive(serde::Serialize)]
+struct ValidationRow {
+    target: String,
+    verdict_str: String,
+    evidence: String,
+    finding_kind: String,
+}
+
+/// Actively confirm findings against the live (scoped) target. Only findings
+/// whose value/file_path host matches `--validate-scope` are probed; everything
+/// else is skipped without a request. Requires authorization for the target.
+fn run_validation(
+    validate_scope: Option<&str>,
+    matches: &[js_beautify_rs::analyzers::AnalyzerMatch],
+) -> Vec<ValidationRow> {
+    use js_beautify_rs::validate::{LiveProber, ProbeConfig, Verdict};
+
+    let Some(scope_raw) = validate_scope else {
+        eprintln!("[validate] --validate requires --validate-scope (in-scope host allowlist); skipping.");
+        return Vec::new();
+    };
+    let patterns: Vec<&str> = scope_raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if patterns.is_empty() {
+        eprintln!("[validate] empty --validate-scope; skipping.");
+        return Vec::new();
+    }
+
+    let prober = match LiveProber::new(&patterns, ProbeConfig::default()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[validate] could not build prober: {e}");
+            return Vec::new();
+        }
+    };
+
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread().enable_all().build() else {
+        return Vec::new();
+    };
+
+    let verdict_str = |v: &Verdict| match v {
+        Verdict::Confirmed => "CONFIRMED",
+        Verdict::Refuted => "refuted",
+        Verdict::Inconclusive => "inconclusive",
+    };
+
+    // Build probe targets from findings whose value is a URL/endpoint on an
+    // in-scope host. The finding's file_path (the asset URL) supplies the origin.
+    let mut rows = Vec::new();
+    runtime.block_on(async {
+        for m in matches {
+            let base = m.file_path.as_deref().unwrap_or("");
+            // Resolve a probeable URL: absolute value, or endpoint joined to the asset origin.
+            let url = resolve_probe_url(&m.match_value, base);
+            let Some(url) = url else { continue };
+            if !prober.in_scope(&url) {
+                continue;
+            }
+            let validation = match m.match_kind.as_str() {
+                "open_redirect" => prober.probe_open_redirect(&url).await,
+                "dom_xss" => prober.probe_reflection(&url, "q").await,
+                "idor_candidate" => {
+                    let Some(swapped) = js_beautify_rs::validate::swap_first_id(&url) else {
+                        continue;
+                    };
+                    prober.probe_idor(&url, &swapped).await
+                }
+                "known_cve" => {
+                    let version = m
+                        .metadata
+                        .as_ref()
+                        .and_then(|v| v.get("version"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    prober.probe_known_cve(&url, version).await
+                }
+                _ => continue,
+            };
+            rows.push(ValidationRow {
+                target: url,
+                verdict_str: verdict_str(&validation.verdict).to_string(),
+                evidence: validation.evidence,
+                finding_kind: m.match_kind.clone(),
+            });
+        }
+    });
+    rows
+}
+
+/// Resolve a finding value into a probeable absolute URL, using `base` (the
+/// asset URL) for origin when the value is a relative path.
+fn resolve_probe_url(value: &str, base: &str) -> Option<String> {
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return Some(value.to_string());
+    }
+    if value.starts_with('/') {
+        // Join to the base origin.
+        let scheme_end = base.find("://")?;
+        let after = &base[scheme_end + 3..];
+        let host_end = after.find('/').unwrap_or(after.len());
+        return Some(format!("{}://{}{}", &base[..scheme_end], &after[..host_end], value));
+    }
+    None
 }
 
 fn main() {
@@ -1290,11 +1406,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         let agent_report = if cli.agent { run_agent(&matches, &code) } else { None };
 
+        // --validate: actively confirm findings against the live (scoped) target.
+        let validations = if cli.validate {
+            run_validation(cli.validate_scope.as_deref(), &matches)
+        } else {
+            Vec::new()
+        };
+
         let output_text = if cli.json {
             serde_json::to_string_pretty(&serde_json::json!({
                 "findings": matches,
                 "chains": attack_chains,
                 "agent": agent_report,
+                "validations": validations,
             }))?
         } else {
             let mut lines = Vec::with_capacity(matches.len());
@@ -1315,6 +1439,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(rep) = &agent_report {
                 lines.push(format!("\n=== Agent report ({} turns) ===\n{}", rep.turns, rep.report));
+            }
+            if !validations.is_empty() {
+                lines.push(format!("\n=== Live validation ({}) ===", validations.len()));
+                for v in &validations {
+                    lines.push(format!("  [{}] {} → {}", v.verdict_str, v.target, v.evidence));
+                }
             }
             lines.join("\n")
         };

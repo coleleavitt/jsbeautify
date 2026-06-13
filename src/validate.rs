@@ -139,6 +139,225 @@ pub fn judge_known_cve(asset_body: &str, version: &str) -> Validation {
     }
 }
 
+// ── Live prober ──────────────────────────────────────────────────────────────
+//
+// Wires the pure `judge_*` functions above to real HTTP. Two hard safety rails,
+// both enforced before any request leaves the process:
+//   1. **Scope**: only hosts that match the caller-supplied in-scope allowlist
+//      ([`crate::scope::ScopeMatcher`]) are ever contacted. An out-of-scope URL
+//      is an `Inconclusive` verdict, never a request.
+//   2. **Rate limit**: a minimum delay is enforced between every request so the
+//      prober can't hammer a target.
+// This is the *authorized-target* counterpart to the static analyzers — it only
+// confirms findings the tool already produced, against a host you explicitly
+// scoped, behind the `--validate` flag.
+
+use std::time::Duration;
+
+use crate::scope::ScopeMatcher;
+
+/// Configuration for the live prober.
+#[derive(Debug, Clone)]
+pub struct ProbeConfig {
+    /// Attacker-controlled host used as the open-redirect / SSRF canary target.
+    pub canary_host: String,
+    /// Minimum delay between requests (politeness / rate limit).
+    pub min_delay: Duration,
+    /// Per-request timeout.
+    pub timeout: Duration,
+}
+
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            canary_host: "validate.example".to_string(),
+            min_delay: Duration::from_millis(500),
+            timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+/// A scope- and rate-limited HTTP prober.
+pub struct LiveProber {
+    scope: ScopeMatcher,
+    cfg: ProbeConfig,
+    client: reqwest::Client,
+}
+
+impl LiveProber {
+    /// Build a prober. `in_scope` is the allowlist of host patterns (e.g.
+    /// `["*.target.com", "target.com"]`); nothing outside it is ever contacted.
+    ///
+    /// # Errors
+    /// Fails if the HTTP client cannot be built.
+    pub fn new(in_scope: &[&str], cfg: ProbeConfig) -> Result<Self, String> {
+        let scope = ScopeMatcher::new(in_scope, &[]);
+        let client = reqwest::Client::builder()
+            .timeout(cfg.timeout)
+            // Do NOT auto-follow redirects: we need to inspect the Location header.
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("js-beautify-rs/validate")
+            .build()
+            .map_err(|e| format!("build prober client: {e}"))?;
+        Ok(Self { scope, cfg, client })
+    }
+
+    /// Whether `url`'s host is in scope (the gate for any live request).
+    #[must_use]
+    pub fn in_scope(&self, url: &str) -> bool {
+        host_of(url).is_some_and(|h| self.scope.is_in_scope(&h))
+    }
+
+    async fn rate_limit(&self) {
+        tokio::time::sleep(self.cfg.min_delay).await;
+    }
+
+    /// Probe an open-redirect candidate: append the canary host to a redirect
+    /// parameter and check whether the response redirects off-origin.
+    ///
+    /// # Errors
+    /// Never returns `Err`; out-of-scope / transport failures become verdicts.
+    pub async fn probe_open_redirect(&self, endpoint_url: &str) -> Validation {
+        if !self.in_scope(endpoint_url) {
+            return Validation::inconclusive(format!("out of scope: {endpoint_url}"));
+        }
+        let Some(origin_host) = host_of(endpoint_url) else {
+            return Validation::inconclusive("could not parse endpoint host");
+        };
+        let canary = format!("https://{}/", self.cfg.canary_host);
+        let sep = if endpoint_url.contains('?') { '&' } else { '?' };
+        // Fuzz the common redirect param names in one shot is overkill here; use
+        // the canonical one. Callers can pass an endpoint that already has the param.
+        let probe_url = format!("{endpoint_url}{sep}redirect={canary}");
+
+        self.rate_limit().await;
+        match self.client.get(&probe_url).send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let location = resp
+                    .headers()
+                    .get("location")
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
+                judge_open_redirect(status, location.as_deref(), &self.cfg.canary_host, &origin_host)
+            }
+            Err(e) => Validation::inconclusive(format!("request failed: {e}")),
+        }
+    }
+
+    /// Probe a reflected-input candidate: send a unique canary in the given
+    /// query parameter and check whether it reflects unencoded.
+    ///
+    /// # Errors
+    /// Never returns `Err`; failures become verdicts.
+    pub async fn probe_reflection(&self, endpoint_url: &str, param: &str) -> Validation {
+        if !self.in_scope(endpoint_url) {
+            return Validation::inconclusive(format!("out of scope: {endpoint_url}"));
+        }
+        let canary = format!("xss{:x}probe", fastrand_seed());
+        let sep = if endpoint_url.contains('?') { '&' } else { '?' };
+        let probe_url = format!("{endpoint_url}{sep}{param}={canary}");
+
+        self.rate_limit().await;
+        match self.client.get(&probe_url).send().await {
+            Ok(resp) => {
+                let body = resp.text().await.unwrap_or_default();
+                judge_reflection(&body, &canary)
+            }
+            Err(e) => Validation::inconclusive(format!("request failed: {e}")),
+        }
+    }
+
+    /// Probe an IDOR candidate: fetch the original endpoint and a swapped-id
+    /// variant, then compare. `swapped_url` must be produced by the caller (we
+    /// don't guess the id position here).
+    ///
+    /// # Errors
+    /// Never returns `Err`; failures become verdicts.
+    pub async fn probe_idor(&self, original_url: &str, swapped_url: &str) -> Validation {
+        if !self.in_scope(original_url) || !self.in_scope(swapped_url) {
+            return Validation::inconclusive("out of scope");
+        }
+        self.rate_limit().await;
+        let a = self.client.get(original_url).send().await;
+        self.rate_limit().await;
+        let b = self.client.get(swapped_url).send().await;
+        match (a, b) {
+            (Ok(ra), Ok(rb)) => {
+                let sa = ra.status().as_u16();
+                let sb = rb.status().as_u16();
+                let ba = ra.text().await.unwrap_or_default();
+                let bb = rb.text().await.unwrap_or_default();
+                judge_idor(sa, &ba, sb, &bb)
+            }
+            _ => Validation::inconclusive("one or both IDOR probes failed"),
+        }
+    }
+
+    /// Probe a known-CVE finding: re-fetch the asset and confirm the vulnerable
+    /// version string is still served.
+    ///
+    /// # Errors
+    /// Never returns `Err`; failures become verdicts.
+    pub async fn probe_known_cve(&self, asset_url: &str, version: &str) -> Validation {
+        if !self.in_scope(asset_url) {
+            return Validation::inconclusive(format!("out of scope: {asset_url}"));
+        }
+        self.rate_limit().await;
+        match self.client.get(asset_url).send().await {
+            Ok(resp) => {
+                let body = resp.text().await.unwrap_or_default();
+                judge_known_cve(&body, version)
+            }
+            Err(e) => Validation::inconclusive(format!("request failed: {e}")),
+        }
+    }
+}
+
+/// Produce a swapped-id variant of a URL for IDOR probing: increment the first
+/// all-numeric path segment (`/accounts/12345` → `/accounts/12346`). Returns
+/// `None` when there's no numeric segment to swap.
+#[must_use]
+pub fn swap_first_id(url: &str) -> Option<String> {
+    // Split off the query so we only touch the path.
+    let (path_part, query) = url.split_once('?').map_or((url, None), |(p, q)| (p, Some(q)));
+    let mut segments: Vec<String> = path_part.split('/').map(String::from).collect();
+    let mut swapped = false;
+    for seg in &mut segments {
+        if !swapped
+            && seg.len() >= 2
+            && seg.bytes().all(|b| b.is_ascii_digit())
+            && let Ok(n) = seg.parse::<u64>()
+        {
+            *seg = n.wrapping_add(1).to_string();
+            swapped = true;
+        }
+    }
+    if !swapped {
+        return None;
+    }
+    let rebuilt = segments.join("/");
+    Some(match query {
+        Some(q) => format!("{rebuilt}?{q}"),
+        None => rebuilt,
+    })
+}
+
+/// The lowercase host of a URL, or `None`.
+fn host_of(url: &str) -> Option<String> {
+    let after = url.split("://").nth(1).unwrap_or(url);
+    let host = after.split(['/', ':', '?', '#']).next()?;
+    (!host.is_empty() && host.contains('.')).then(|| host.to_ascii_lowercase())
+}
+
+/// A cheap non-crypto seed for canary uniqueness (time-based). Good enough for a
+/// reflection marker; not security-sensitive.
+fn fastrand_seed() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +437,46 @@ mod tests {
             Verdict::Confirmed
         );
         assert_eq!(judge_known_cve("jQuery v3.7.1", "1.7.0").verdict, Verdict::Refuted);
+    }
+
+    #[test]
+    fn prober_scope_gate_allows_in_scope_and_blocks_out_of_scope() {
+        let prober = LiveProber::new(&["*.target.com", "target.com"], ProbeConfig::default()).unwrap();
+        assert!(prober.in_scope("https://app.target.com/login"));
+        assert!(prober.in_scope("https://target.com/x"));
+        assert!(!prober.in_scope("https://evil.example/x"));
+        assert!(!prober.in_scope("https://target.com.evil.example/x"));
+    }
+
+    #[tokio::test]
+    async fn prober_refuses_out_of_scope_without_requesting() {
+        // No network: an out-of-scope URL must short-circuit to Inconclusive.
+        let prober = LiveProber::new(&["*.target.com"], ProbeConfig::default()).unwrap();
+        let v = prober.probe_open_redirect("https://evil.example/go").await;
+        assert_eq!(v.verdict, Verdict::Inconclusive);
+        assert!(v.evidence.contains("out of scope"));
+
+        let v2 = prober.probe_known_cve("https://evil.example/app.js", "1.0.0").await;
+        assert_eq!(v2.verdict, Verdict::Inconclusive);
+    }
+
+    #[test]
+    fn host_parsing() {
+        assert_eq!(host_of("https://a.b.com/x?y=1").as_deref(), Some("a.b.com"));
+        assert_eq!(host_of("http://a.b.com:8080/x").as_deref(), Some("a.b.com"));
+        assert!(host_of("https://localhost/x").is_none());
+    }
+
+    #[test]
+    fn swaps_first_numeric_id_in_url() {
+        assert_eq!(
+            swap_first_id("https://t.com/api/accounts/12345").as_deref(),
+            Some("https://t.com/api/accounts/12346")
+        );
+        assert_eq!(
+            swap_first_id("https://t.com/users/42/orders?x=1").as_deref(),
+            Some("https://t.com/users/43/orders?x=1")
+        );
+        assert!(swap_first_id("https://t.com/api/v2/users").is_none());
     }
 }
