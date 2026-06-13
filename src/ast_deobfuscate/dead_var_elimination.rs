@@ -106,7 +106,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
             self.record_declaration(name);
             self.current_declaration_name = Some(name.to_string());
             self.in_declaration = true;
-            eprintln!("[AST] Found declaration: {name}");
+            if crate::ast_deobfuscate::ast_trace_enabled() {
+                eprintln!("[AST] Found declaration: {name}");
+            }
         }
     }
 
@@ -119,7 +121,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
         if let BindingPattern::BindingIdentifier(ident) = &param.pattern {
             let name = ident.name.as_str();
             self.record_function_param(name);
-            eprintln!("[AST] Found function param: {name}");
+            if crate::ast_deobfuscate::ast_trace_enabled() {
+                eprintln!("[AST] Found function param: {name}");
+            }
         }
     }
 
@@ -286,7 +290,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarEliminator {
 
             if all_dead && !var_decl.declarations.is_empty() {
                 for decl in &var_decl.declarations {
-                    if let BindingPattern::BindingIdentifier(ident) = &decl.id {
+                    if let BindingPattern::BindingIdentifier(ident) = &decl.id
+                        && crate::ast_deobfuscate::ast_trace_enabled()
+                    {
                         eprintln!("[AST] Eliminating dead variable: {}", ident.name);
                     }
                 }
@@ -305,7 +311,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarEliminator {
                     if !self.should_remove_declarator(decl) {
                         new_declarations.push(Self::clone_declarator(decl, ctx));
                     } else if let BindingPattern::BindingIdentifier(ident) = &decl.id {
-                        eprintln!("[AST] Eliminating dead variable: {}", ident.name);
+                        if crate::ast_deobfuscate::ast_trace_enabled() {
+                            eprintln!("[AST] Eliminating dead variable: {}", ident.name);
+                        }
                         self.changed = true;
                     }
                 }

@@ -82,7 +82,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
         let old_name = ident.name.as_str();
         if Self::should_rename(old_name) {
             let new_name = self.get_or_create_rename(old_name, &VarType::Variable);
-            eprintln!("[AST] Renaming binding: {old_name} → {new_name}");
+            if crate::ast_deobfuscate::ast_trace_enabled() {
+                eprintln!("[AST] Renaming binding: {old_name} → {new_name}");
+            }
             ident.name = ctx.ast.ident(&new_name);
             self.changed = true;
         }
@@ -91,7 +93,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
     fn enter_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
         let old_name = ident.name.as_str();
         if let Some(new_name) = self.rename_map.get(old_name) {
-            eprintln!("[AST] Renaming reference: {old_name} → {new_name}");
+            if crate::ast_deobfuscate::ast_trace_enabled() {
+                eprintln!("[AST] Renaming reference: {old_name} → {new_name}");
+            }
             ident.name = ctx.ast.ident(new_name);
             self.changed = true;
         }
@@ -102,7 +106,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
             let old_name = ident.name.as_str();
             if Self::should_rename(old_name) {
                 let new_name = self.get_or_create_rename(old_name, &VarType::Function);
-                eprintln!("[AST] Renaming function: {old_name} → {new_name}");
+                if crate::ast_deobfuscate::ast_trace_enabled() {
+                    eprintln!("[AST] Renaming function: {old_name} → {new_name}");
+                }
                 ident.name = ctx.ast.ident(&new_name);
                 self.changed = true;
             }

@@ -27,11 +27,34 @@ use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::time::Instant;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 pub type LocalRenameMap = FxHashMap<SymbolId, String>;
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalRenamePlanStats {
+    pub symbols: usize,
+    pub references: usize,
+    pub scopes: usize,
+    pub scope_name_entries: usize,
+    pub subtree_ancestor_visits: usize,
+    pub subtree_name_entries: usize,
+    pub free_name_entries: usize,
+    pub free_ancestor_visits: usize,
+    pub free_subtree_entries: usize,
+    pub candidate_scopes: usize,
+    pub candidate_symbols: usize,
+    pub planned_symbols: usize,
+    pub skipped_symbols: usize,
+    pub max_scope_depth: usize,
+    pub max_subtree_blocked: usize,
+    pub max_free_blocked: usize,
+    pub max_blocked_names: usize,
+    pub max_candidates_in_scope: usize,
+}
 
 /// A name is a single-character Bun-mangled local: one ASCII letter, `$`, or `_`.
 fn is_single_char_mangled(name: &str) -> bool {
@@ -52,10 +75,11 @@ pub fn is_meaningful_short(name: &str) -> bool {
     MEANINGFUL_SHORT.contains(&name)
 }
 
-/// Looks compiler/minifier-generated (esbuild/webpack/Bun aliases): one or two
-/// bare letters, OR ≤3 letters with trailing digits, OR a `_`/`$` prefix.
-/// Deliberately broad; [`is_meaningful_short`] is applied separately so
-/// idiomatic short names survive.
+/// Looks compiler/minifier-generated (esbuild/webpack/Bun aliases).
+///
+/// Matches one or two bare letters, OR ≤3 letters with trailing digits, OR a
+/// `_`/`$` prefix. Deliberately broad; [`is_meaningful_short`] is applied
+/// separately so idiomatic short names survive.
 #[must_use]
 pub fn is_likely_generated_alias(name: &str) -> bool {
     let bytes = name.as_bytes();
@@ -146,14 +170,42 @@ fn is_reserved_ident(name: &str) -> bool {
 }
 
 /// First non-blocked variant of `base`: `base`, `base2`, … `base9`, else `None`.
-fn pick_readable(base: &str, blocked: &FxHashSet<String>, local: &FxHashSet<String>) -> Option<String> {
+fn pick_readable<F>(base: &str, mut is_blocked: F) -> Option<String>
+where
+    F: FnMut(&str) -> bool,
+{
     for n in 0..=9 {
         let cand = if n == 0 { base.to_string() } else { format!("{base}{n}") };
-        if !blocked.contains(&cand) && !local.contains(&cand) {
+        if !is_blocked(&cand) {
             return Some(cand);
         }
     }
     None
+}
+
+fn is_blocked_name(
+    name: &str,
+    current_name: &str,
+    local: &FxHashSet<String>,
+    subtree_names: Option<&FxHashSet<String>>,
+    free_names: Option<&FxHashSet<String>>,
+    ancestor_scopes: &[ScopeId],
+    scope_name_sets: &FxHashMap<ScopeId, FxHashSet<String>>,
+    assigned: &FxHashMap<ScopeId, FxHashSet<String>>,
+) -> bool {
+    if name == current_name {
+        return local.contains(name);
+    }
+    if local.contains(name)
+        || subtree_names.is_some_and(|names| names.contains(name))
+        || free_names.is_some_and(|names| names.contains(name))
+    {
+        return true;
+    }
+    ancestor_scopes.iter().any(|anc| {
+        scope_name_sets.get(anc).is_some_and(|names| names.contains(name))
+            || assigned.get(anc).is_some_and(|names| names.contains(name))
+    })
 }
 
 /// How [`plan_local_renames`] chooses names.
@@ -181,6 +233,9 @@ pub enum RenameMode {
 ///   readable name is blocked in any scope whose subtree references that name as
 ///   a free variable, so a rename can never *capture* a global (e.g. naming a
 ///   local `crypto` next to a free `crypto`).
+// The Fx* hashers are deliberate (perf + determinism); generalizing the public
+// signature over arbitrary hashers would force every caller to be generic too.
+#[allow(clippy::implicit_hasher)]
 #[must_use]
 pub fn plan_local_renames(
     scoping: &Scoping,
@@ -189,16 +244,55 @@ pub fn plan_local_renames(
     desired: &LocalRenameMap,
     free_names: &FxHashMap<ScopeId, FxHashSet<String>>,
 ) -> LocalRenameMap {
+    plan_local_renames_with_stats(scoping, exclude, mode, desired, free_names).0
+}
+
+#[allow(clippy::implicit_hasher, clippy::too_many_lines)]
+#[must_use]
+pub fn plan_local_renames_with_stats(
+    scoping: &Scoping,
+    exclude: &FxHashSet<SymbolId>,
+    mode: RenameMode,
+    desired: &LocalRenameMap,
+    free_names: &FxHashMap<ScopeId, FxHashSet<String>>,
+) -> (LocalRenameMap, LocalRenamePlanStats) {
+    let trace = super::deob_trace_enabled();
+    let started = Instant::now();
+    let mut step_started = started;
+    let mut stats = LocalRenamePlanStats {
+        symbols: scoping.symbols_len(),
+        references: scoping.references_len(),
+        scopes: scoping.scopes_len(),
+        ..LocalRenamePlanStats::default()
+    };
+
     // Original binding names per scope (from every symbol's declaring scope).
     let mut scope_names: FxHashMap<ScopeId, Vec<(String, SymbolId)>> = FxHashMap::default();
+    let mut scope_name_sets: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
     let mut subtree_names: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
     for sym in scoping.symbol_ids() {
         let scope = scoping.symbol_scope_id(sym);
         let name = scoping.symbol_name(sym).to_string();
         scope_names.entry(scope).or_default().push((name.clone(), sym));
+        scope_name_sets.entry(scope).or_default().insert(name.clone());
+        stats.scope_name_entries += 1;
         for visible in scoping.scope_ancestors(scope) {
-            subtree_names.entry(visible).or_default().insert(name.clone());
+            stats.subtree_ancestor_visits += 1;
+            if subtree_names.entry(visible).or_default().insert(name.clone()) {
+                stats.subtree_name_entries += 1;
+            }
         }
+    }
+    if trace {
+        eprintln!(
+            "[BUN_LOCAL_RENAME] scope/subtree name maps elapsed={:.3}s symbols={} scopes={} ancestor_visits={} subtree_entries={}",
+            step_started.elapsed().as_secs_f64(),
+            stats.symbols,
+            stats.scopes,
+            stats.subtree_ancestor_visits,
+            stats.subtree_name_entries
+        );
+        step_started = Instant::now();
     }
 
     // Free (unresolved) reference names per scope SUBTREE: propagate each free
@@ -206,12 +300,26 @@ pub fn plan_local_renames(
     // so a rename in scope S can capture a free reference anywhere under S).
     let mut free_subtree: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
     for (&scope, names) in free_names {
+        stats.free_name_entries += names.len();
         for anc in scoping.scope_ancestors(scope) {
             let bucket = free_subtree.entry(anc).or_default();
             for n in names {
-                bucket.insert(n.clone());
+                stats.free_ancestor_visits += 1;
+                if bucket.insert(n.clone()) {
+                    stats.free_subtree_entries += 1;
+                }
             }
         }
+    }
+    if trace {
+        eprintln!(
+            "[BUN_LOCAL_RENAME] free-name propagation elapsed={:.3}s free_names={} ancestor_visits={} free_subtree_entries={}",
+            step_started.elapsed().as_secs_f64(),
+            stats.free_name_entries,
+            stats.free_ancestor_visits,
+            stats.free_subtree_entries
+        );
+        step_started = Instant::now();
     }
 
     // A symbol is a rename candidate only if it looks minifier-generated (gate
@@ -247,60 +355,56 @@ pub fn plan_local_renames(
         .filter(|(_, names)| names.iter().any(|(n, s)| is_candidate(n, *s)))
         .map(|(&sid, _)| (scoping.scope_ancestors(sid).count(), sid))
         .collect();
-    scopes.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
-    });
+    stats.candidate_scopes = scopes.len();
+    stats.max_scope_depth = scopes.iter().map(|(depth, _)| *depth).max().unwrap_or_default();
+    scopes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.index().cmp(&b.1.index())));
+    if trace {
+        eprintln!(
+            "[BUN_LOCAL_RENAME] candidate scope discovery elapsed={:.3}s candidate_scopes={} max_depth={}",
+            step_started.elapsed().as_secs_f64(),
+            stats.candidate_scopes,
+            stats.max_scope_depth
+        );
+        step_started = Instant::now();
+    }
 
     let mut plan: LocalRenameMap = FxHashMap::default();
     let mut assigned: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
 
     for (_depth, scope) in scopes {
         // Names that must not be reused in this scope. Descendant bindings are
-        // included because references to this symbol may be emitted inside those
+        // checked because references to this symbol may be emitted inside those
         // scopes after renaming; choosing a descendant's existing name would be
-        // captured by that descendant binding at runtime.
-        let mut blocked: FxHashSet<String> = FxHashSet::default();
-        if let Some(names) = subtree_names.get(&scope) {
-            blocked.extend(names.iter().cloned());
-        }
-        // Capture safety: never pick a readable name that matches a free/global
-        // reference used in this scope's subtree.
-        if let Some(free) = free_subtree.get(&scope) {
-            blocked.extend(free.iter().cloned());
-        }
-        for anc in scoping.scope_ancestors(scope) {
-            if anc == scope {
-                continue;
-            }
-            if let Some(names) = scope_names.get(&anc) {
-                for (n, _) in names {
-                    blocked.insert(n.clone());
-                }
-            }
-            if let Some(a) = assigned.get(&anc) {
-                blocked.extend(a.iter().cloned());
-            }
-        }
+        // captured by that descendant binding at runtime. Keep the checks lazy:
+        // materializing this union for every candidate scope is the hot path on
+        // large Bun bundles.
+        let subtree_blocked = subtree_names.get(&scope);
+        let free_blocked = free_subtree.get(&scope);
+        stats.max_subtree_blocked = stats.max_subtree_blocked.max(subtree_blocked.map_or(0, FxHashSet::len));
+        stats.max_free_blocked = stats.max_free_blocked.max(free_blocked.map_or(0, FxHashSet::len));
+        let ancestor_scopes: Vec<ScopeId> = scoping.scope_ancestors(scope).skip(1).collect();
+        let ancestor_blocked_upper_bound: usize = ancestor_scopes
+            .iter()
+            .map(|anc| scope_name_sets.get(anc).map_or(0, FxHashSet::len) + assigned.get(anc).map_or(0, FxHashSet::len))
+            .sum();
+        stats.max_blocked_names = stats.max_blocked_names.max(
+            subtree_blocked.map_or(0, FxHashSet::len)
+                + free_blocked.map_or(0, FxHashSet::len)
+                + ancestor_blocked_upper_bound,
+        );
 
         // Candidates in this scope, deterministic order for stable output.
         let mut cands: Vec<(String, SymbolId)> = scope_names
             .get(&scope)
             .map(|names| names.iter().filter(|(n, s)| is_candidate(n, *s)).cloned().collect())
             .unwrap_or_default();
-        cands.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
-        });
+        stats.candidate_symbols += cands.len();
+        stats.max_candidates_in_scope = stats.max_candidates_in_scope.max(cands.len());
+        cands.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.index().cmp(&b.1.index())));
 
         let mut local: FxHashSet<String> = FxHashSet::default();
         let mut counter = 0usize;
         for (cur_name, sym) in cands {
-            // A binding may always reuse its OWN current name (it cannot capture
-            // itself), so lift it out of `blocked` for this choice. Without this,
-            // re-running drifts (`v0`→`v1`, `i`→`i1`) because the binding's own
-            // name sits in the subtree-blocked set.
-            let self_blocked = blocked.remove(&cur_name);
             // Readable/Sourcemap: try the proposed base (and base2…base9).
             // Readable/Slot then fall back to the next `v{n}` slot; Sourcemap
             // does NOT slot — if its name is fully blocked, the binding is left
@@ -309,24 +413,45 @@ pub fn plan_local_renames(
                 .then(|| desired.get(&sym))
                 .flatten()
                 .filter(|b| is_usable_base(b))
-                .and_then(|base| pick_readable(base, &blocked, &local));
+                .and_then(|base| {
+                    pick_readable(base, |candidate| {
+                        is_blocked_name(
+                            candidate,
+                            &cur_name,
+                            &local,
+                            subtree_blocked,
+                            free_blocked,
+                            &ancestor_scopes,
+                            &scope_name_sets,
+                            &assigned,
+                        )
+                    })
+                });
             let cand = match (proposed, mode) {
                 (Some(name), _) => Some(name),
                 (None, RenameMode::Sourcemap) => None, // leave unchanged
                 (None, _) => Some(loop {
                     let c = format!("v{counter}");
                     counter += 1;
-                    if !blocked.contains(&c) && !local.contains(&c) {
+                    if !is_blocked_name(
+                        &c,
+                        &cur_name,
+                        &local,
+                        subtree_blocked,
+                        free_blocked,
+                        &ancestor_scopes,
+                        &scope_name_sets,
+                        &assigned,
+                    ) {
                         break c;
                     }
                 }),
             };
-            if self_blocked {
-                blocked.insert(cur_name);
-            }
             if let Some(cand) = cand {
                 local.insert(cand.clone());
                 plan.insert(sym, cand);
+            } else {
+                stats.skipped_symbols += 1;
             }
         }
         if !local.is_empty() {
@@ -334,24 +459,64 @@ pub fn plan_local_renames(
         }
     }
 
-    plan
+    stats.planned_symbols = plan.len();
+    debug_assert!(stats.candidate_scopes <= stats.scopes);
+    debug_assert!(stats.planned_symbols <= stats.candidate_symbols);
+    if trace {
+        eprintln!(
+            "[BUN_LOCAL_RENAME] planning loop elapsed={:.3}s candidates={} planned={} max_blocked={} max_candidates_in_scope={}",
+            step_started.elapsed().as_secs_f64(),
+            stats.candidate_symbols,
+            stats.planned_symbols,
+            stats.max_blocked_names,
+            stats.max_candidates_in_scope
+        );
+        eprintln!(
+            "[BUN_LOCAL_RENAME] total elapsed={:.3}s stats={stats:?}",
+            started.elapsed().as_secs_f64()
+        );
+    }
+
+    (plan, stats)
 }
 
 /// Applies a [`LocalRenameMap`] by `SymbolId` (binding decls + references).
 pub struct LocalRenamer {
     map: LocalRenameMap,
     renamed: usize,
+    renamed_refs: usize,
+    renamed_functions: usize,
 }
 
 impl LocalRenamer {
     #[must_use]
-    pub fn new(map: LocalRenameMap) -> Self {
-        Self { map, renamed: 0 }
+    pub const fn new(map: LocalRenameMap) -> Self {
+        Self {
+            map,
+            renamed: 0,
+            renamed_refs: 0,
+            renamed_functions: 0,
+        }
     }
 
     #[must_use]
     pub const fn renamed(&self) -> usize {
         self.renamed
+    }
+
+    #[must_use]
+    pub const fn renamed_refs(&self) -> usize {
+        self.renamed_refs
+    }
+
+    #[must_use]
+    pub const fn renamed_functions(&self) -> usize {
+        self.renamed_functions
+    }
+
+    #[must_use]
+    pub const fn total_renamed(&self) -> usize {
+        self.renamed + self.renamed_refs + self.renamed_functions
     }
 }
 
@@ -364,6 +529,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LocalRenamer {
             && ident.name.as_str() != new_name
         {
             ident.name = ctx.ast.ident(new_name);
+            self.renamed_refs += 1;
         }
     }
 
@@ -386,6 +552,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LocalRenamer {
             && id.name.as_str() != new_name
         {
             id.name = ctx.ast.ident(new_name);
+            self.renamed_functions += 1;
         }
     }
 }
@@ -595,5 +762,90 @@ mod tests {
             "default export local should rename: {out}"
         );
         assert!(out.contains("export default function v0"), "got: {out}");
+    }
+
+    /// Slot-mode plan + stats for `code` (mirrors the Phase 12.5 guard wiring).
+    fn plan_with_stats(code: &str) -> (LocalRenameMap, LocalRenamePlanStats) {
+        use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+        let mut prog = parsed.program;
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut guard = RenameGuardCollector::new();
+        traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
+        drop(ctx);
+
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let guarded = guard.into_guarded(&scoping);
+        plan_local_renames_with_stats(
+            &scoping,
+            &guarded,
+            RenameMode::Slot,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+        )
+    }
+
+    #[test]
+    fn stats_count_planned_symbols_and_match_plan_len() {
+        // Two renameable single-char locals (`a`, `b`) in one function.
+        let (plan, stats) = plan_with_stats("function f(){ let a = 1; let b = 2; return a + b; }");
+        assert_eq!(
+            plan.len(),
+            stats.planned_symbols,
+            "planned_symbols must equal plan size"
+        );
+        assert!(
+            stats.planned_symbols >= 2,
+            "expected >=2 planned, got {}",
+            stats.planned_symbols
+        );
+        // The scoping counts are populated (non-zero) for a non-empty program.
+        assert!(
+            stats.symbols > 0 && stats.scopes > 0 && stats.references > 0,
+            "stats: {stats:?}"
+        );
+    }
+
+    #[test]
+    fn stats_plan_agrees_with_plain_planner() {
+        // The _with_stats variant must produce the exact same plan as the plain
+        // wrapper (which just discards the stats).
+        let code = "function f(){ let a = 1; function g(b){ return b + a; } return g(2); }";
+        let (plan_stats, _) = plan_with_stats(code);
+
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+        let mut prog = parsed.program;
+        use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut guard = RenameGuardCollector::new();
+        traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
+        drop(ctx);
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let guarded = guard.into_guarded(&scoping);
+        let plain = plan_local_renames(
+            &scoping,
+            &guarded,
+            RenameMode::Slot,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+        );
+        assert_eq!(
+            plan_stats.len(),
+            plain.len(),
+            "stats variant + plain wrapper must plan identically"
+        );
+    }
+
+    #[test]
+    fn stats_empty_program_plans_nothing() {
+        let (plan, stats) = plan_with_stats("");
+        assert!(plan.is_empty());
+        assert_eq!(stats.planned_symbols, 0);
     }
 }

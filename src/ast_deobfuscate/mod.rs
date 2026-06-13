@@ -179,10 +179,12 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use crate::Result;
 
-/// Resident set size in MiB (Linux). Backs the `JSB_MEM` memory-profiling
+/// Resident set size in `MiB` (Linux). Backs the `JSB_MEM` memory-profiling
 /// checkpoints below — `/proc/self/statm` field 2 is resident pages.
 #[cfg(target_os = "linux")]
 fn rss_mb() -> u64 {
@@ -201,6 +203,62 @@ fn rss_mb() -> u64 {
 fn mem_ck(label: &str) {
     if std::env::var_os("JSB_MEM").is_some() {
         eprintln!("[MEM] {:>5} MB  {label}", rss_mb());
+    }
+}
+
+static TRACE_DEOB: OnceLock<bool> = OnceLock::new();
+static TRACE_AST: OnceLock<bool> = OnceLock::new();
+
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some()
+}
+
+pub(crate) fn deob_trace_enabled() -> bool {
+    *TRACE_DEOB.get_or_init(|| env_flag("JSBEAUTIFY_TRACE_DEOB") || env_flag("JSB_TRACE_DEOB"))
+}
+
+pub(crate) fn ast_trace_enabled() -> bool {
+    *TRACE_AST.get_or_init(|| env_flag("JSBEAUTIFY_TRACE_AST") || env_flag("JSB_TRACE_AST"))
+}
+
+pub(crate) struct TraceSpan {
+    label: &'static str,
+    start: Instant,
+    start_rss: u64,
+    enabled: bool,
+}
+
+impl TraceSpan {
+    #[must_use]
+    pub(crate) fn new(label: &'static str) -> Self {
+        let enabled = deob_trace_enabled();
+        let start_rss = if enabled { rss_mb() } else { 0 };
+        if enabled {
+            eprintln!("[TRACE] START {label} rss={start_rss} MB");
+        }
+        Self {
+            label,
+            start: Instant::now(),
+            start_rss,
+            enabled,
+        }
+    }
+}
+
+impl Drop for TraceSpan {
+    fn drop(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let end_rss = rss_mb();
+        let rss_delta = i64::try_from(end_rss).unwrap_or(i64::MAX) - i64::try_from(self.start_rss).unwrap_or(i64::MAX);
+        eprintln!(
+            "[TRACE] END   {} elapsed={:.3}s rss={} MB delta={:+} MB",
+            self.label,
+            self.start.elapsed().as_secs_f64(),
+            end_rss,
+            rss_delta
+        );
     }
 }
 
@@ -239,7 +297,7 @@ pub struct AstDeobfuscator {
     nullish_coalescing_simplifier: NullishCoalescingSimplifier,
     skip_annotations: bool,
     /// When set, Phase 12.5 infers readable names for minified locals
-    /// (heuristic_rename) instead of opaque `v{n}` slots.
+    /// (`heuristic_rename`) instead of opaque `v{n}` slots.
     readable_names: bool,
 }
 
@@ -285,14 +343,14 @@ impl AstDeobfuscator {
     }
 
     #[must_use]
-    pub fn with_skip_annotations(mut self, skip: bool) -> Self {
+    pub const fn with_skip_annotations(mut self, skip: bool) -> Self {
         self.skip_annotations = skip;
         self
     }
 
     /// Enable readable heuristic naming of minified locals (Phase 12.5).
     #[must_use]
-    pub fn with_readable_names(mut self, readable: bool) -> Self {
+    pub const fn with_readable_names(mut self, readable: bool) -> Self {
         self.readable_names = readable;
         self
     }
@@ -372,7 +430,9 @@ impl AstDeobfuscator {
             if is_akamai {
                 eprintln!("[DEOBFUSCATE] Phase 0.5a: Akamai stack-tracker removal");
                 akamai.tracker_remover.detect(&program);
-                if !akamai.tracker_remover.tracker_names().is_empty() {
+                if akamai.tracker_remover.tracker_names().is_empty() {
+                    eprintln!("[DEOBFUSCATE] Phase 0.5a: No pure stack-tracker variable identified");
+                } else {
                     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                     traverse_mut_with_ctx(&mut akamai.tracker_remover, &mut program, &mut ctx);
@@ -381,8 +441,6 @@ impl AstDeobfuscator {
                         akamai.tracker_remover.removed_call_count(),
                         akamai.tracker_remover.tracker_names()
                     );
-                } else {
-                    eprintln!("[DEOBFUSCATE] Phase 0.5a: No pure stack-tracker variable identified");
                 }
 
                 eprintln!("[DEOBFUSCATE] Phase 0.5b: Akamai undefined-pattern + boolean-arithmetic folding");
@@ -517,7 +575,9 @@ impl AstDeobfuscator {
                 let mut collector = BunRuntimeCollector::new();
                 traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
                 let map = collector.into_map();
-                if !map.is_empty() {
+                if map.is_empty() {
+                    eprintln!("[DEOBFUSCATE] Phase 0.9: No Bun helpers detected (not a Bun bundle)");
+                } else {
                     eprintln!("[DEOBFUSCATE] Phase 0.9: Detected {} Bun runtime helpers", map.len());
                     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
@@ -528,8 +588,6 @@ impl AstDeobfuscator {
                         renamer.renamed_decls(),
                         renamer.renamed_refs()
                     );
-                } else {
-                    eprintln!("[DEOBFUSCATE] Phase 0.9: No Bun helpers detected (not a Bun bundle)");
                 }
                 map
             };
@@ -538,8 +596,7 @@ impl AstDeobfuscator {
             let flattened_statements = flatten_top_level_cjs_wrapper(&mut program, &allocator);
             if flattened_statements > 0 {
                 eprintln!(
-                    "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({} statements)",
-                    flattened_statements
+                    "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({flattened_statements} statements)"
                 );
             } else {
                 eprintln!("[DEOBFUSCATE] Phase 0.91: No top-level Bun CJS wrapper flattened");
@@ -567,7 +624,9 @@ impl AstDeobfuscator {
                     export_map.retain(|sym, _| !guarded.contains(sym));
                 }
 
-                if !export_map.is_empty() {
+                if export_map.is_empty() {
+                    eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
+                } else {
                     eprintln!(
                         "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
                         export_map.len()
@@ -585,8 +644,6 @@ impl AstDeobfuscator {
                         renamer.renamed_refs(),
                         renamer.total_renamed()
                     );
-                } else {
-                    eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
                 }
             }
 
@@ -639,7 +696,9 @@ impl AstDeobfuscator {
                 let mut collector = BunModuleHandleCollector::new();
                 traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
                 let module_handles = collector.into_map();
-                if !module_handles.is_empty() {
+                if module_handles.is_empty() {
+                    eprintln!("[DEOBFUSCATE] Phase 0.99: No Bun module wrapper handles found");
+                } else {
                     eprintln!(
                         "[DEOBFUSCATE] Phase 0.99: Found {} Bun module wrapper handles",
                         module_handles.len()
@@ -653,8 +712,6 @@ impl AstDeobfuscator {
                         renamer.renamed_decls(),
                         renamer.renamed_refs()
                     );
-                } else {
-                    eprintln!("[DEOBFUSCATE] Phase 0.99: No Bun module wrapper handles found");
                 }
             }
 
@@ -919,8 +976,10 @@ impl AstDeobfuscator {
                 di_factories.len(),
                 di_constants.len()
             );
-            let di_constants_i64: FxHashMap<String, i64> =
-                di_constants.iter().map(|(k, &v)| (k.clone(), v as i64)).collect();
+            let di_constants_i64: FxHashMap<String, i64> = di_constants
+                .iter()
+                .map(|(k, &v)| (k.clone(), i64::try_from(v).unwrap_or(i64::MAX)))
+                .collect();
             if !di_factories.is_empty() {
                 let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
@@ -942,10 +1001,7 @@ impl AstDeobfuscator {
                 for info in dowhile_dispatchers.values_mut() {
                     total_resolved += resolve_compound_transitions(info, &merged);
                 }
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 9.6: Resolved {} compound transitions to sequential",
-                    total_resolved
-                );
+                eprintln!("[DEOBFUSCATE] Phase 9.6: Resolved {total_resolved} compound transitions to sequential");
 
                 eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
                 let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, &program);
@@ -1045,32 +1101,44 @@ impl AstDeobfuscator {
                 );
             }
 
-            eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");
-            traverse_mut_with_ctx(&mut self.variable_renamer, &mut program, &mut ctx);
-            eprintln!("[DEOBFUSCATE] Phase 12: DONE");
+            {
+                let _trace = TraceSpan::new("Phase 12: variable_renamer");
+                eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
+                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");
+                traverse_mut_with_ctx(&mut self.variable_renamer, &mut program, &mut ctx);
+                eprintln!("[DEOBFUSCATE] Phase 12: DONE");
+            }
 
             mem_ck("enter Phase 12.5 (local slot rename)");
             eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
             {
+                let _trace = TraceSpan::new("Phase 12.5: Bun local slot renaming");
                 // Soundness guard: exclude bindings visible to a direct `eval`
                 // and native ES exports — renaming either silently breaks
                 // runtime equivalence (see `rename_guards`).
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut guard = rename_guards::RenameGuardCollector::new();
-                traverse_mut_with_ctx(&mut guard, &mut program, &mut ctx);
-                drop(ctx);
+                let guard = {
+                    let _trace = TraceSpan::new("Phase 12.5: collect rename guards");
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+                    let mut guard = rename_guards::RenameGuardCollector::new();
+                    traverse_mut_with_ctx(&mut guard, &mut program, &mut ctx);
+                    drop(ctx);
+                    guard
+                };
 
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let guarded = guard.into_guarded(&scoping);
+                let guarded = {
+                    let _trace = TraceSpan::new("Phase 12.5: resolve rename guards");
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    guard.into_guarded(&scoping)
+                };
 
                 // Readable mode: infer heuristic names (and per-scope free-var
                 // names for capture safety) at this same seam so proposals share
                 // one SymbolId space with the apply.
                 let (desired, free_names) = if self.readable_names {
+                    let _trace = TraceSpan::new("Phase 12.5: collect readable-name heuristics");
                     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                     let mut collector = heuristic_rename::HeuristicNameCollector::new();
@@ -1086,20 +1154,31 @@ impl AstDeobfuscator {
                 } else {
                     bun_local_renamer::RenameMode::Slot
                 };
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let plan = bun_local_renamer::plan_local_renames(&scoping, &guarded, mode, &desired, &free_names);
-                if !plan.is_empty() {
+                let (plan, plan_stats) = {
+                    let _trace = TraceSpan::new("Phase 12.5: plan local renames");
+                    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                    bun_local_renamer::plan_local_renames_with_stats(&scoping, &guarded, mode, &desired, &free_names)
+                };
+                if deob_trace_enabled() {
+                    eprintln!("[DEOBFUSCATE] Phase 12.5: plan stats {plan_stats:?}");
+                }
+                if plan.is_empty() {
+                    eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
+                } else {
+                    let _trace = TraceSpan::new("Phase 12.5: apply local renames");
+                    let plan_len = plan.len();
                     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
                     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                     let mut renamer = bun_local_renamer::LocalRenamer::new(plan);
                     traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
                     eprintln!(
-                        "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names ({} guarded)",
+                        "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names ({} refs, {} function ids, {} planned, {} guarded)",
                         renamer.renamed(),
+                        renamer.renamed_refs(),
+                        renamer.renamed_functions(),
+                        plan_len,
                         guarded.len()
                     );
-                } else {
-                    eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
                 }
             }
 
@@ -1370,8 +1449,7 @@ impl AstDeobfuscator {
         let (output, ns_count) = annotate_namespace_modules(&output);
         let (output, arrow_count) = expand_arrow_sequences(&output);
         eprintln!(
-            "[DEOBFUSCATE] Phase 21: {} enum annotations, {} namespace annotations, {} arrow expansions",
-            enum_count, ns_count, arrow_count
+            "[DEOBFUSCATE] Phase 21: {enum_count} enum annotations, {ns_count} namespace annotations, {arrow_count} arrow expansions"
         );
         // The Phase 20/21 post-codegen transforms (module annotations, arrow
         // expansion) rewrite the output string, so the final result is held to
