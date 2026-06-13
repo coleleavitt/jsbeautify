@@ -36,6 +36,7 @@ pub mod server;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
+pub mod vuln_db;
 pub mod webpack_module_extractor;
 pub mod websocket;
 pub mod wordlist;

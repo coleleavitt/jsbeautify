@@ -160,6 +160,11 @@ struct Cli {
     #[arg(long)]
     extract_packages: bool,
 
+    /// With --analyze: look up detected npm packages against the OSV + CISA KEV
+    /// vulnerability catalogs and emit known_cve findings (needs network).
+    #[arg(long)]
+    vuln_scan: bool,
+
     /// Detect sensitive property names (secret, authorization, aws_secret_key, …)
     #[arg(long)]
     find_sensitive_props: bool,
@@ -552,6 +557,93 @@ fn run_recon(cli: &Cli, domain: &str) -> Result<(), Box<dyn std::error::Error>> 
         println!("{text}");
     }
     Ok(())
+}
+
+/// Map `npm_package` findings → known-CVE findings via OSV + CISA KEV.
+///
+/// A package finding's value is `name` or `name@version`; only versioned ones
+/// can be matched. Runs its own tokio runtime since the lookup is async.
+fn run_vuln_scan(
+    matches: &[js_beautify_rs::analyzers::AnalyzerMatch],
+    file_path: Option<&str>,
+) -> Vec<js_beautify_rs::analyzers::AnalyzerMatch> {
+    use js_beautify_rs::analyzers::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
+    use js_beautify_rs::analyzers::regex_bank::Severity;
+    use js_beautify_rs::vuln_db::{self, Component};
+
+    // Collect versioned components from findings that carry name + version:
+    //  - `package_json_dep` (metadata.name / metadata.version),
+    //  - framework findings whose metadata has a `version`,
+    //  - any `name@version`-shaped match value.
+    let mut components = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut add = |name: &str, version: &str, comps: &mut Vec<Component>| {
+        let name = name.trim();
+        let version = version.trim();
+        if name.is_empty() || version.is_empty() || !version.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return;
+        }
+        if seen.insert((name.to_string(), version.to_string())) {
+            comps.push(Component::npm(name, version));
+        }
+    };
+    for m in matches {
+        let meta = m.metadata.as_ref();
+        let mname = meta.and_then(|v| v.get("name")).and_then(|v| v.as_str());
+        let mver = meta.and_then(|v| v.get("version")).and_then(|v| v.as_str());
+        match (mname, mver) {
+            (Some(n), Some(v)) => add(n, v, &mut components),
+            // Otherwise try to parse the value as `name@version`.
+            _ => {
+                if let Some((name, version)) = m.match_value.rsplit_once('@') {
+                    add(name, version, &mut components);
+                }
+            }
+        }
+    }
+    if components.is_empty() {
+        eprintln!("[vuln-scan] no versioned npm packages detected; nothing to look up");
+        return Vec::new();
+    }
+    eprintln!(
+        "[vuln-scan] querying OSV + CISA KEV for {} component(s)…",
+        components.len()
+    );
+
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread().enable_all().build() else {
+        return Vec::new();
+    };
+    let vulns = match runtime.block_on(vuln_db::scan(&components)) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[vuln-scan] lookup failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    vulns
+        .into_iter()
+        .map(|v| {
+            let severity = if v.kev { Severity::Critical } else { Severity::High };
+            AnalyzerMatch::new(
+                "known_cve",
+                format!("{}@{} {}", v.component, v.version, v.id),
+                PositionRange::new(1, 0, 1, 1),
+                FileType::Js,
+                file_path.map(String::from),
+            )
+            .with_provenance(Provenance::Derived)
+            .with_severity(severity)
+            .with_metadata(serde_json::json!({
+                "cve": v.id,
+                "component": v.component,
+                "version": v.version,
+                "aliases": v.aliases,
+                "summary": v.summary,
+                "kev": v.kev,
+            }))
+        })
+        .collect()
 }
 
 fn main() {
@@ -982,6 +1074,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(cli.input.as_str())
         };
         let mut matches = run_all(&code, file_path, FileType::Js, &cfg);
+
+        // --vuln-scan: map detected npm packages → known CVEs via OSV + KEV.
+        if cli.vuln_scan {
+            matches.extend(run_vuln_scan(&matches, file_path));
+        }
 
         // --extract-hostnames (without --extract-paths) keeps only host kinds
         if cli.extract_hostnames && !cli.extract_paths && !cli.analyze && !cli.analyze_all {

@@ -26,6 +26,13 @@ papers, full text in `txt/`) and mapped to concrete Rust + oxc work.
 - **NEW — unified LLM client** (`llm.rs`): one OpenAI-compatible client honoring
   standard `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` plus `--llm-url/
   --llm-model/--llm-key` flags; powers the `--rename-llm` tier. ✅ shipped.
+- **NEW — CWE + OWASP taxonomy tagging** (`analyzers/taxonomy.rs`): every finding
+  gets `{cwe, owasp}` metadata via a local mapping. ✅ shipped.
+- **NEW — IDOR candidate detection** (`analyzers/idor.rs`): flags
+  client-supplied object-reference endpoints (`idor_candidate`, CWE-639). ✅ shipped.
+- **NEW — known-CVE catalog** (`vuln_db.rs`, `--vuln-scan`): maps detected
+  library versions → OSV CVEs/GHSAs + flags CISA-KEV exploited-in-the-wild
+  (`known_cve` findings). ✅ shipped.
 
 The capture extension only ever mined assets the inspected page referenced
 (`frontend/panel/panel.js` `createDeepCrawlScope` seeds `allowedOrigins` from the
@@ -109,6 +116,19 @@ re-parse to verify semantics are preserved (CASCADE's verify loop).
 map locations (`.js.map`, `/static/*.map`), parse `sourcesContent` for original
 source, and reconstruct directory trees (we did this manually for the okta
 widget's 5 MB map). Recovered originals feed the analyzers with real identifiers.
+
+## P1 — Agentic LLM analysis tier (next)
+
+Static detectors cover the bug classes with a structural signature (XSS, open
+redirect, IDOR-candidates, known CVEs). The classes that *don't* have a signature
+— business-logic flaws, auth bypasses, subtle access-control gaps — need
+reasoning, not pattern matching. Plan: an **agent loop** (`agent/` crate built on
+the RMCP rust-sdk `#[tool]` pattern in `~/RustProjects/forks/rust-sdk`) where the
+LLM is given tools (`get_findings`, `read_source_window`, `query_osv`,
+`grep_symbol`, `classify_cwe`) and iteratively investigates a target: triages
+static findings, proposes additional vuln classes, and writes a report. The
+catalog stays embedded (CWE/OWASP/OSV are authoritative + finite); the LLM does
+the open-ended reasoning over it. `llm.rs` already provides the chat client.
 
 ## P2 — Broader recon sources (beyond crt.sh)
 
