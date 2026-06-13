@@ -217,13 +217,14 @@ struct CallPropagator<'a, 'p> {
 
 impl<'a> Visit<'a> for CallPropagator<'a, '_> {
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
-        // Resolve the callee name: `f(...)` or `obj.f(...)`.
-        let callee_name = match &call.callee {
-            Expression::Identifier(id) => Some(id.name.to_string()),
-            Expression::StaticMemberExpression(m) => Some(m.property.name.to_string()),
-            _ => None,
-        };
-        if let Some(param_names) = callee_name.as_deref().and_then(|n| self.params.get(n)) {
+        // Only resolve a plain identifier callee `f(...)`. A method call
+        // `obj.f(...)` is NOT matched by the bare method name: without scope
+        // resolution we can't know it refers to a standalone `function f`, and
+        // assuming so produces false positives (e.g. tainting an unrelated
+        // top-level `render` because some object also has a `render` method).
+        if let Expression::Identifier(callee) = &call.callee
+            && let Some(param_names) = self.params.get(callee.name.as_str())
+        {
             for (i, arg) in call.arguments.iter().enumerate() {
                 if let Some(expr) = arg.as_expression()
                     && expr_is_tainted(expr, self.tainted)
@@ -433,5 +434,33 @@ mod tests {
         // `safe` (position 0) got a literal; only `danger` (position 1) is tainted,
         // and it never reaches the sink — so no finding.
         assert!(kinds(src).is_empty(), "{:?}", kinds(src));
+    }
+
+    #[test]
+    fn method_call_does_not_taint_standalone_function() {
+        // This test demonstrates the bug: calling a method with a tainted argument
+        // should NOT taint a standalone function with the same name.
+        let src = "
+            function render(html) {
+                document.body.innerHTML = html;
+            }
+
+            const obj = {
+                render: function(data) {
+                    console.log(data);
+                }
+            };
+
+            var userInput = location.hash;
+            obj.render(userInput);
+        ";
+
+        let result = kinds(src);
+        // Should be empty — no dom_xss finding because standalone render() is never called
+        assert!(
+            result.is_empty(),
+            "False positive: tainted method call triggered standalone function's sink: {:?}",
+            result
+        );
     }
 }
