@@ -165,6 +165,17 @@ struct Cli {
     #[arg(long)]
     vuln_scan: bool,
 
+    /// With --analyze: correlate findings into multi-step attack chains and
+    /// include them in the report.
+    #[arg(long)]
+    chains: bool,
+
+    /// With --analyze: run the agentic LLM investigation loop over the findings
+    /// (chains them into attack paths). Needs an LLM endpoint (see --llm-url /
+    /// OPENAI_API_KEY).
+    #[arg(long)]
+    agent: bool,
+
     /// Detect sensitive property names (secret, authorization, aws_secret_key, …)
     #[arg(long)]
     find_sensitive_props: bool,
@@ -644,6 +655,32 @@ fn run_vuln_scan(
             }))
         })
         .collect()
+}
+
+/// Run the agentic LLM investigation loop over the findings. Returns `None` when
+/// no LLM endpoint is configured (the loop needs a real backend).
+fn run_agent(
+    matches: &[js_beautify_rs::analyzers::AnalyzerMatch],
+    source: &str,
+) -> Option<js_beautify_rs::agent::AgentReport> {
+    use js_beautify_rs::agent::{Investigation, investigate};
+    use js_beautify_rs::llm::{LlmClient, LlmOverrides};
+
+    let mut client = match LlmClient::from_overrides(&LlmOverrides::default()) {
+        Some(c) => c,
+        None => {
+            eprintln!("[agent] no LLM endpoint configured (set OPENAI_API_KEY or --llm-url); skipping agent loop.");
+            return None;
+        }
+    };
+    let investigation = Investigation::new(matches, Some(source));
+    match investigate(&mut client, &investigation, 12) {
+        Ok(report) => Some(report),
+        Err(e) => {
+            eprintln!("[agent] investigation failed: {e}");
+            None
+        }
+    }
 }
 
 fn main() {
@@ -1236,8 +1273,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
+        // --chains / --agent: correlate findings into attack chains, optionally
+        // letting an LLM agent investigate + write a narrative report.
+        let attack_chains = if cli.chains || cli.agent {
+            js_beautify_rs::chains::correlate(&matches)
+        } else {
+            Vec::new()
+        };
+        let agent_report = if cli.agent { run_agent(&matches, &code) } else { None };
+
         let output_text = if cli.json {
-            serde_json::to_string_pretty(&matches)?
+            serde_json::to_string_pretty(&serde_json::json!({
+                "findings": matches,
+                "chains": attack_chains,
+                "agent": agent_report,
+            }))?
         } else {
             let mut lines = Vec::with_capacity(matches.len());
             for m in &matches {
@@ -1247,10 +1297,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
             if lines.is_empty() {
-                "No findings.".to_string()
-            } else {
-                lines.join("\n")
+                lines.push("No findings.".to_string());
             }
+            if !attack_chains.is_empty() {
+                lines.push(format!("\n=== Attack chains ({}) ===", attack_chains.len()));
+                for c in &attack_chains {
+                    lines.push(format!("  [{}/score {}] {} — {}", c.kind, c.score, c.cwe, c.title));
+                }
+            }
+            if let Some(rep) = &agent_report {
+                lines.push(format!("\n=== Agent report ({} turns) ===\n{}", rep.turns, rep.report));
+            }
+            lines.join("\n")
         };
 
         if let Some(out_path) = &cli.analysis_out {
