@@ -1199,6 +1199,14 @@ impl AstDeobfuscator {
             let allocator = Allocator::default();
             let parse_result = Parser::new(&allocator, &intermediate, source_type).parse();
             if !parse_result.errors.is_empty() {
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 12.6 re-parse FAILED ({} error(s)) — dumping context around the first error:",
+                    parse_result.errors.len()
+                );
+                eprintln!(
+                    "{}",
+                    checkpoint_error_context("Phase 12.6", &intermediate, &parse_result.errors)
+                );
                 return Err(crate::BeautifyError::BeautificationFailed(format!(
                     "Phase 12.6 checkpoint re-parse failed: {:?}",
                     parse_result.errors.first()
@@ -1291,6 +1299,14 @@ impl AstDeobfuscator {
         let allocator = Allocator::default();
         let parse_result = Parser::new(&allocator, &intermediate2, source_type).parse();
         if !parse_result.errors.is_empty() {
+            eprintln!(
+                "[DEOBFUSCATE] Phase 15.6 re-parse FAILED ({} error(s)) — dumping context around the first error:",
+                parse_result.errors.len()
+            );
+            eprintln!(
+                "{}",
+                checkpoint_error_context("Phase 15.6", &intermediate2, &parse_result.errors)
+            );
             return Err(crate::BeautifyError::BeautificationFailed(format!(
                 "Phase 15.6 checkpoint re-parse failed: {:?}",
                 parse_result.errors.first()
@@ -1463,6 +1479,44 @@ impl AstDeobfuscator {
 
         Ok(output)
     }
+}
+
+/// Builds a human-readable context window around the first parse error of a
+/// failed checkpoint re-parse. The byte offset is recovered from the
+/// diagnostic's `SourceOffset(N)` debug repr (oxc-miette internals are not
+/// part of the public API), then snapped to char boundaries so a multi-byte
+/// codepoint near the edge can never panic the slice.
+fn checkpoint_error_context<E: std::fmt::Debug>(label: &str, code: &str, errors: &[E]) -> String {
+    let Some(first) = errors.first() else {
+        return format!("[DEOBFUSCATE] {label}: <no errors>");
+    };
+    let diag_str = format!("{first:?}");
+    let offset: usize = diag_str
+        .find("SourceOffset(")
+        .and_then(|i| {
+            let rest = &diag_str[i + "SourceOffset(".len()..];
+            rest.split(')').next().and_then(|n| n.parse().ok())
+        })
+        .unwrap_or(0)
+        .min(code.len());
+
+    // Snap the window to char boundaries (offset may land mid-token but should
+    // be on a boundary; the ±window edges might not be).
+    let mut lo = offset.saturating_sub(300);
+    let mut hi = (offset + 300).min(code.len());
+    while lo > 0 && !code.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    while hi < code.len() && !code.is_char_boundary(hi) {
+        hi += 1;
+    }
+
+    format!(
+        "[DEOBFUSCATE] {label}: re-parse error at byte {offset} (output len={len}):\n\
+         --- context [{lo}..{hi}] ---\n{window}\n--- end context ---",
+        len = code.len(),
+        window = &code[lo..hi],
+    )
 }
 
 /// Logs validity of generated output and returns whether it re-parses cleanly.
