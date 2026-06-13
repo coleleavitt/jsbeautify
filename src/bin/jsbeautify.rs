@@ -195,6 +195,33 @@ struct Cli {
     #[arg(long)]
     discover_nextjs: bool,
 
+    // ── Whole-domain recon (crt.sh) ──────────────────────────────────────────
+    /// Enumerate every subdomain of a registrable domain via Certificate
+    /// Transparency logs (crt.sh), so you can mine the whole domain instead of
+    /// just one captured path. Value is the domain, e.g. "blackrock.com".
+    #[arg(long, value_name = "DOMAIN")]
+    crtsh: Option<String>,
+
+    /// With --crtsh: send an HTTPS request to each discovered host and report
+    /// which are live (status, Server header, final URL after redirects).
+    #[arg(long)]
+    probe: bool,
+
+    /// Recursive recon: crt.sh subdomains → fetch JS/HTML/source-maps from live
+    /// hosts → deobfuscate → analyze → extract NEW hosts/endpoints/secrets and
+    /// loop. Value is the seed domain, e.g. "blackrock.com". Use --json for the
+    /// full report. Honors --recon-rounds / --recon-max-assets.
+    #[arg(long, value_name = "DOMAIN")]
+    recon: Option<String>,
+
+    /// With --recon: number of recursive expansion rounds (default 2).
+    #[arg(long, value_name = "N", default_value_t = 2)]
+    recon_rounds: usize,
+
+    /// With --recon: cap on total assets fetched across the whole run.
+    #[arg(long, value_name = "N", default_value_t = 300)]
+    recon_max_assets: usize,
+
     /// Base URL for Next.js chunk discovery (required with --discover-nextjs)
     #[arg(long, value_name = "URL")]
     base_url: Option<String>,
@@ -403,6 +430,117 @@ fn run_serve(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| e.into())
 }
 
+/// Enumerate a domain's subdomains via crt.sh (optionally probing each), then
+/// print them (JSON or plain). Builds its own tokio runtime since recon is
+/// network-bound and async.
+fn run_crtsh(cli: &Cli, domain: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use js_beautify_rs::domain_recon::{self, ReconConfig};
+
+    let cfg = ReconConfig {
+        domain: domain.to_string(),
+        probe: cli.probe,
+        ..ReconConfig::default()
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let result = runtime
+        .block_on(domain_recon::run(&cfg))
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("crtsh recon failed: {e}").into() })?;
+
+    let output_text = if cli.json {
+        serde_json::to_string_pretty(&result)?
+    } else if cli.probe {
+        let mut lines = vec![format!(
+            "# {} — {} host(s) from crt.sh, {} live",
+            result.domain,
+            result.hosts.len(),
+            result.live.len()
+        )];
+        for s in &result.live {
+            let status = s.status.map_or_else(|| "---".to_string(), |c| c.to_string());
+            let server = s.server.as_deref().unwrap_or("");
+            lines.push(format!("{status:>3}  {}  {server}", s.host));
+        }
+        lines.join("\n")
+    } else {
+        result.hosts.join("\n")
+    };
+
+    if let Some(out_path) = &cli.analysis_out {
+        fs::write(out_path, &output_text)?;
+        eprintln!(
+            "Wrote {} host(s) for {} to {}",
+            result.hosts.len(),
+            result.domain,
+            out_path.display()
+        );
+    } else {
+        println!("{output_text}");
+    }
+    Ok(())
+}
+
+/// Run the recursive recon engine: crt.sh → fetch JS/HTML/source-maps →
+/// deobfuscate → analyze → harvest new hosts/endpoints/secrets → loop.
+fn run_recon(cli: &Cli, domain: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use js_beautify_rs::recon_engine::{EngineConfig, ReconEngine};
+
+    let engine = ReconEngine::new(EngineConfig {
+        domain: domain.to_string(),
+        max_rounds: cli.recon_rounds,
+        max_assets: cli.recon_max_assets,
+        deobfuscate: true,
+        ..EngineConfig::default()
+    })
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let report = runtime
+        .block_on(engine.run())
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("recon failed: {e}").into() })?;
+
+    let text = if cli.json {
+        serde_json::to_string_pretty(&report)?
+    } else {
+        let mut lines = vec![
+            format!("# Recursive recon — {}", report.domain),
+            format!(
+                "rounds={}  hosts={}  live={}  assets={}  findings={}",
+                report.rounds_run,
+                report.hosts.len(),
+                report.live_hosts.len(),
+                report.assets.len(),
+                report.total_findings
+            ),
+            String::new(),
+            format!("## Endpoints ({})", report.endpoints.len()),
+        ];
+        lines.extend(report.endpoints.iter().take(200).cloned());
+        lines.push(String::new());
+        lines.push(format!("## Secrets ({})", report.secrets.len()));
+        lines.extend(report.secrets.iter().cloned());
+        lines.push(String::new());
+        lines.push(format!("## Live hosts ({})", report.live_hosts.len()));
+        lines.extend(report.live_hosts.iter().cloned());
+        lines.join("\n")
+    };
+
+    if let Some(out_path) = &cli.analysis_out {
+        fs::write(out_path, &text)?;
+        eprintln!(
+            "Recon: {} hosts, {} live, {} assets, {} findings → {}",
+            report.hosts.len(),
+            report.live_hosts.len(),
+            report.assets.len(),
+            report.total_findings,
+            out_path.display()
+        );
+    } else {
+        println!("{text}");
+    }
+    Ok(())
+}
+
 fn main() {
     // Keep the dhat profiler alive for the whole run; on drop it writes
     // dhat-heap.json with per-call-site allocation totals + peak.
@@ -423,6 +561,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // a multi-thread tokio runtime here and block on the daemon.
     if cli.serve {
         return run_serve(&cli);
+    }
+
+    // ── Whole-domain recon mode (crt.sh) ──────────────────────────────────────
+    if let Some(domain) = cli.crtsh.clone() {
+        return run_crtsh(&cli, &domain);
+    }
+
+    // ── Recursive recon-brain mode (the self-driving loop) ────────────────────
+    if let Some(domain) = cli.recon.clone() {
+        return run_recon(&cli, &domain);
     }
 
     // ── Asset-relationship graph mode ─────────────────────────────────────────
