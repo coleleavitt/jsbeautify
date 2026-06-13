@@ -969,9 +969,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // Preserve prior behaviour: API/storage extraction always ran in
                 // the CLI path regardless of the targeted flags.
                 api_calls: true,
-                // Entropy + taint follow the secret/sink intent of this scan.
+                // Entropy + taint + idor follow the secret/sink intent of this scan.
                 entropy_secrets: cli.scan_secrets,
                 taint: cli.find_sinks,
+                idor: cli.extract_paths || cli.find_sinks,
             }
         };
 

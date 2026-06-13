@@ -24,6 +24,7 @@ pub mod graphql_extractor;
 pub mod helpers;
 pub mod hostname_extractor;
 pub mod html_script_extractor;
+pub mod idor;
 pub mod match_kind;
 pub mod npm_package_extractor;
 pub mod package_json_analyzer;
@@ -33,6 +34,7 @@ pub mod secret_scanner;
 pub mod sensitive_property_name;
 pub mod sinks;
 pub mod taint;
+pub mod taxonomy;
 
 // Framework / build-tool recon: per-framework signature analyzers + dispatcher.
 pub mod framework_recon;
@@ -89,6 +91,8 @@ pub struct AnalyzerConfig {
     pub entropy_secrets: bool,
     /// Taint-lite source→sink analysis (DOM-XSS / open-redirect).
     pub taint: bool,
+    /// IDOR / broken-object-reference endpoint candidates.
+    pub idor: bool,
 }
 
 impl Default for AnalyzerConfig {
@@ -105,6 +109,7 @@ impl Default for AnalyzerConfig {
             api_calls: true,
             entropy_secrets: true,
             taint: true,
+            idor: true,
         }
     }
 }
@@ -124,6 +129,7 @@ impl AnalyzerConfig {
             api_calls: false,
             entropy_secrets: true,
             taint: false,
+            idor: false,
         }
     }
 
@@ -141,6 +147,7 @@ impl AnalyzerConfig {
             api_calls: false,
             entropy_secrets: false,
             taint: true,
+            idor: true,
         }
     }
 }
@@ -196,6 +203,13 @@ pub fn run_all(
     if config.taint && matches!(file_type, FileType::Js) {
         out.extend(taint::analyze(source, file_path, file_type));
     }
+
+    if config.idor {
+        out.extend(idor::analyze(source, file_path, file_type));
+    }
+
+    // Tag every finding with its CWE + OWASP class (pure local mapping).
+    taxonomy::enrich(&mut out);
 
     out
 }
