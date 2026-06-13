@@ -59,6 +59,12 @@ pub fn classify(match_kind: &str) -> Option<Classification> {
             owasp: "A01:2021",
             owasp_name: "Broken Access Control",
         },
+        "proto_pollution" => Classification {
+            cwe: "CWE-1321",
+            cwe_name: "Improperly Controlled Modification of Object Prototype Attributes",
+            owasp: "A08:2021",
+            owasp_name: "Software and Data Integrity Failures",
+        },
         // ── Sensitive data / secrets (A02 / A07) ─────────────────────────────
         "high_entropy_secret"
         | "aws_access_key"

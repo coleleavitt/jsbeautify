@@ -1102,6 +1102,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 entropy_secrets: cli.scan_secrets,
                 taint: cli.find_sinks,
                 idor: cli.extract_paths || cli.find_sinks,
+                proto_pollution: cli.find_sinks,
             }
         };
 

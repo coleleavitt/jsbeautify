@@ -29,6 +29,7 @@ pub mod match_kind;
 pub mod npm_package_extractor;
 pub mod package_json_analyzer;
 pub mod path_extractor;
+pub mod proto_pollution;
 pub mod regex_bank;
 pub mod secret_scanner;
 pub mod sensitive_property_name;
@@ -93,6 +94,8 @@ pub struct AnalyzerConfig {
     pub taint: bool,
     /// IDOR / broken-object-reference endpoint candidates.
     pub idor: bool,
+    /// Client-side prototype-pollution candidate detection.
+    pub proto_pollution: bool,
 }
 
 impl Default for AnalyzerConfig {
@@ -110,6 +113,7 @@ impl Default for AnalyzerConfig {
             entropy_secrets: true,
             taint: true,
             idor: true,
+            proto_pollution: true,
         }
     }
 }
@@ -130,6 +134,7 @@ impl AnalyzerConfig {
             entropy_secrets: true,
             taint: false,
             idor: false,
+            proto_pollution: false,
         }
     }
 
@@ -148,6 +153,7 @@ impl AnalyzerConfig {
             entropy_secrets: false,
             taint: true,
             idor: true,
+            proto_pollution: true,
         }
     }
 }
@@ -206,6 +212,10 @@ pub fn run_all(
 
     if config.idor {
         out.extend(idor::analyze(source, file_path, file_type));
+    }
+
+    if config.proto_pollution && matches!(file_type, FileType::Js) {
+        out.extend(proto_pollution::analyze(source, file_path, file_type));
     }
 
     // Tag every finding with its CWE + OWASP class (pure local mapping).
