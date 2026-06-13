@@ -3,5 +3,9 @@ core.*
 *.core
 core.[0-9]*
 
+# Stray standalone build artifacts (compiled scratch binaries, not part of the crate)
+/rust_out
+/test_collision
+
 # Sisyphus: exclude regenerable pipeline logs (rebuild via jsbeautify --deobfuscate)
 .sisyphus/evidence/*-pipeline.log
