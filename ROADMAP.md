@@ -47,6 +47,15 @@ papers, full text in `txt/`) and mapped to concrete Rust + oxc work.
   `--wayback`). ✅ shipped.
 - **NEW — dynamic endpoint resolution** (`analyzers/endpoint_resolve.rs`):
   folds template/concat URLs into concrete `resolved_endpoint` paths. ✅ shipped.
+- **NEW — CVSS v3.1 + EPSS enrichment** (`vuln_db.rs`): each `known_cve` carries
+  a computed CVSS base score + vector and the EPSS exploit-probability;
+  severity escalates by CVSS band. ✅ shipped.
+- **NEW — source-map tree reconstruction** (`sourcemap.rs`,
+  `--reconstruct-sourcemap`): rebuilds the original `webpack://` source tree into
+  `<dir>/reversed/` with path-traversal-safe normalization. ✅ shipped.
+- **NEW — inter-procedural taint** (`analyzers/taint.rs`): a function-param map +
+  call-propagation pass in the fixpoint flows taint across function boundaries
+  (source in caller → sink in callee). ✅ shipped.
 
 The capture extension only ever mined assets the inspected page referenced
 (`frontend/panel/panel.js` `createDeepCrawlScope` seeds `allowedOrigins` from the
@@ -55,13 +64,16 @@ that gap from the backend.
 
 ---
 
-## P0 — Static taint analysis (the single biggest leap) — STARTED ✅
+## P0 — Static taint analysis (the single biggest leap) — INTER-PROCEDURAL ✅
 
-A first **intra-procedural, flow-insensitive** pass ships in `analyzers/taint.rs`
-(sources: `location.*`, `document.URL/cookie/referrer`, `window.name`, message
-`.data`; sinks: `innerHTML`/`outerHTML`/`document.write`/`eval`/`location` assign
-+ `assign`/`replace`). It already catches the BlackRock `idpRedirect` open-redirect
-shape. Remaining work to reach the full bar below:
+`analyzers/taint.rs` now does **inter-procedural, flow-insensitive** taint: a
+fixpoint over a tainted-name set with both an intra pass (assignments/decls) and
+a call-propagation pass (a tainted call argument taints the callee's matching
+parameter), so a source in one function reaches a sink in another. Sources:
+`location.*`, `document.URL/cookie/referrer`, `window.name`, message `.data`;
+sinks: `innerHTML`/`outerHTML`/`document.write`/`eval`/`location` assign +
+`assign`/`replace`. Catches the BlackRock `idpRedirect` shape. Remaining work to
+reach a full IFDS access-path solver:
 
 Today the rest of the analyzers are **pattern matchers**: they flag
 `el.innerHTML = x` but can't tell if `x` is attacker-controlled. Real client-side

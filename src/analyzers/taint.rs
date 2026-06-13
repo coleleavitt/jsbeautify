@@ -23,11 +23,11 @@
 //! findings are leads to verify, not proofs — but unlike the pure sink scan,
 //! every finding has an attacker-controlled-data justification.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, Expression, VariableDeclarator,
+    AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, Expression, Function, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
@@ -43,12 +43,25 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     let allocator = Allocator::default();
     let parse = Parser::new(&allocator, source, SourceType::mjs().with_jsx(true)).parse();
 
-    // Pass 1: collect names of tainted bindings (fixpoint to a small depth).
+    // Pass 0: map each named function to its parameter names, so a tainted
+    // argument at a call site can taint the callee's parameter (inter-procedural).
+    let mut params = FunctionParams { map: HashMap::new() };
+    params.visit_program(&parse.program);
+
+    // Pass 1: collect names of tainted bindings to a fixpoint. Each round runs
+    // (a) intra-procedural propagation through assignments/decls, then
+    // (b) inter-procedural propagation — a call `f(taintedArg)` taints f's
+    // matching parameter — so the next round propagates inside f's body.
     let mut tainted: HashSet<String> = HashSet::new();
-    for _ in 0..4 {
+    for _ in 0..8 {
         let before = tainted.len();
         let mut collector = TaintCollector { tainted: &mut tainted };
         collector.visit_program(&parse.program);
+        let mut propagator = CallPropagator {
+            params: &params.map,
+            tainted: &mut tainted,
+        };
+        propagator.visit_program(&parse.program);
         if tainted.len() == before {
             break; // fixpoint reached
         }
@@ -148,7 +161,83 @@ fn expr_is_tainted(expr: &Expression<'_>, tainted: &HashSet<String>) -> bool {
     }
 }
 
-/// Pass 1 — collects tainted binding names.
+/// Pass 0 — map each *named* function to its ordered parameter names, so a
+/// tainted call argument can taint the matching callee parameter
+/// (inter-procedural taint).
+#[derive(Default)]
+struct FunctionParams {
+    /// function name → ordered parameter identifier names.
+    map: HashMap<String, Vec<String>>,
+}
+
+impl FunctionParams {
+    fn record(&mut self, name: &str, params: &oxc_ast::ast::FormalParameters<'_>) {
+        let names: Vec<String> = params
+            .items
+            .iter()
+            .filter_map(|p| match &p.pattern {
+                BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),
+                _ => None,
+            })
+            .collect();
+        if !names.is_empty() {
+            self.map.insert(name.to_string(), names);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for FunctionParams {
+    fn visit_function(&mut self, func: &Function<'a>, flags: oxc_semantic::ScopeFlags) {
+        if let Some(id) = &func.id {
+            self.record(id.name.as_str(), &func.params);
+        }
+        walk::walk_function(self, func, flags);
+    }
+
+    fn visit_variable_declarator(&mut self, decl: &VariableDeclarator<'a>) {
+        // `const f = (a, b) => …` / `const f = function (a, b) {}`.
+        if let BindingPattern::BindingIdentifier(id) = &decl.id {
+            match &decl.init {
+                Some(Expression::ArrowFunctionExpression(arrow)) => self.record(id.name.as_str(), &arrow.params),
+                Some(Expression::FunctionExpression(f)) => self.record(id.name.as_str(), &f.params),
+                _ => {}
+            }
+        }
+        walk::walk_variable_declarator(self, decl);
+    }
+}
+
+/// Inter-procedural pass — for every call `f(args…)` where an argument is
+/// tainted, taint `f`'s corresponding parameter name so the next fixpoint round
+/// propagates taint through `f`'s body.
+struct CallPropagator<'a, 'p> {
+    params: &'p HashMap<String, Vec<String>>,
+    tainted: &'a mut HashSet<String>,
+}
+
+impl<'a> Visit<'a> for CallPropagator<'a, '_> {
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        // Resolve the callee name: `f(...)` or `obj.f(...)`.
+        let callee_name = match &call.callee {
+            Expression::Identifier(id) => Some(id.name.to_string()),
+            Expression::StaticMemberExpression(m) => Some(m.property.name.to_string()),
+            _ => None,
+        };
+        if let Some(param_names) = callee_name.as_deref().and_then(|n| self.params.get(n)) {
+            for (i, arg) in call.arguments.iter().enumerate() {
+                if let Some(expr) = arg.as_expression()
+                    && expr_is_tainted(expr, self.tainted)
+                    && let Some(pname) = param_names.get(i)
+                {
+                    self.tainted.insert(pname.clone());
+                }
+            }
+        }
+        walk::walk_call_expression(self, call);
+    }
+}
+
+/// Intra-procedural pass — collects tainted binding names.
 struct TaintCollector<'a> {
     tainted: &'a mut HashSet<String>,
 }
@@ -309,5 +398,40 @@ mod tests {
     fn propagates_through_concatenation() {
         let src = "var h = location.hash; var html = '<div>' + h + '</div>'; el.innerHTML = html;";
         assert!(kinds(src).contains(&"dom_xss".to_string()), "{:?}", kinds(src));
+    }
+
+    #[test]
+    fn interprocedural_source_in_caller_sink_in_callee() {
+        // Source is in the caller; the sink lives in a separate function reached
+        // via the tainted argument. Intra-procedural taint would miss this.
+        let src = "
+            function render(html) { document.body.innerHTML = html; }
+            var u = location.hash;
+            render(u);
+        ";
+        assert!(kinds(src).contains(&"dom_xss".to_string()), "{:?}", kinds(src));
+    }
+
+    #[test]
+    fn interprocedural_arrow_function() {
+        let src = "
+            const go = (target) => { window.location.href = target; };
+            var dest = location.search;
+            go(dest);
+        ";
+        assert!(kinds(src).contains(&"open_redirect".to_string()), "{:?}", kinds(src));
+    }
+
+    #[test]
+    fn interprocedural_does_not_taint_unrelated_param() {
+        // Only the tainted-position parameter becomes tainted, not a sibling.
+        let src = "
+            function sink(safe, danger) { el.innerHTML = safe; }
+            var t = location.hash;
+            sink('literal', t);
+        ";
+        // `safe` (position 0) got a literal; only `danger` (position 1) is tainted,
+        // and it never reaches the sink — so no finding.
+        assert!(kinds(src).is_empty(), "{:?}", kinds(src));
     }
 }
