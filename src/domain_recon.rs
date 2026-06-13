@@ -54,6 +54,8 @@ pub struct ReconConfig {
     pub concurrency: usize,
     /// Drop wildcard (`*.`) entries from the CT results.
     pub skip_wildcards: bool,
+    /// Also enumerate via the Wayback Machine CDX index (fuses with crt.sh).
+    pub use_wayback: bool,
 }
 
 impl Default for ReconConfig {
@@ -66,6 +68,7 @@ impl Default for ReconConfig {
             timeout_secs: 60,
             concurrency: 20,
             skip_wildcards: true,
+            use_wayback: false,
         }
     }
 }
@@ -160,6 +163,84 @@ pub async fn fetch_subdomains(client: &reqwest::Client, cfg: &ReconConfig) -> Re
     Err(format!("{last_err} (after {MAX_ATTEMPTS} attempts)"))
 }
 
+/// Extract in-scope hostnames from a Wayback Machine CDX response.
+///
+/// The CDX API (`web.archive.org/cdx/search/cdx?url=*.<domain>/*&output=json&fl=original`)
+/// returns a JSON array of `[original_url]` rows (first row is the header). We
+/// pull the host out of each archived URL and keep the in-scope ones. Exposed +
+/// unit-tested separately from the fetch.
+#[must_use]
+pub fn parse_wayback_cdx(body: &str, domain: &str) -> Vec<String> {
+    let suffix = format!(".{}", domain.to_ascii_lowercase());
+    let domain_lc = domain.to_ascii_lowercase();
+    let rows: Vec<Vec<String>> = serde_json::from_str(body).unwrap_or_default();
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for (i, row) in rows.iter().enumerate() {
+        if i == 0 {
+            continue; // header row: ["original"]
+        }
+        let Some(url) = row.first() else { continue };
+        if let Some(host) = host_from_url(url).filter(|h| *h == domain_lc || h.ends_with(&suffix)) {
+            set.insert(host);
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Pull the lowercase host from a URL string.
+fn host_from_url(url: &str) -> Option<String> {
+    let after = url.split("://").nth(1).unwrap_or(url);
+    let host = after.split(['/', ':', '?', '@']).next()?;
+    let host = host.rsplit('@').next().unwrap_or(host); // strip userinfo
+    (!host.is_empty() && host.contains('.')).then(|| host.to_ascii_lowercase())
+}
+
+/// Fetch subdomains from the Wayback Machine CDX index (passive, no key).
+///
+/// # Errors
+/// Network/decode errors talking to web.archive.org.
+pub async fn fetch_wayback(client: &reqwest::Client, cfg: &ReconConfig) -> Result<Vec<String>, String> {
+    let url = format!(
+        "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original&collapse=urlkey&limit=20000",
+        cfg.domain
+    );
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "js-beautify-rs/domain-recon")
+        .send()
+        .await
+        .map_err(|e| format!("wayback request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("wayback returned HTTP {}", resp.status()));
+    }
+    let body = resp.text().await.map_err(|e| format!("wayback read body: {e}"))?;
+    Ok(parse_wayback_cdx(&body, &cfg.domain))
+}
+
+/// Fuse + dedup hostnames from multiple sources into one sorted set.
+#[must_use]
+pub fn fuse_sources(sources: &[Vec<String>]) -> Vec<String> {
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for s in sources {
+        set.extend(s.iter().cloned());
+    }
+    set.into_iter().collect()
+}
+
+/// Enumerate via all passive sources (crt.sh + Wayback) and fuse the results.
+/// A failure in one source is non-fatal; the others still contribute.
+///
+/// # Errors
+/// Only errors if *every* source fails.
+pub async fn fetch_all_sources(client: &reqwest::Client, cfg: &ReconConfig) -> Result<Vec<String>, String> {
+    let crt = fetch_subdomains(client, cfg).await;
+    let way = fetch_wayback(client, cfg).await;
+    match (&crt, &way) {
+        (Err(e1), Err(e2)) => Err(format!("all sources failed: crt.sh: {e1}; wayback: {e2}")),
+        _ => Ok(fuse_sources(&[crt.unwrap_or_default(), way.unwrap_or_default()])),
+    }
+}
+
 /// Probe a single host over HTTPS, returning a [`Subdomain`] when reachable.
 async fn probe_host(client: &reqwest::Client, host: &str) -> Subdomain {
     let url = format!("https://{host}/");
@@ -206,7 +287,11 @@ pub async fn run(cfg: &ReconConfig) -> Result<ReconResult, String> {
         .build()
         .map_err(|e| format!("build http client: {e}"))?;
 
-    let hosts = fetch_subdomains(&crt_client, cfg).await?;
+    let hosts = if cfg.use_wayback {
+        fetch_all_sources(&crt_client, cfg).await?
+    } else {
+        fetch_subdomains(&crt_client, cfg).await?
+    };
 
     let live = if cfg.probe {
         use futures_util::stream::{self, StreamExt};
@@ -276,5 +361,37 @@ mod tests {
     fn empty_or_garbage_json_yields_no_hosts() {
         assert!(parse_crtsh_json("not json", "blackrock.com", true).is_empty());
         assert!(parse_crtsh_json("[]", "blackrock.com", true).is_empty());
+    }
+
+    #[test]
+    fn parses_wayback_cdx_hosts_in_scope() {
+        let body = r#"[["original"],
+            ["https://www.blackrock.com/a.js"],
+            ["http://api.blackrock.com:443/v1?x=1"],
+            ["https://cdn.other.com/x.js"],
+            ["https://blackrock.com/"]]"#;
+        let hosts = parse_wayback_cdx(body, "blackrock.com");
+        assert!(hosts.contains(&"www.blackrock.com".to_string()));
+        assert!(hosts.contains(&"api.blackrock.com".to_string()));
+        assert!(hosts.contains(&"blackrock.com".to_string()));
+        assert!(!hosts.iter().any(|h| h.contains("other.com")));
+        // Sorted + deduped (header row skipped).
+        let mut s = hosts.clone();
+        s.sort();
+        assert_eq!(hosts, s);
+    }
+
+    #[test]
+    fn wayback_garbage_is_empty() {
+        assert!(parse_wayback_cdx("not json", "x.com").is_empty());
+        assert!(parse_wayback_cdx("[]", "x.com").is_empty());
+    }
+
+    #[test]
+    fn fuse_dedups_across_sources() {
+        let a = vec!["a.x.com".to_string(), "b.x.com".to_string()];
+        let b = vec!["b.x.com".to_string(), "c.x.com".to_string()];
+        let fused = fuse_sources(&[a, b]);
+        assert_eq!(fused, vec!["a.x.com", "b.x.com", "c.x.com"]);
     }
 }

@@ -236,6 +236,11 @@ struct Cli {
     #[arg(long)]
     probe: bool,
 
+    /// With --crtsh / --recon: also enumerate subdomains via the Wayback Machine
+    /// CDX index and fuse with crt.sh results.
+    #[arg(long)]
+    wayback: bool,
+
     /// Recursive recon: crt.sh subdomains → fetch JS/HTML/source-maps from live
     /// hosts → deobfuscate → analyze → extract NEW hosts/endpoints/secrets and
     /// loop. Value is the seed domain, e.g. "blackrock.com". Use --json for the
@@ -468,6 +473,7 @@ fn run_crtsh(cli: &Cli, domain: &str) -> Result<(), Box<dyn std::error::Error>> 
     let cfg = ReconConfig {
         domain: domain.to_string(),
         probe: cli.probe,
+        use_wayback: cli.wayback,
         ..ReconConfig::default()
     };
 

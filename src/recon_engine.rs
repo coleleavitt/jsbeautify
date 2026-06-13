@@ -223,10 +223,12 @@ impl ReconEngine {
             probe: false,
             ..ReconConfig::default()
         };
-        let ct_hosts = domain_recon::fetch_subdomains(&self.client, &recon_cfg).await?;
+        // Fuse all passive sources (crt.sh + Wayback) so the frontier is seeded
+        // from more than one catalog.
+        let seed_hosts = domain_recon::fetch_all_sources(&self.client, &recon_cfg).await?;
 
         let mut st = RunState::default();
-        st.known_hosts = ct_hosts.into_iter().collect();
+        st.known_hosts = seed_hosts.into_iter().collect();
         st.host_frontier = st.known_hosts.iter().cloned().collect();
 
         for round in 0..self.cfg.max_rounds {
