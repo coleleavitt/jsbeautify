@@ -19,6 +19,7 @@ pub mod api_extractor;
 pub mod ast_walker;
 pub mod comment_extractor;
 pub mod derived;
+pub mod endpoint_resolve;
 pub mod entropy_secret;
 pub mod graphql_extractor;
 pub mod helpers;
@@ -96,6 +97,8 @@ pub struct AnalyzerConfig {
     pub idor: bool,
     /// Client-side prototype-pollution candidate detection.
     pub proto_pollution: bool,
+    /// Resolve dynamic (template/concat) endpoints into concrete paths.
+    pub resolve_endpoints: bool,
 }
 
 impl Default for AnalyzerConfig {
@@ -114,6 +117,7 @@ impl Default for AnalyzerConfig {
             taint: true,
             idor: true,
             proto_pollution: true,
+            resolve_endpoints: true,
         }
     }
 }
@@ -135,6 +139,7 @@ impl AnalyzerConfig {
             taint: false,
             idor: false,
             proto_pollution: false,
+            resolve_endpoints: false,
         }
     }
 
@@ -154,6 +159,7 @@ impl AnalyzerConfig {
             taint: true,
             idor: true,
             proto_pollution: true,
+            resolve_endpoints: true,
         }
     }
 }
@@ -216,6 +222,10 @@ pub fn run_all(
 
     if config.proto_pollution && matches!(file_type, FileType::Js) {
         out.extend(proto_pollution::analyze(source, file_path, file_type));
+    }
+
+    if config.resolve_endpoints && matches!(file_type, FileType::Js) {
+        out.extend(endpoint_resolve::analyze(source, file_path, file_type));
     }
 
     // Tag every finding with its CWE + OWASP class (pure local mapping).

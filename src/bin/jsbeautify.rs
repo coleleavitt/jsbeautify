@@ -1109,6 +1109,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 taint: cli.find_sinks,
                 idor: cli.extract_paths || cli.find_sinks,
                 proto_pollution: cli.find_sinks,
+                resolve_endpoints: cli.extract_paths,
             }
         };
 

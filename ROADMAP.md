@@ -33,6 +33,17 @@ papers, full text in `txt/`) and mapped to concrete Rust + oxc work.
 - **NEW — known-CVE catalog** (`vuln_db.rs`, `--vuln-scan`): maps detected
   library versions → OSV CVEs/GHSAs + flags CISA-KEV exploited-in-the-wild
   (`known_cve` findings). ✅ shipped.
+- **NEW — attack-chain correlation** (`chains.rs`, `--chains`): links findings
+  into scored multi-step chains (account_takeover, xss_to_idor, …). ✅ shipped.
+- **NEW — live validation** (`validate.rs`): `judge_*` decision logic confirms
+  open-redirect / reflected-XSS / IDOR / known-CVE against the live target. ✅ shipped.
+- **NEW — agentic LLM loop** (`agent.rs`, `--agent`): ReAct/ADK tool-loop that
+  chains findings into attack paths + writes a report. ✅ shipped.
+- **NEW — prototype pollution** (`analyzers/proto_pollution.rs`, CWE-1321). ✅ shipped.
+- **NEW — Wayback subdomain source + multi-source fusion** (`domain_recon`,
+  `--wayback`). ✅ shipped.
+- **NEW — dynamic endpoint resolution** (`analyzers/endpoint_resolve.rs`):
+  folds template/concat URLs into concrete `resolved_endpoint` paths. ✅ shipped.
 
 The capture extension only ever mined assets the inspected page referenced
 (`frontend/panel/panel.js` `createDeepCrawlScope` seeds `allowedOrigins` from the
