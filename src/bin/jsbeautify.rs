@@ -1406,6 +1406,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut beautified = beautify(&code, &options)?;
 
+    // Never drop input: if beautification/deobfuscation yields nothing for a
+    // non-empty source (e.g. an HTTP-response dump or otherwise unparseable
+    // text), fall back to emitting the original so output is never silently
+    // empty.
+    if beautified.trim().is_empty() && !code.trim().is_empty() {
+        eprintln!("[jsbeautify] empty output after processing; emitting original source unchanged");
+        beautified = code.clone();
+    }
+
     // Final LLM tier: name residual minified locals the heuristics couldn't.
     if cli.rename_llm {
         match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_env() {

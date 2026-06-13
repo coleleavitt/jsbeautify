@@ -325,11 +325,18 @@ impl AstDeobfuscator {
 
             let parse_result = Parser::new(&allocator, &code, source_type).parse();
 
+            // oxc recovers from syntax errors and still yields a usable partial
+            // AST. Rather than abort the whole deobfuscation (which left odd or
+            // non-JS inputs — e.g. an HTTP response dump — with no output at
+            // all), log the diagnostics and continue on the recovered program.
+            // The final codegen + re-parse checkpoints below validate the
+            // result, and the CLI/pipeline fall back to raw on empty output.
             if !parse_result.errors.is_empty() {
-                return Err(crate::BeautifyError::BeautificationFailed(format!(
-                    "Parse failed: {:?}",
-                    parse_result.errors.first()
-                )));
+                eprintln!(
+                    "[DEOBFUSCATE] {} parse diagnostic(s); continuing on recovered AST (first: {:?})",
+                    parse_result.errors.len(),
+                    parse_result.errors.first().map(ToString::to_string),
+                );
             }
 
             let mut program = parse_result.program;
