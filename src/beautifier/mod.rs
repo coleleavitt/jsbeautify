@@ -15,14 +15,25 @@ fn oxc_beautify(code: &str) -> Result<String> {
     let source_type = SourceType::mjs();
     let parse_result = Parser::new(&allocator, code, source_type).parse();
 
+    // oxc performs error recovery and still produces a usable (partial) AST
+    // even when `errors` is non-empty. Rather than bail — which left huge or
+    // slightly-malformed bundles with no beautified output at all — we codegen
+    // the recovered program and only treat an *empty* result as a hard failure.
     if !parse_result.errors.is_empty() {
-        return Err(BeautifyError::BeautificationFailed(format!(
-            "Parse failed: {:?}",
-            parse_result.errors.first()
-        )));
+        eprintln!(
+            "[beautify] {} parse diagnostic(s); using recovered AST (first: {:?})",
+            parse_result.errors.len(),
+            parse_result.errors.first().map(ToString::to_string),
+        );
     }
 
-    Ok(Codegen::new().build(&parse_result.program).code)
+    let out = Codegen::new().build(&parse_result.program).code;
+    if out.trim().is_empty() && !code.trim().is_empty() {
+        return Err(BeautifyError::BeautificationFailed(
+            "codegen produced empty output from recovered AST".to_string(),
+        ));
+    }
+    Ok(out)
 }
 
 /// # Errors
@@ -127,5 +138,34 @@ mod basic_tests {
         let options = Options::default();
         let result = beautify(code, &options).unwrap();
         assert!(result.contains("function test"));
+    }
+
+    #[test]
+    fn recovers_output_from_parse_error() {
+        // A stray token mid-file previously made oxc_beautify bail entirely,
+        // leaving the file with no beautified output. oxc's error recovery
+        // still yields a usable partial AST here, so we should get non-empty,
+        // codegen'd output back rather than an error.
+        let code = "function ok(){return 1;} ### var y = 2;";
+        let options = Options::default();
+        let result = beautify(code, &options).expect("recovered AST should beautify");
+        assert!(!result.trim().is_empty(), "expected non-empty recovered output");
+        assert!(
+            result.contains("function"),
+            "recovered output should retain valid functions"
+        );
+    }
+
+    #[test]
+    fn empty_recovery_is_an_error() {
+        // When oxc cannot recover *any* statements it codegens an empty
+        // program; we surface that as an error so the pipeline can fall back
+        // to writing the raw source instead of an empty file.
+        let code = "function ok(){return 1;} @@@ function also(){return 2;}";
+        let options = Options::default();
+        assert!(
+            beautify(code, &options).is_err(),
+            "fully-unrecoverable input should error so the caller can fall back",
+        );
     }
 }

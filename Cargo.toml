@@ -21,13 +21,18 @@ exclude = [
     "examples/",
     ".idea/",
     ".ruff_cache/",
-    "src/bin/test_ast_deob.rs",
-    "src/bin/test_oxc_parse.rs",
 ]
 
 [[bin]]
 name = "jsbeautify"
 path = "src/bin/jsbeautify.rs"
+
+# Single aggregator integration-test binary (cargo's own `tests/testsuite`
+# pattern): one target that `mod`-includes every file under tests/integration/,
+# instead of one separately-compiled crate per `tests/*.rs`.
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
 
 [lints.rust]
 rust_2018_idioms = "warn"

@@ -141,7 +141,9 @@ pub struct PipelineConfig {
     pub analyzer: AnalyzerConfig,
     /// Run the deobfuscator (not just the beautifier) on minified JS.
     pub deobfuscate: bool,
-    /// Max bytes we attempt to beautify/analyze (protect against OOM).
+    /// Max bytes we attempt to beautify/analyze. `usize::MAX` (the default)
+    /// means "no limit" — every text asset is processed regardless of size.
+    /// Lower it only if you need to bound memory on constrained hosts.
     pub max_text_bytes: usize,
 }
 
@@ -154,7 +156,7 @@ impl Default for PipelineConfig {
                 .unwrap_or_else(|| PathBuf::from(".")),
             analyzer: AnalyzerConfig::default(),
             deobfuscate: true,
-            max_text_bytes: 24 * 1024 * 1024,
+            max_text_bytes: usize::MAX,
         }
     }
 }
@@ -311,17 +313,25 @@ impl Pipeline {
             deobfuscate: self.cfg.deobfuscate && looks_minified(src),
             ..Options::default()
         };
-        match beautify(src, &opts) {
-            Ok(out) => {
-                let pretty_path = self.cfg.workdir.join("beautified").join(rel_path);
-                write_or_log(&pretty_path, out.as_bytes());
-                out.len()
+        let pretty_path = self.cfg.workdir.join("beautified").join(rel_path);
+        // Never drop a file: write the beautified output when we have it, but
+        // fall back to the raw source whenever beautification errors *or*
+        // returns empty output for non-empty input (e.g. a deobfuscator pass
+        // that produced nothing). Downstream consumers always find a copy at
+        // the expected `beautified/` path.
+        let out = match beautify(src, &opts) {
+            Ok(out) if !out.trim().is_empty() || src.trim().is_empty() => out,
+            Ok(_) => {
+                eprintln!("[pipeline] beautify produced empty output; writing raw source as fallback");
+                src.to_string()
             }
             Err(e) => {
-                eprintln!("[pipeline] beautify failed: {e}");
-                0
+                eprintln!("[pipeline] beautify failed ({e}); writing raw source as fallback");
+                src.to_string()
             }
-        }
+        };
+        write_or_log(&pretty_path, out.as_bytes());
+        out.len()
     }
 
     /// Run analyzers, persist matches, broadcast. Returns the finding count.
