@@ -174,6 +174,7 @@ pub use window_alias_propagator::{WindowAliasCollector, WindowAliasPropagator};
 
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
@@ -1482,22 +1483,20 @@ impl AstDeobfuscator {
 }
 
 /// Builds a human-readable context window around the first parse error of a
-/// failed checkpoint re-parse. The byte offset is recovered from the
-/// diagnostic's `SourceOffset(N)` debug repr (oxc-miette internals are not
-/// part of the public API), then snapped to char boundaries so a multi-byte
-/// codepoint near the edge can never panic the slice.
-fn checkpoint_error_context<E: std::fmt::Debug>(label: &str, code: &str, errors: &[E]) -> String {
+/// failed checkpoint re-parse. The byte offset is read from the diagnostic's
+/// first labelled span via the typed `LabeledSpan::offset()` accessor (a stable
+/// public API), then snapped to char boundaries so a multi-byte codepoint near
+/// the edge can never panic the slice. A diagnostic with no label (e.g. the
+/// source-size guard) falls back to offset 0.
+fn checkpoint_error_context(label: &str, code: &str, errors: &[OxcDiagnostic]) -> String {
     let Some(first) = errors.first() else {
         return format!("[DEOBFUSCATE] {label}: <no errors>");
     };
-    let diag_str = format!("{first:?}");
-    let offset: usize = diag_str
-        .find("SourceOffset(")
-        .and_then(|i| {
-            let rest = &diag_str[i + "SourceOffset(".len()..];
-            rest.split(')').next().and_then(|n| n.parse().ok())
-        })
-        .unwrap_or(0)
+    let offset: usize = first
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.first())
+        .map_or(0, oxc_diagnostics::LabeledSpan::offset)
         .min(code.len());
 
     // Snap the window to char boundaries (offset may land mid-token but should
@@ -1630,5 +1629,51 @@ mod checkpoint_tests {
                  first:\n{once}\nsecond:\n{twice}"
             );
         }
+    }
+
+    /// `checkpoint_error_context` reads the byte offset from a real parse
+    /// diagnostic's labelled span (typed `LabeledSpan::offset()`), so a genuine
+    /// syntax error must yield a context window centred on the offending byte —
+    /// not the fragile string-scrape fallback of 0.
+    #[test]
+    fn checkpoint_error_context_points_at_the_real_error_offset() {
+        // A class body with a stray token: parse fails at a known position.
+        let bad = "const a = 1;\nclass C { @@@ }\nconst b = 2;\n";
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, bad, SourceType::mjs()).parse();
+        assert!(!parsed.errors.is_empty(), "sample should fail to parse");
+
+        let expected = parsed.errors[0]
+            .labels
+            .as_ref()
+            .and_then(|l| l.first())
+            .map(oxc_diagnostics::LabeledSpan::offset)
+            .expect("parse error should carry a labelled span");
+
+        let ctx = checkpoint_error_context("TEST", bad, &parsed.errors);
+        assert!(
+            ctx.contains(&format!("error at byte {expected}")),
+            "context should report the diagnostic's real offset {expected}, got:\n{ctx}"
+        );
+        // The window around a small input is the whole input, including the
+        // offending `@` token; confirm the slice did not panic and is non-empty.
+        assert!(
+            ctx.contains("class C"),
+            "context window should include the error site: {ctx}"
+        );
+    }
+
+    /// Empty `code` must not panic the boundary-snapping / slice logic.
+    #[test]
+    fn checkpoint_error_context_handles_empty_code() {
+        let allocator = Allocator::default();
+        // Produce at least one diagnostic, then format against empty code.
+        let parsed = Parser::new(&allocator, "(", SourceType::mjs()).parse();
+        assert!(!parsed.errors.is_empty());
+        let ctx = checkpoint_error_context("TEST", "", &parsed.errors);
+        assert!(
+            ctx.contains("output len=0"),
+            "should clamp offset/window to empty code: {ctx}"
+        );
     }
 }

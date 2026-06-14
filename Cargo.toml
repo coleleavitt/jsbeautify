@@ -76,6 +76,7 @@ oxc_syntax = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 oxc_traverse = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 oxc_codegen = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 oxc_cfg = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
+oxc_diagnostics = { git = "https://github.com/oxc-project/oxc.git", branch = "main" }
 clap = { version = "4.6.1", features = ["derive"] }
 md5 = "0.7"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
