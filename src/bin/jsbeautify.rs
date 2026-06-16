@@ -841,6 +841,72 @@ fn main() {
     }
 }
 
+/// `--reconstruct-sourcemap <out_dir>`: rebuild the original source tree from a map.
+fn run_reconstruct_sourcemap(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(out_dir) = cli.reconstruct_sourcemap.clone() else {
+        return Ok(());
+    };
+    let map_json = if cli.input == "-" {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        fs::read_to_string(&cli.input)?
+    };
+    let dir = std::path::Path::new(&out_dir);
+    let written = js_beautify_rs::sourcemap::reconstruct_tree(&map_json, dir)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    eprintln!(
+        "Reconstructed {} source file(s) into {}/reversed/",
+        written.len(),
+        dir.display()
+    );
+    for w in &written {
+        println!("{w}");
+    }
+    Ok(())
+}
+
+/// `--relationships`: build the asset-relationship graph for one HTML page.
+fn run_relationships(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let html = if cli.input == "-" {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        fs::read_to_string(&cli.input)?
+    };
+    let page_id = cli.base_url.clone().unwrap_or_else(|| cli.input.clone());
+    let graph = js_beautify_rs::relationships::AssetGraph::from_html(&html, &page_id);
+    let output_text = if cli.json {
+        serde_json::to_string_pretty(&graph)?
+    } else {
+        let mut lines = vec![format!("Page: {}", graph.page)];
+        for r in &graph.relations {
+            let kind = serde_json::to_string(&r.kind).unwrap_or_default();
+            let kind = kind.trim_matches('"');
+            if matches!(r.kind, js_beautify_rs::relationships::RelationKind::InlineJs) {
+                lines.push(format!(
+                    "[{kind}] (inline, {} bytes) line {}",
+                    r.inline_content.len(),
+                    r.line
+                ));
+            } else {
+                lines.push(format!("[{kind}] {} line {}", r.target, r.line));
+            }
+        }
+        lines.join("\n")
+    };
+
+    if let Some(out_path) = &cli.analysis_out {
+        fs::write(out_path, &output_text)?;
+        eprintln!("Relationship graph written to {}", out_path.display());
+    } else {
+        println!("{output_text}");
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -862,66 +928,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── Source-map tree reconstruction ────────────────────────────────────────
-    if let Some(out_dir) = cli.reconstruct_sourcemap.clone() {
-        let map_json = if cli.input == "-" {
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf)?;
-            buf
-        } else {
-            fs::read_to_string(&cli.input)?
-        };
-        let dir = std::path::Path::new(&out_dir);
-        let written = js_beautify_rs::sourcemap::reconstruct_tree(&map_json, dir)
-            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-        eprintln!(
-            "Reconstructed {} source file(s) into {}/reversed/",
-            written.len(),
-            dir.display()
-        );
-        for w in &written {
-            println!("{w}");
-        }
-        return Ok(());
+    if cli.reconstruct_sourcemap.is_some() {
+        return run_reconstruct_sourcemap(&cli);
     }
 
     // ── Asset-relationship graph mode ─────────────────────────────────────────
     if cli.relationships {
-        let html = if cli.input == "-" {
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf)?;
-            buf
-        } else {
-            fs::read_to_string(&cli.input)?
-        };
-        let page_id = cli.base_url.clone().unwrap_or_else(|| cli.input.clone());
-        let graph = js_beautify_rs::relationships::AssetGraph::from_html(&html, &page_id);
-        let output_text = if cli.json {
-            serde_json::to_string_pretty(&graph)?
-        } else {
-            let mut lines = vec![format!("Page: {}", graph.page)];
-            for r in &graph.relations {
-                let kind = serde_json::to_string(&r.kind).unwrap_or_default();
-                let kind = kind.trim_matches('"');
-                if matches!(r.kind, js_beautify_rs::relationships::RelationKind::InlineJs) {
-                    lines.push(format!(
-                        "[{kind}] (inline, {} bytes) line {}",
-                        r.inline_content.len(),
-                        r.line
-                    ));
-                } else {
-                    lines.push(format!("[{kind}] {} line {}", r.target, r.line));
-                }
-            }
-            lines.join("\n")
-        };
-
-        if let Some(out_path) = &cli.analysis_out {
-            fs::write(out_path, &output_text)?;
-            eprintln!("Relationship graph written to {}", out_path.display());
-        } else {
-            println!("{output_text}");
-        }
-        return Ok(());
+        return run_relationships(&cli);
     }
 
     // ── Sourcemap reversal mode ───────────────────────────────────────────────
