@@ -105,6 +105,8 @@ pub fn correlate(findings: &[AnalyzerMatch]) -> Vec<AttackChain> {
     let redirects: Vec<usize> = indices_of(findings, &["open_redirect"]).collect();
     let xss: Vec<usize> = indices_of(findings, &["dom_xss"]).collect();
     let cves: Vec<usize> = indices_of(findings, &["known_cve"]).collect();
+    let ssrfs: Vec<usize> = indices_of(findings, &["ssrf"]).collect();
+    let protos: Vec<usize> = indices_of(findings, &["proto_pollution"]).collect();
 
     // Chain 1: open redirect + a token/secret on the same host → account takeover
     // (steal the token via the redirect).
@@ -173,8 +175,142 @@ pub fn correlate(findings: &[AnalyzerMatch]) -> Vec<AttackChain> {
         }
     }
 
+    // Chain 5: SSRF + a secret on the same host → exfiltrate the credential to an
+    // attacker-controlled URL (the token leaves via the forged request).
+    for &sr in &ssrfs {
+        let srhost = finding_host(&findings[sr]);
+        for &s in &secrets {
+            if srhost.is_none() || finding_host(&findings[s]) == srhost {
+                let base = sev_points(&findings[sr]) + sev_points(&findings[s]);
+                chains.push(AttackChain {
+                    kind: "ssrf_exfil".to_string(),
+                    title: "SSRF can exfiltrate a same-origin secret to an attacker-controlled URL".to_string(),
+                    steps: vec![step(findings, s, "credential"), step(findings, sr, "exfil-vector")],
+                    score: (base + 18).min(100),
+                    cwe: "CWE-918",
+                });
+            }
+        }
+    }
+
+    // Complex 3-step chains connect *three* primitives into one end-to-end path
+    // and score highest — real attacker workflows rather than isolated pairs.
+    push_complex_chains(
+        findings,
+        &Buckets {
+            secrets: &secrets,
+            idors: &idors,
+            redirects: &redirects,
+            xss: &xss,
+            cves: &cves,
+            ssrfs: &ssrfs,
+            protos: &protos,
+        },
+        &mut chains,
+    );
+
     chains.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.kind.cmp(&b.kind)));
     chains
+}
+
+/// Indices of each finding category, grouped so the complex-chain builder can
+/// take them as one argument.
+struct Buckets<'a> {
+    secrets: &'a [usize],
+    idors: &'a [usize],
+    redirects: &'a [usize],
+    xss: &'a [usize],
+    cves: &'a [usize],
+    ssrfs: &'a [usize],
+    protos: &'a [usize],
+}
+
+/// A 3-step chain spec: three (finding-index, role) steps + metadata.
+struct Triple {
+    kind: &'static str,
+    title: &'static str,
+    cwe: &'static str,
+    bonus: u32,
+    steps: [(usize, &'static str); 3],
+}
+
+/// Build a scored [`AttackChain`] from a [`Triple`].
+fn build_triple(findings: &[AnalyzerMatch], t: &Triple) -> AttackChain {
+    let base: u32 = t.steps.iter().map(|(i, _)| sev_points(&findings[*i])).sum();
+    AttackChain {
+        kind: t.kind.to_string(),
+        title: t.title.to_string(),
+        steps: t.steps.iter().map(|(i, role)| step(findings, *i, role)).collect(),
+        score: (base + t.bonus).min(100),
+        cwe: t.cwe,
+    }
+}
+
+/// Emit every complex (3-primitive) chain present in the finding set.
+fn push_complex_chains(findings: &[AnalyzerMatch], b: &Buckets<'_>, out: &mut Vec<AttackChain>) {
+    // A: DOM-XSS → SSRF → secret exfil (account takeover via SSRF).
+    for (&x, &sr, &s) in iproduct3(b.xss, b.ssrfs, b.secrets) {
+        out.push(build_triple(
+            findings,
+            &Triple {
+                kind: "xss_ssrf_exfil",
+                title: "DOM-XSS drives an SSRF request that exfiltrates a stolen credential — full takeover",
+                cwe: "CWE-918",
+                bonus: 30,
+                steps: [(x, "injection"), (sr, "forged-request"), (s, "stolen-secret")],
+            },
+        ));
+    }
+    // B: open redirect → SSRF → internal IDOR (pivot).
+    for (&r, &sr, &d) in iproduct3(b.redirects, b.ssrfs, b.idors) {
+        out.push(build_triple(
+            findings,
+            &Triple {
+                kind: "redirect_ssrf_idor",
+                title: "Open redirect → SSRF → internal IDOR: pivot through a forged request to an unauthorized object",
+                cwe: "CWE-918",
+                bonus: 28,
+                steps: [(r, "entry-redirect"), (sr, "ssrf-pivot"), (d, "internal-object")],
+            },
+        ));
+    }
+    // C: prototype pollution → DOM-XSS → SSRF (gadget cascade).
+    for (&p, &x, &sr) in iproduct3(b.protos, b.xss, b.ssrfs) {
+        out.push(build_triple(
+            findings,
+            &Triple {
+                kind: "proto_xss_ssrf",
+                title: "Prototype pollution gadget enables DOM-XSS that pivots to SSRF — chained gadget cascade",
+                cwe: "CWE-1321",
+                bonus: 32,
+                steps: [(p, "gadget"), (x, "injection"), (sr, "ssrf-pivot")],
+            },
+        ));
+    }
+    // D: known CVE → SSRF → secret exfil (KEV-boosted).
+    for (&c, &sr, &s) in iproduct3(b.cves, b.ssrfs, b.secrets) {
+        let kev_bonus = if is_kev(&findings[c]) { 20 } else { 0 };
+        out.push(build_triple(
+            findings,
+            &Triple {
+                kind: "cve_ssrf_exfil",
+                title: "Known-CVE component reachable via SSRF that exfiltrates a credential",
+                cwe: "CWE-918",
+                bonus: 20 + kev_bonus,
+                steps: [(c, "vulnerable-component"), (sr, "ssrf-pivot"), (s, "stolen-secret")],
+            },
+        ));
+    }
+}
+
+/// Cartesian product of three index slices (small, so eager is fine).
+fn iproduct3<'a>(
+    a: &'a [usize],
+    b: &'a [usize],
+    c: &'a [usize],
+) -> impl Iterator<Item = (&'a usize, &'a usize, &'a usize)> {
+    a.iter()
+        .flat_map(move |x| b.iter().flat_map(move |y| c.iter().map(move |z| (x, y, z))))
 }
 
 #[cfg(test)]
@@ -234,6 +370,71 @@ mod tests {
         let chains = correlate(&findings);
         let cve_chain = chains.iter().find(|c| c.kind == "known_cve_reachable").unwrap();
         assert!(cve_chain.score >= 60, "KEV should boost score: {}", cve_chain.score);
+    }
+
+    #[test]
+    fn chains_ssrf_with_secret() {
+        let findings = vec![
+            mk("ssrf", "fetch(u)", Severity::High, Some("t.com")),
+            mk("high_entropy_secret", "aB3x...", Severity::High, Some("t.com")),
+        ];
+        assert!(correlate(&findings).iter().any(|c| c.kind == "ssrf_exfil"));
+    }
+
+    #[test]
+    fn complex_three_step_xss_ssrf_exfil_scores_highest() {
+        // XSS + SSRF + secret on the same target → the 3-step chain should exist
+        // and outrank any 2-step chain in the same set.
+        let findings = vec![
+            mk("dom_xss", "el.innerHTML=u", Severity::High, Some("t.com")),
+            mk("ssrf", "fetch(u)", Severity::High, Some("t.com")),
+            mk("high_entropy_secret", "aB3x...", Severity::High, Some("t.com")),
+        ];
+        let chains = correlate(&findings);
+        let complex = chains
+            .iter()
+            .find(|c| c.kind == "xss_ssrf_exfil")
+            .expect("3-step chain present");
+        assert_eq!(complex.steps.len(), 3, "must be a 3-step chain");
+        // Highest-scoring chain overall is the 3-step one.
+        assert_eq!(
+            chains[0].kind, "xss_ssrf_exfil",
+            "complex chain should rank first: {chains:?}"
+        );
+        assert!(
+            complex.score >= 90,
+            "3-step all-High should score high: {}",
+            complex.score
+        );
+    }
+
+    #[test]
+    fn complex_redirect_ssrf_idor_pivot() {
+        let findings = vec![
+            mk("open_redirect", "location.href=u", Severity::Medium, Some("t.com")),
+            mk("ssrf", "fetch(u)", Severity::High, Some("t.com")),
+            mk("idor_candidate", "/internal/accounts/1", Severity::Low, Some("t.com")),
+        ];
+        let chains = correlate(&findings);
+        let pivot = chains
+            .iter()
+            .find(|c| c.kind == "redirect_ssrf_idor")
+            .expect("pivot chain present");
+        assert_eq!(pivot.steps.len(), 3);
+    }
+
+    #[test]
+    fn complex_proto_xss_ssrf_gadget_cascade() {
+        let findings = vec![
+            mk("proto_pollution", "obj[k1][k2]=v", Severity::Medium, Some("t.com")),
+            mk("dom_xss", "el.innerHTML=u", Severity::High, Some("t.com")),
+            mk("ssrf", "fetch(u)", Severity::High, Some("t.com")),
+        ];
+        let chains = correlate(&findings);
+        assert!(
+            chains.iter().any(|c| c.kind == "proto_xss_ssrf" && c.steps.len() == 3),
+            "{chains:?}"
+        );
     }
 
     #[test]

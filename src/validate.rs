@@ -125,6 +125,24 @@ pub fn judge_idor(status_a: u16, body_a: &str, status_b: u16, body_b: &str) -> V
     }
 }
 
+/// Decide an SSRF verdict from out-of-band collaborator evidence.
+///
+/// The reliable confirmation for (blind) SSRF is the *collaborator* technique:
+/// inject a unique attacker-controlled URL (`http://collab/<token>`) into the
+/// request parameter, then check whether the collaborator actually received a
+/// callback bearing that token. A hit proves the server/page issued the forged
+/// request — true SSRF, not merely a reflected URL string.
+#[must_use]
+pub fn judge_ssrf(collaborator_got_callback: bool, token: &str) -> Validation {
+    if collaborator_got_callback {
+        Validation::confirmed(format!(
+            "collaborator received an out-of-band callback for token {token}"
+        ))
+    } else {
+        Validation::refuted("no collaborator callback observed (no server-side request made)")
+    }
+}
+
 /// Decide a known-CVE verdict: is the vulnerable `version` string still present
 /// in the live asset body?
 #[must_use]
@@ -312,6 +330,40 @@ impl LiveProber {
             Err(e) => Validation::inconclusive(format!("request failed: {e}")),
         }
     }
+
+    /// Probe an SSRF candidate using the collaborator technique: inject a unique
+    /// `http://<collaborator_host>/<token>` URL into the endpoint's `url`
+    /// parameter, then ask `received` whether that token came back out-of-band.
+    ///
+    /// `received` is an async predicate the caller supplies (it polls their
+    /// collaborator/canary listener) — kept abstract so this stays transport- and
+    /// collaborator-agnostic and unit-testable. The endpoint must be in scope;
+    /// the collaborator host is the caller's own and is contacted by the *target*,
+    /// not by us.
+    ///
+    /// # Errors
+    /// Never returns `Err`; out-of-scope / transport failures become verdicts.
+    pub async fn probe_ssrf<F, Fut>(&self, endpoint_url: &str, collaborator_host: &str, received: F) -> Validation
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        if !self.in_scope(endpoint_url) {
+            return Validation::inconclusive(format!("out of scope: {endpoint_url}"));
+        }
+        let token = format!("ssrf{:x}", fastrand_seed());
+        let collab = format!("http://{collaborator_host}/{token}");
+        let sep = if endpoint_url.contains('?') { '&' } else { '?' };
+        // `url` is the most common server-side-fetch parameter name.
+        let probe_url = format!("{endpoint_url}{sep}url={collab}");
+
+        self.rate_limit().await;
+        // Fire the request that should induce the target to fetch our collaborator.
+        let _ = self.client.get(&probe_url).send().await;
+        // Out-of-band check: did the collaborator get hit with our token?
+        let got = received(token.clone()).await;
+        judge_ssrf(got, &token)
+    }
 }
 
 /// Produce a swapped-id variant of a URL for IDOR probing: increment the first
@@ -437,6 +489,24 @@ mod tests {
             Verdict::Confirmed
         );
         assert_eq!(judge_known_cve("jQuery v3.7.1", "1.7.0").verdict, Verdict::Refuted);
+    }
+
+    #[test]
+    fn ssrf_confirmed_only_on_collaborator_callback() {
+        assert_eq!(judge_ssrf(true, "ssrfabc").verdict, Verdict::Confirmed);
+        assert_eq!(judge_ssrf(false, "ssrfabc").verdict, Verdict::Refuted);
+    }
+
+    #[tokio::test]
+    async fn probe_ssrf_refuses_out_of_scope_without_collaborator_check() {
+        let prober = LiveProber::new(&["127.0.0.1"], ProbeConfig::default()).unwrap();
+        // The predicate must NOT even run for an out-of-scope target.
+        let v = prober
+            .probe_ssrf("http://evil.example/proxy", "collab.test", |_tok| async {
+                panic!("collaborator predicate ran for an out-of-scope target");
+            })
+            .await;
+        assert_eq!(v.verdict, Verdict::Inconclusive);
     }
 
     #[test]

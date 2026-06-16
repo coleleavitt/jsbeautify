@@ -53,6 +53,12 @@ pub fn classify(match_kind: &str) -> Option<Classification> {
             owasp: "A01:2021",
             owasp_name: "Broken Access Control",
         },
+        "ssrf" => Classification {
+            cwe: "CWE-918",
+            cwe_name: "Server-Side Request Forgery (SSRF)",
+            owasp: "A10:2021",
+            owasp_name: "Server-Side Request Forgery (SSRF)",
+        },
         "idor_candidate" => Classification {
             cwe: "CWE-639",
             cwe_name: "Authorization Bypass Through User-Controlled Key (IDOR)",
