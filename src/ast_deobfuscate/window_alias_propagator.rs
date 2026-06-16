@@ -17,7 +17,7 @@ use oxc_ast::ast::{
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
 use oxc_syntax::symbol::SymbolId;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 use rustc_hash::FxHashSet;
 use std::cell::Cell;
 
@@ -92,6 +92,64 @@ fn is_reserved_word(name: &str) -> bool {
             | "static"
             | "yield"
     )
+}
+
+/// Global-object properties that are reliably defined as global *bindings*, so
+/// rewriting `globalAlias.NAME` → bare `NAME` cannot turn a safe property read
+/// (a missing key yields `undefined`) into a `ReferenceError` (an unresolved
+/// bare identifier throws).
+///
+/// Two tiers: `ECMAScript` spec globals (present in every JS environment) and the
+/// common browser host globals. The pass only fires when the alias is a
+/// browser-like global object (`window`/`self`/`globalThis`/`global`), so the
+/// browser tier matches the code being deobfuscated. Any property name NOT on
+/// this list is left qualified — `alias.unknownProp` stays `alias.unknownProp`
+/// rather than risk a runtime `ReferenceError`.
+fn is_always_defined_global(name: &str) -> bool {
+    matches!(
+        name,
+        // ── ECMAScript spec globals (universal) ──
+        "globalThis" | "Object" | "Array" | "Function" | "Boolean" | "Symbol"
+        | "Error" | "EvalError" | "RangeError" | "ReferenceError" | "SyntaxError"
+        | "TypeError" | "URIError" | "AggregateError" | "Number" | "BigInt" | "Math"
+        | "Date" | "String" | "RegExp" | "JSON" | "Promise" | "Proxy" | "Reflect"
+        | "Map" | "Set" | "WeakMap" | "WeakSet" | "WeakRef" | "ArrayBuffer"
+        | "SharedArrayBuffer" | "DataView" | "Atomics"
+        | "Int8Array" | "Uint8Array" | "Uint8ClampedArray" | "Int16Array"
+        | "Uint16Array" | "Int32Array" | "Uint32Array" | "Float32Array"
+        | "Float64Array" | "BigInt64Array" | "BigUint64Array"
+        | "parseInt" | "parseFloat" | "isNaN" | "isFinite"
+        | "encodeURI" | "encodeURIComponent" | "decodeURI" | "decodeURIComponent"
+        | "NaN" | "Infinity" | "undefined"
+        // ── Browser host globals (present when window/self exists) ──
+        | "window" | "self" | "document" | "location" | "navigator" | "history"
+        | "screen" | "console" | "localStorage" | "sessionStorage" | "indexedDB"
+        | "fetch" | "XMLHttpRequest" | "WebSocket" | "EventSource"
+        | "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval"
+        | "requestAnimationFrame" | "cancelAnimationFrame" | "queueMicrotask"
+        | "structuredClone" | "atob" | "btoa" | "crypto" | "performance"
+        | "addEventListener" | "removeEventListener" | "dispatchEvent"
+        | "postMessage" | "getComputedStyle" | "matchMedia"
+        | "URL" | "URLSearchParams" | "Blob" | "File" | "FileReader" | "FormData"
+        | "Headers" | "Request" | "Response" | "AbortController" | "AbortSignal"
+        | "TextEncoder" | "TextDecoder" | "Event" | "CustomEvent" | "Worker"
+        | "Notification" | "caches" | "customElements" | "DOMParser"
+    )
+}
+
+/// Whether the member expression currently being visited is the operand of a
+/// `delete` (looking through any `(…)` wrappers oxc preserves). `delete bareName`
+/// is a `SyntaxError` in strict mode, so such a member must stay qualified.
+fn is_delete_operand(ctx: &Ctx<'_>) -> bool {
+    ctx.ancestors()
+        .find_map(|a| match a {
+            // Look through parentheses: `delete (Q.foo)` wraps the member.
+            Ancestor::ParenthesizedExpressionExpression(_) => None,
+            Ancestor::UnaryExpressionArgument(u) if u.operator().is_delete() => Some(true),
+            // First non-paren, non-delete ancestor → not a delete operand.
+            _ => Some(false),
+        })
+        .unwrap_or(false)
 }
 
 pub struct WindowAliasCollector {
@@ -207,12 +265,12 @@ pub struct WindowAliasPropagator {
 
 impl WindowAliasPropagator {
     #[must_use]
-    pub fn new(aliases: FxHashSet<SymbolId>) -> Self {
+    pub const fn new(aliases: FxHashSet<SymbolId>) -> Self {
         Self { aliases, rewrites: 0 }
     }
 
     #[must_use]
-    pub fn rewrites(&self) -> usize {
+    pub const fn rewrites(&self) -> usize {
         self.rewrites
     }
 }
@@ -245,6 +303,31 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasPropagator {
         let prop_name = sme.property.name.as_str();
         // `alias.in` → `in` would be a bare reserved word: invalid JS. Skip it.
         if is_reserved_word(prop_name) {
+            return;
+        }
+        // Only rewrite properties that are *always defined* as global bindings.
+        // For an arbitrary `alias.foo`, `window.foo` reads `undefined` when `foo`
+        // is absent, but bare `foo` THROWS a ReferenceError — not behavior-
+        // preserving. Restricting to known globals also keeps the bare form the
+        // canonical call (`document.x()`), so the `this`-receiver is unchanged.
+        if !is_always_defined_global(prop_name) {
+            return;
+        }
+        // `delete alias.foo` → `delete foo` is a SyntaxError in strict mode (MJS
+        // is always strict). `delete` of a member is legal but `delete` of a bare
+        // reference is not — never rewrite a `delete` operand (incl. through parens).
+        if is_delete_operand(ctx) {
+            return;
+        }
+        // Capture hazard: `alias.foo` → bare `foo` only stays equivalent to the
+        // global property read if NO binding named `foo` is in scope here. If a
+        // local/param/import `foo` is visible, the bare identifier would resolve
+        // to *that* instead of `window.foo` — a silent miscompile. Skip those.
+        if ctx
+            .scoping()
+            .find_binding(ctx.current_scope_id(), ctx.ast.ident(prop_name))
+            .is_some()
+        {
             return;
         }
         self.rewrites += 1;
@@ -424,6 +507,100 @@ mod tests {
             assert!(
                 out.contains(&format!("w.{kw}")),
                 "{kw}: reserved word must stay qualified, got: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_rewrite_delete_operand() {
+        // `delete Q.document` → `delete document` is a SyntaxError in strict mode.
+        // Uses an allowlisted prop so this exercises the delete guard, not the allowlist.
+        let out = run("var Q = window; delete Q.document;");
+        assert!(
+            out.contains("delete Q.document"),
+            "delete operand must stay qualified: {out}"
+        );
+        assert!(
+            !out.contains("delete document"),
+            "must not emit bare `delete document`: {out}"
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_parenthesized_delete_operand() {
+        // oxc preserves parens, so `delete (Q.document)` wraps the member in a
+        // ParenthesizedExpression — the guard must look THROUGH the parens or it
+        // emits `delete document` (the same strict-mode SyntaxError).
+        let out = run("var Q = window; delete (Q.document);");
+        assert!(
+            !out.contains("delete document"),
+            "paren-delete must not emit bare delete: {out}"
+        );
+        assert!(
+            out.contains("Q.document"),
+            "paren-delete operand must stay qualified: {out}"
+        );
+    }
+
+    #[test]
+    fn still_rewrites_member_outside_delete() {
+        // A normal (non-delete) member access on the same alias still propagates.
+        let out = run("var Q = window; delete Q.document; var x = Q.location;");
+        assert!(out.contains("delete Q.document"), "delete operand stays: {out}");
+        assert!(out.contains("var x = location"), "normal access still rewritten: {out}");
+    }
+
+    #[test]
+    fn does_not_capture_local_binding() {
+        // `Q.location` → bare `location` would read the LOCAL `location`, not
+        // `window.location`. With a local in scope the access must stay qualified.
+        let out = run("function f(){ var location = 123; var Q = window; return Q.location; }");
+        assert!(out.contains("Q.location"), "must not capture local `location`: {out}");
+        assert!(
+            !out.contains("return location;"),
+            "must not strip to bare local read: {out}"
+        );
+    }
+
+    #[test]
+    fn does_not_capture_parameter_binding() {
+        let out = run("function f(navigator){ var Q = window; return Q.navigator; }");
+        assert!(out.contains("Q.navigator"), "must not capture param `navigator`: {out}");
+    }
+
+    #[test]
+    fn still_rewrites_when_no_local_shadows() {
+        // No local `document` in scope → the rewrite is sound and proceeds.
+        let out = run("function f(){ var Q = window; return Q.document; }");
+        assert!(
+            out.contains("return document"),
+            "unshadowed global still rewritten: {out}"
+        );
+        assert!(!out.contains("Q.document"), "alias should be gone: {out}");
+    }
+
+    #[test]
+    fn does_not_rewrite_unknown_global_property() {
+        // `window.foo` reads `undefined` for an absent property, but bare `foo`
+        // throws ReferenceError. A non-allowlisted property must stay qualified.
+        let out = run("var Q = window; var r = Q.foo; var s = Q.someRandomProp;");
+        assert!(out.contains("Q.foo"), "unknown property must stay qualified: {out}");
+        assert!(
+            out.contains("Q.someRandomProp"),
+            "unknown property must stay qualified: {out}"
+        );
+        assert!(!out.contains("= foo"), "must not emit bare unknown global: {out}");
+    }
+
+    #[test]
+    fn rewrites_known_spec_and_browser_globals() {
+        // Allowlisted globals (spec + browser) are safe to strip.
+        for prop in ["document", "location", "console", "JSON", "Math", "Promise", "fetch"] {
+            let out = run(&format!("var Q = window; var r = Q.{prop};"));
+            assert!(out.contains(&format!("var r = {prop}")), "{prop} should rewrite: {out}");
+            assert!(
+                !out.contains(&format!("Q.{prop}")),
+                "{prop}: alias should be gone: {out}"
             );
         }
     }
