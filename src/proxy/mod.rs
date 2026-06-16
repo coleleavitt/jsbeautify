@@ -1,7 +1,7 @@
 //! MITM HTTP/HTTPS proxy.
 //!
 //! Custom from-scratch implementation (jxscout's own approach per
-//! REPORT_06 §1 — they fork hudsucker but the layer here is built natively).
+//! `REPORT_06` §1 — they fork hudsucker but the layer here is built natively).
 //!
 //! ## Capabilities
 //!
@@ -170,7 +170,7 @@ impl ProxyServer {
 
     async fn dispatch(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
         if req.method() == hyper::Method::CONNECT {
-            return Ok(self.handle_connect(req).await);
+            return Ok(self.handle_connect(req));
         }
         Ok(self.handle_http(req).await)
     }
@@ -204,8 +204,7 @@ impl ProxyServer {
         let port = uri.port_u16().unwrap_or(80);
         let path = uri
             .path_and_query()
-            .map(|pq| pq.as_str().to_string())
-            .unwrap_or_else(|| "/".to_string());
+            .map_or_else(|| "/".to_string(), |pq| pq.as_str().to_string());
 
         // Buffer request body
         let req_body = match collect_body(req.into_body(), self.cfg.max_body_bytes).await {
@@ -234,13 +233,13 @@ impl ProxyServer {
             .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
         // Re-attach headers (skip hop-by-hop)
         for (k, v) in &req_headers {
-            if !is_hop_by_hop(k) {
-                if let (Ok(name), Ok(value)) = (
+            if !is_hop_by_hop(k)
+                && let (Ok(name), Ok(value)) = (
                     hyper::header::HeaderName::from_bytes(k.as_bytes()),
                     hyper::header::HeaderValue::from_str(v),
-                ) {
-                    up_req.headers_mut().insert(name, value);
-                }
+                )
+            {
+                up_req.headers_mut().insert(name, value);
             }
         }
         // Set Host header explicitly.
@@ -280,13 +279,13 @@ impl ProxyServer {
 
         let mut builder = Response::builder().status(status);
         for (k, v) in &resp_headers {
-            if !is_hop_by_hop(k) {
-                if let (Ok(name), Ok(value)) = (
+            if !is_hop_by_hop(k)
+                && let (Ok(name), Ok(value)) = (
                     hyper::header::HeaderName::from_bytes(k.as_bytes()),
                     hyper::header::HeaderValue::from_str(v),
-                ) {
-                    builder = builder.header(name, value);
-                }
+                )
+            {
+                builder = builder.header(name, value);
             }
         }
         builder
@@ -294,7 +293,7 @@ impl ProxyServer {
             .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
     }
 
-    async fn handle_connect(self, req: Request<Incoming>) -> Response<Full<Bytes>> {
+    fn handle_connect(self, req: Request<Incoming>) -> Response<Full<Bytes>> {
         // The CONNECT target is in the URI authority.
         let auth = match req.uri().authority() {
             Some(a) => a.clone(),
@@ -304,7 +303,7 @@ impl ProxyServer {
         let port = auth.port_u16().unwrap_or(443);
 
         let upgrade = hyper::upgrade::on(req);
-        let me = self.clone();
+        let me = self;
 
         tokio::spawn(async move {
             let upgraded = match upgrade.await {
@@ -316,13 +315,14 @@ impl ProxyServer {
             };
             let upgraded = TokioIo::new(upgraded);
 
-            if me.cfg.intercept_tls && me.scope.is_in_scope(&host) {
-                if let Some(ca) = &me.ca {
-                    if let Err(e) = tls_intercept(upgraded, host.clone(), port, ca.clone(), me.clone()).await {
-                        eprintln!("[proxy] tls intercept {host}:{port}: {e}");
-                    }
-                    return;
+            if me.cfg.intercept_tls
+                && me.scope.is_in_scope(&host)
+                && let Some(ca) = &me.ca
+            {
+                if let Err(e) = tls_intercept(upgraded, host.clone(), port, ca.clone(), me.clone()).await {
+                    eprintln!("[proxy] tls intercept {host}:{port}: {e}");
                 }
+                return;
             }
             // Passthrough
             if let Err(e) = tcp_relay(upgraded, host.clone(), port).await {
@@ -386,8 +386,7 @@ where
             let path = req
                 .uri()
                 .path_and_query()
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_else(|| "/".to_string());
+                .map_or_else(|| "/".to_string(), |p| p.as_str().to_string());
             let url = format!("https://{host}:{port}{path}");
             let method = req.method().clone();
             let req_headers: Vec<(String, String)> = req
@@ -421,13 +420,13 @@ where
                     }
                     let mut b = Response::builder().status(status);
                     for (k, v) in &resp_headers {
-                        if !is_hop_by_hop(k) {
-                            if let (Ok(n), Ok(v)) = (
+                        if !is_hop_by_hop(k)
+                            && let (Ok(n), Ok(v)) = (
                                 hyper::header::HeaderName::from_bytes(k.as_bytes()),
                                 hyper::header::HeaderValue::from_str(v),
-                            ) {
-                                b = b.header(n, v);
-                            }
+                            )
+                        {
+                            b = b.header(n, v);
                         }
                     }
                     Ok::<_, hyper::Error>(
@@ -486,13 +485,13 @@ async fn upstream_https(
         .body(Full::new(body.clone()))
         .map_err(|e| e.to_string())?;
     for (k, v) in headers {
-        if !is_hop_by_hop(k) {
-            if let (Ok(n), Ok(v)) = (
+        if !is_hop_by_hop(k)
+            && let (Ok(n), Ok(v)) = (
                 hyper::header::HeaderName::from_bytes(k.as_bytes()),
                 hyper::header::HeaderValue::from_str(v),
-            ) {
-                req.headers_mut().insert(n, v);
-            }
+            )
+        {
+            req.headers_mut().insert(n, v);
         }
     }
     if let Ok(h) = hyper::header::HeaderValue::from_str(host) {
@@ -506,9 +505,7 @@ async fn upstream_https(
         .iter()
         .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-    let body = collect_body(resp.into_body(), 16 * 1024 * 1024)
-        .await
-        .map_err(|e| e.to_string())?;
+    let body = collect_body(resp.into_body(), 16 * 1024 * 1024).await?;
     Ok((status, rh, body))
 }
 
