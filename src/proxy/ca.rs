@@ -29,6 +29,12 @@ impl CertificateAuthority {
     pub fn load_or_generate<P: AsRef<Path>>(dir: P) -> Result<Self, String> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).map_err(|e| format!("create_dir_all({}): {e}", dir.display()))?;
+        // CWE-276: the CA private key lives in this dir — keep it owner-only on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
         let cert_path = dir.join("ca.cer");
         let key_path = dir.join("ca.key");
 
@@ -56,8 +62,31 @@ impl CertificateAuthority {
         let cert_pem = cert.pem();
         let key_pem = keypair.serialize_pem();
         std::fs::write(&cert_path, &cert_pem).map_err(|e| e.to_string())?;
-        std::fs::write(&key_path, &key_pem).map_err(|e| e.to_string())?;
+        // CWE-276: the private key must never be world-readable.
+        Self::write_secret(&key_path, &key_pem)?;
         Self::from_pem(&cert_pem, &key_pem)
+    }
+
+    /// Write a secret (the CA private key) with owner-only permissions — 0600 on
+    /// Unix, plain write elsewhere. Guards against CWE-276 (world-readable key).
+    fn write_secret(path: &Path, contents: &str) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| e.to_string())?;
+            f.write_all(contents.as_bytes()).map_err(|e| e.to_string())
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, contents).map_err(|e| e.to_string())
+        }
     }
 
     fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self, String> {
@@ -156,6 +185,17 @@ mod tests {
         let _ca2 = CertificateAuthority::load_or_generate(&dir).unwrap();
         let cert_disk_2 = std::fs::read_to_string(dir.join("ca.cer")).unwrap();
         assert_eq!(cert_disk_1, cert_disk_2, "CA file should not be regenerated");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ca_key_is_written_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile_dir();
+        let _ca = CertificateAuthority::load_or_generate(&dir).unwrap();
+        let mode = std::fs::metadata(dir.join("ca.key")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "CWE-276: CA key must be 0600, got {mode:o}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

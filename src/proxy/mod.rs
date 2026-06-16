@@ -513,12 +513,16 @@ async fn upstream_https(
 }
 
 async fn collect_body(body: Incoming, max: usize) -> Result<Bytes, String> {
-    let collected = body.collect().await.map_err(|e| e.to_string())?;
-    let bytes = collected.to_bytes();
-    if bytes.len() > max {
-        return Err(format!("body exceeds max ({} > {})", bytes.len(), max));
-    }
-    Ok(bytes)
+    // CWE-789/400: enforce the cap WHILE streaming. `Limited` aborts the read
+    // once `max` bytes have arrived, so a malicious/oversized (or endless
+    // chunked) body can never be fully buffered into memory and OOM the daemon
+    // — unlike `body.collect()` which buffers everything before any size check.
+    use http_body_util::Limited;
+    let collected = Limited::new(body, max)
+        .collect()
+        .await
+        .map_err(|e| format!("body exceeds max ({max} bytes) or read error: {e}"))?;
+    Ok(collected.to_bytes())
 }
 
 fn is_hop_by_hop(name: &str) -> bool {

@@ -11,7 +11,9 @@ macro_rules! trace_chunk {
 
 #[cfg(not(debug_assertions))]
 macro_rules! trace_chunk {
-    ($($arg:tt)*) => {};
+    ($($arg:tt)*) => {
+        let _ = format_args!($($arg)*);
+    };
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

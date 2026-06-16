@@ -17,7 +17,9 @@ macro_rules! trace_split {
 
 #[cfg(not(debug_assertions))]
 macro_rules! trace_split {
-    ($($arg:tt)*) => {};
+    ($($arg:tt)*) => {
+        let _ = format_args!($($arg)*);
+    };
 }
 
 #[derive(Debug, Error)]

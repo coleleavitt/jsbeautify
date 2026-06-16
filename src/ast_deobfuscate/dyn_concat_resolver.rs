@@ -30,7 +30,7 @@ use oxc_ast::ast::{
 use oxc_span::SPAN;
 use oxc_syntax::node::NodeId;
 use oxc_syntax::symbol::SymbolId;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::Cell;
 
@@ -346,7 +346,22 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
                 if !matches!(bin.operator, BinaryOperator::Addition) {
                     return;
                 }
-                let resolver_view: &DynConcatResolver = self;
+                // CWE-400 guard: the chain helpers below (chain_has_string_evidence /
+                // substitute_in_chain / fold_adjacent_literals) each recurse the ENTIRE
+                // `+` chain, so process only at the chain ROOT. If this `+` node is
+                // itself an operand of a parent `+` chain, skip it — the root resolves
+                // the whole chain in one O(n) pass. Without this, exit_expression's
+                // per-node recursive scans are O(n²) on a long `a+a+a+...` chain,
+                // a CPU/hang DoS on hostile input.
+                let parent_is_plus_chain = match ctx.parent() {
+                    Ancestor::BinaryExpressionLeft(p) => matches!(*p.operator(), BinaryOperator::Addition),
+                    Ancestor::BinaryExpressionRight(p) => matches!(*p.operator(), BinaryOperator::Addition),
+                    _ => false,
+                };
+                if parent_is_plus_chain {
+                    return;
+                }
+                let resolver_view: &Self = self;
                 if !chain_has_string_evidence(&bin.left, resolver_view, ctx)
                     && !chain_has_string_evidence(&bin.right, resolver_view, ctx)
                 {
