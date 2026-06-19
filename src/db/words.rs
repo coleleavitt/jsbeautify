@@ -8,10 +8,11 @@
 //! `--word-prefix` / interactive search.
 
 use rusqlite::{Result, params};
+use std::fmt::Write as _;
 
 use super::ProjectDb;
 
-/// Insert a (word, file_type, file_id, source) occurrence. If the word
+/// Insert a (word, `file_type`, `file_id`, source) occurrence. If the word
 /// already exists the count is incremented.
 ///
 /// # Errors
@@ -77,13 +78,13 @@ pub fn list(db: &ProjectDb, q: &WordQuery<'_>) -> Result<Vec<WordRow>> {
     }
     if let Some(min) = q.min_length {
         sql.push_str(" AND length(uw.word) >= ?");
-        args.push(Box::new(min as i64));
+        args.push(Box::new(i64::try_from(min).unwrap_or(i64::MAX)));
     }
-    if let Some(max) = q.max_length {
-        if max > 0 {
-            sql.push_str(" AND length(uw.word) <= ?");
-            args.push(Box::new(max as i64));
-        }
+    if let Some(max) = q.max_length
+        && max > 0
+    {
+        sql.push_str(" AND length(uw.word) <= ?");
+        args.push(Box::new(i64::try_from(max).unwrap_or(i64::MAX)));
     }
     if let Some(m) = q.fts_match {
         // Use FTS5 if available; if not we fallback to LIKE %
@@ -97,7 +98,7 @@ pub fn list(db: &ProjectDb, q: &WordQuery<'_>) -> Result<Vec<WordRow>> {
         sql.push_str(" ORDER BY uw.word ASC");
     }
     if let Some(l) = q.limit {
-        sql.push_str(&format!(" LIMIT {l}"));
+        write!(sql, " LIMIT {l}").ok();
     }
 
     db.with_conn(|c| {

@@ -1,7 +1,7 @@
 //! VS Code extension WebSocket API server.
 //!
 //! Ports `crates/core/proxy-api/src/websocket/` from jxscout-pro-v2
-//! (REPORT_06 §8). Broadcasts real-time events to connected VS Code / Cursor
+//! (`REPORT_06` §8). Broadcasts real-time events to connected VS Code / Cursor
 //! extension clients over a WebSocket connection.
 //!
 //! ## Protocol
@@ -11,7 +11,7 @@
 //! { "type": "matches_update", "data": [...] }
 //! ```
 //!
-//! 23+ message types per REPORT_06 §8.
+//! 23+ message types per `REPORT_06` §8.
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,7 @@ impl WsMessage {
     #[must_use]
     pub fn to_frame(&self) -> Message {
         let json = serde_json::to_string(self).unwrap_or_else(|_| "{}".into());
-        Message::Text(json.into())
+        Message::Text(json)
     }
 }
 
@@ -152,11 +152,11 @@ impl WsServer {
             match msg {
                 Message::Text(text) => {
                     // Attempt to parse incoming client request. For now just log.
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(req_type) = v.get("type").and_then(|t| t.as_str()) {
-                            eprintln!("[ws] client request: {req_type}");
-                            // TODO: dispatch to handler based on req_type
-                        }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+                        && let Some(req_type) = v.get("type").and_then(|t| t.as_str())
+                    {
+                        eprintln!("[ws] client request: {req_type}");
+                        // TODO: dispatch to handler based on req_type
                     }
                 }
                 Message::Close(_) => break,
@@ -181,10 +181,8 @@ mod tests {
     fn ws_message_serializes() {
         let msg = WsMessage::MatchesUpdate(serde_json::json!([{"id": 1}]));
         let frame = msg.to_frame();
-        let text = if let Message::Text(t) = frame {
-            t.to_string()
-        } else {
-            panic!("expected Message::Text, got {frame:?}");
+        let Message::Text(text) = frame else {
+            panic!("expected Message::Text");
         };
         assert!(text.contains("matches_update"));
         assert!(text.contains(r#""id":1"#));

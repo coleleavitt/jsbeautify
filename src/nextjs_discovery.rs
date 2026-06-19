@@ -20,27 +20,23 @@
 //! # }
 //! ```
 
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// Matches the buildId from `/_next/static/XXXXX/_buildManifest.js` or
-    /// `__NEXT_DATA__` JSON with "buildId":"...".
-    static ref BUILD_ID_RE: Regex = Regex::new(
-        r#"(?:"buildId"\s*:\s*"([^"]+)"|/_next/static/([a-zA-Z0-9_-]{6,})/_(?:build|ssg)Manifest\.js)"#
-    ).unwrap();
+/// Matches the buildId from `/_next/static/XXXXX/_buildManifest.js` or
+/// `__NEXT_DATA__` JSON with "buildId":"...".
+static BUILD_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:"buildId"\s*:\s*"([^"]+)"|/_next/static/([a-zA-Z0-9_-]{6,})/_(?:build|ssg)Manifest\.js)"#).unwrap()
+});
 
-    /// Extracts chunk paths from the _buildManifest.js content.
-    /// Pattern: "static/chunks/xxx.js" or "static/css/xxx.css"
-    static ref CHUNK_PATH_RE: Regex = Regex::new(
-        r#""(static/(?:chunks|css|media)/[^"]+)""#
-    ).unwrap();
+/// Extracts chunk paths from the _buildManifest.js content.
+/// Pattern: "static/chunks/xxx.js" or "static/css/xxx.css"
+static CHUNK_PATH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""(static/(?:chunks|css|media)/[^"]+)""#).unwrap());
 
-    /// Next.js sortedPages array entries (route paths).
-    static ref SORTED_PAGES_RE: Regex = Regex::new(
-        r#"sortedPages\s*:\s*\[([\s\S]*?)\]"#
-    ).unwrap();
-}
+/// Next.js sortedPages array entries (route paths).
+static SORTED_PAGES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sortedPages\s*:\s*\[([\s\S]*?)\]").unwrap());
+static NEXT_STATIC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"/_next/static/[^"'\s]+"#).unwrap());
 
 /// Discovered Next.js build information.
 #[derive(Debug, Clone)]
@@ -62,7 +58,7 @@ pub fn parse_build_manifest(manifest_content: &str, base_url: &str) -> NextJsBui
     // Extract build ID
     let build_id = BUILD_ID_RE
         .captures(manifest_content)
-        .and_then(|c| c.get(1).or(c.get(2)))
+        .and_then(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| m.as_str().to_string())
         .unwrap_or_default();
 
@@ -71,32 +67,14 @@ pub fn parse_build_manifest(manifest_content: &str, base_url: &str) -> NextJsBui
         .captures_iter(manifest_content)
         .map(|c| {
             let path = &c[1];
-            if build_id.is_empty() {
-                format!("{base}/_next/{path}")
-            } else {
-                format!("{base}/_next/{path}")
-            }
+            format!("{base}/_next/{path}")
         })
         .collect();
     chunk_urls.sort_unstable();
     chunk_urls.dedup();
 
     // Extract routes from sortedPages
-    let routes: Vec<String> = if let Some(cap) = SORTED_PAGES_RE.captures(manifest_content) {
-        cap[1]
-            .split(',')
-            .filter_map(|s| {
-                let trimmed = s.trim().trim_matches('"').trim_matches('\'');
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let routes = parse_sorted_pages(manifest_content);
 
     NextJsBuild {
         build_id,
@@ -118,7 +96,7 @@ pub fn manifest_url(base_url: &str, build_id: &str) -> String {
 pub fn extract_build_id(html_or_json: &str) -> Option<String> {
     BUILD_ID_RE
         .captures(html_or_json)
-        .and_then(|c| c.get(1).or(c.get(2)))
+        .and_then(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| m.as_str().to_string())
 }
 
@@ -137,8 +115,7 @@ pub fn discover_from_html(html: &str, base_url: &str) -> NextJsBuild {
     let mut chunk_urls: Vec<String> = Vec::new();
 
     // Pattern: /_next/static/chunks/xxx.js in script src
-    let next_static_re = Regex::new(r#"/_next/static/[^"'\s]+"#).unwrap();
-    for m in next_static_re.find_iter(html) {
+    for m in NEXT_STATIC_RE.find_iter(html) {
         let path = m.as_str();
         if path.contains("/chunks/") || path.contains("/css/") || path.contains("/media/") {
             chunk_urls.push(format!("{base}{path}"));
@@ -153,21 +130,7 @@ pub fn discover_from_html(html: &str, base_url: &str) -> NextJsBuild {
     chunk_urls.sort_unstable();
     chunk_urls.dedup();
 
-    let routes = if let Some(cap) = SORTED_PAGES_RE.captures(html) {
-        cap[1]
-            .split(',')
-            .filter_map(|s| {
-                let trimmed = s.trim().trim_matches('"').trim_matches('\'');
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let routes = parse_sorted_pages(html);
 
     NextJsBuild {
         build_id,
@@ -175,6 +138,18 @@ pub fn discover_from_html(html: &str, base_url: &str) -> NextJsBuild {
         chunk_urls,
         routes,
     }
+}
+
+fn parse_sorted_pages(content: &str) -> Vec<String> {
+    SORTED_PAGES_RE.captures(content).map_or_else(Vec::new, |cap| {
+        cap[1]
+            .split(',')
+            .filter_map(|s| {
+                let trimmed = s.trim().trim_matches('"').trim_matches('\'');
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

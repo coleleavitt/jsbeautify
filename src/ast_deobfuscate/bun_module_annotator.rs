@@ -35,17 +35,17 @@ pub fn annotate_bun_modules(code: &str, esm_helpers: &[String], cjs_helpers: &[S
     for line in code.lines() {
         let trimmed = line.trim_start();
 
-        if let Some(caps) = re.captures(trimmed) {
-            if let Some(module_name) = caps.get(1) {
-                let name = module_name.as_str();
-                if is_valid_module_name(name) {
-                    result.push_str("// ═══════════════════════════════════════\n");
-                    result.push_str("// Bun Module: ");
-                    result.push_str(name);
-                    result.push('\n');
-                    result.push_str("// ═══════════════════════════════════════\n");
-                    count = count.wrapping_add(1);
-                }
+        if let Some(caps) = re.captures(trimmed)
+            && let Some(module_name) = caps.get(1)
+        {
+            let name = module_name.as_str();
+            if is_valid_module_name(name) {
+                result.push_str("// ═══════════════════════════════════════\n");
+                result.push_str("// Bun Module: ");
+                result.push_str(name);
+                result.push('\n');
+                result.push_str("// ═══════════════════════════════════════\n");
+                count = count.wrapping_add(1);
             }
         }
 

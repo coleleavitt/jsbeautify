@@ -39,7 +39,7 @@ pub fn extract_from_urls(urls: &[&str]) -> Vec<String> {
             }
             // Path segments.
             for seg in url.path_segments().into_iter().flatten() {
-                for token in seg.split(|c| matches!(c, '-' | '_')) {
+                for token in seg.split(['-', '_']) {
                     push(token);
                 }
             }
@@ -51,7 +51,7 @@ pub fn extract_from_urls(urls: &[&str]) -> Vec<String> {
         } else {
             // Treat as a raw path string.
             for seg in raw.split('/') {
-                for token in seg.split(|c| matches!(c, '-' | '_' | '?' | '=')) {
+                for token in seg.split(['-', '_', '?', '=']) {
                     push(token);
                 }
             }

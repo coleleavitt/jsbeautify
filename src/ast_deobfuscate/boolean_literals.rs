@@ -49,12 +49,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
         }
 
         // Check for !!x pattern BEFORE checking for !<literal>
-        if let Expression::UnaryExpression(inner) = &unary.argument {
-            if inner.operator == UnaryOperator::LogicalNot {
-                self.double_negation_count += 1;
-                // Do NOT rewrite !!x — it's idiomatic JavaScript
-                return;
-            }
+        if let Expression::UnaryExpression(inner) = &unary.argument
+            && inner.operator == UnaryOperator::LogicalNot
+        {
+            self.double_negation_count += 1;
+            // Do NOT rewrite !!x — it's idiomatic JavaScript
+            return;
         }
 
         let Some(truthy) = js_truthiness(&unary.argument) else {

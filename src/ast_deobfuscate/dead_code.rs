@@ -6,6 +6,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -15,16 +16,6 @@ pub struct DeadCodeEliminator {
 }
 
 impl DeadCodeEliminator {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { changed: false }
-    }
-
-    #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
-    }
-
     fn is_false(expr: &Expression<'_>) -> bool {
         match expr {
             Expression::BooleanLiteral(lit) => !lit.value,
@@ -46,11 +37,7 @@ impl DeadCodeEliminator {
     }
 }
 
-impl Default for DeadCodeEliminator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+flag_pass!(DeadCodeEliminator, changed, has_changed);
 
 impl<'a> Traverse<'a, DeobfuscateState> for DeadCodeEliminator {
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {

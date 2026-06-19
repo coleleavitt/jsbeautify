@@ -1,7 +1,7 @@
 //! Vue 3 / Pinia framework recon analyzer. Fingerprints the Vue runtime + SFC
 //! compiler output and the vue-router / Pinia ecosystem in production bundles.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //
 // Literal signatures confirmed against the cloned vuejs/core monorepo at
 // /home/cole/RustProjects/forks/frameworks/vue:
@@ -26,6 +26,26 @@
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
+
+static VNODE_SYM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Symbol\.for\(\s*["'](v-fgt|v-txt|v-cmt|v-stc)["']\s*\)"#).unwrap());
+static SCOPE_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"__scopeId\s*[:=]\s*["']data-v-([0-9a-fA-F]{4,16})["']"#).unwrap());
+static MARKER_UNIQUE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(__vccOpts|__asyncLoader)\b").unwrap());
+static MARKER_PROP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(__file|__name)\s*:").unwrap());
+static RESOLVE_COMP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"resolveComponent\(\s*["']([A-Za-z_][\w-]*)["']"#).unwrap());
+static STATIC_VNODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"createStaticVNode\(\s*"((?:[^"\\]|\\.)*)""#).unwrap());
+static ROUTE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"path\s*:\s*["']([^"']+)["']\s*,\s*(?:name\s*:\s*["'][^"']*["']\s*,\s*)?component\s*:\s*\(\s*\)\s*=>\s*import\(\s*["']([^"']+)["']"#,
+    )
+    .unwrap()
+});
+static CREATE_ROUTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bcreateRouter\s*\(").unwrap());
+static PINIA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bdefineStore\(\s*["']([\w-]+)["']"#).unwrap());
 
 /// Truncate a captured blob to at most `n` chars (char-safe, never splits UTF-8).
 fn clip(s: &str, n: usize) -> String {
@@ -38,45 +58,12 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Scan source for Vue 3 / vue-router / Pinia signatures.
-#[must_use]
-pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
-    let mut out = Vec::new();
-    lazy_static::lazy_static! {
-        // Vue 3 internal vnode type symbols (Fragment/Text/Comment/Static). These
-        // string keys are baked into Symbol.for() and never minify away.
-        static ref VNODE_SYM_RE: Regex =
-            Regex::new(r#"Symbol\.for\(\s*["'](v-fgt|v-txt|v-cmt|v-stc)["']\s*\)"#).unwrap();
-        // SFC scoped-style id, e.g. `__scopeId:"data-v-7ba5bd90"` or the
-        // post-hoc assignment `_sfc_main.__scopeId = "data-v-7ba5bd90"`.
-        static ref SCOPE_ID_RE: Regex =
-            Regex::new(r#"__scopeId\s*[:=]\s*["']data-v-([0-9a-fA-F]{4,16})["']"#).unwrap();
-        // Markers that are uniquely Vue and safe to match anywhere.
-        static ref MARKER_UNIQUE_RE: Regex =
-            Regex::new(r#"\b(__vccOpts|__asyncLoader)\b"#).unwrap();
-        // __file / __name only as *bare* object keys (`{__name:"App",__file:"..."}`),
-        // which excludes esbuild's `var __name=(t,v)=>...` helper and `"__name":` JSON.
-        static ref MARKER_PROP_RE: Regex =
-            Regex::new(r#"\b(__file|__name)\s*:"#).unwrap();
-        // resolveComponent("Name") — the resolved component name string survives.
-        static ref RESOLVE_COMP_RE: Regex =
-            Regex::new(r#"resolveComponent\(\s*["']([A-Za-z_][\w-]*)["']"#).unwrap();
-        // createStaticVNode("<html…>", n) — captures the inlined static HTML blob
-        // (double-quoted string body with backslash escapes; no backreference needed).
-        static ref STATIC_VNODE_RE: Regex =
-            Regex::new(r#"createStaticVNode\(\s*"((?:[^"\\]|\\.)*)""#).unwrap();
-        // vue-router lazy route entry: {path:"/x", [name:"x",] component:()=>import("./chunk")}
-        static ref ROUTE_RE: Regex = Regex::new(
-            r#"path\s*:\s*["']([^"']+)["']\s*,\s*(?:name\s*:\s*["'][^"']*["']\s*,\s*)?component\s*:\s*\(\s*\)\s*=>\s*import\(\s*["']([^"']+)["']"#
-        ).unwrap();
-        // Bare createRouter( call — present even when routes are eager-loaded.
-        static ref CREATE_ROUTER_RE: Regex = Regex::new(r#"\bcreateRouter\s*\("#).unwrap();
-        // Pinia store factory: defineStore("id", {...}) or defineStore("id", () => {...}).
-        static ref PINIA_RE: Regex =
-            Regex::new(r#"\bdefineStore\(\s*["']([\w-]+)["']"#).unwrap();
-    }
-
-    // vue_vnode_symbol — strongest Vue 3 runtime fingerprint.
+fn emit_runtime_and_component_signatures(
+    out: &mut Vec<AnalyzerMatch>,
+    source: &str,
+    file_path: Option<&str>,
+    file_type: FileType,
+) {
     for caps in VNODE_SYM_RE.captures_iter(source) {
         let whole = caps.get(0).unwrap();
         let val = caps.get(1).map_or("", |m| m.as_str()).to_string();
@@ -93,7 +80,6 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         );
     }
 
-    // vue_scope_id — captures the scoped-CSS hash.
     for caps in SCOPE_ID_RE.captures_iter(source) {
         let whole = caps.get(0).unwrap();
         let hash = caps.get(1).map_or("", |m| m.as_str()).to_string();
@@ -111,37 +97,34 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         );
     }
 
-    // vue_component_marker — two precise patterns feeding one kind.
-    for caps in MARKER_UNIQUE_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
-        let marker = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        out.push(
-            AnalyzerMatch::new(
-                "vue_component_marker",
-                marker,
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info),
-        );
+    for re in [&*MARKER_UNIQUE_RE, &*MARKER_PROP_RE] {
+        for caps in re.captures_iter(source) {
+            let whole = caps.get(0).unwrap();
+            let marker = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            out.push(
+                AnalyzerMatch::new(
+                    "vue_component_marker",
+                    marker,
+                    PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info),
+            );
+        }
     }
-    for caps in MARKER_PROP_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
-        let marker = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        out.push(
-            AnalyzerMatch::new(
-                "vue_component_marker",
-                marker,
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info),
-        );
-    }
+}
+
+/// Scan source for Vue 3 / vue-router / Pinia signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
+#[must_use]
+pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
+    let mut out = Vec::new();
+    emit_runtime_and_component_signatures(&mut out, source, file_path, file_type);
 
     // vue_component_ref — resolveComponent("Name").
     for caps in RESOLVE_COMP_RE.captures_iter(source) {

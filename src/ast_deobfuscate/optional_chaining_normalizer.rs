@@ -38,7 +38,7 @@ impl OptionalChainingNormalizer {
     }
 
     /// Count the depth of optional chaining
-    fn count_chain_depth(_chain: &ChainExpression<'_>) -> usize {
+    const fn count_chain_depth(_chain: &ChainExpression<'_>) -> usize {
         // For now, just return 1 to indicate a chain was detected
         // Full depth analysis would require traversing the chain structure
         1
@@ -55,7 +55,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for OptionalChainingNormalizer {
     fn enter_expression(&mut self, expr: &mut Expression<'a>, _ctx: &mut Ctx<'a>) {
         if let Expression::ChainExpression(chain) = expr {
             let depth = Self::count_chain_depth(chain);
-            eprintln!("[OPTIONAL_CHAINING] Detected optional chaining with depth {}", depth);
+            eprintln!("[OPTIONAL_CHAINING] Detected optional chaining with depth {depth}");
             self.detected_count += 1;
         }
     }

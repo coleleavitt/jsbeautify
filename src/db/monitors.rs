@@ -84,20 +84,20 @@ pub fn urls_for(db: &ProjectDb, monitor_id: i64) -> Result<Vec<(String, bool)>> 
 /// # Errors
 pub fn update_cron(db: &ProjectDb, id: i64, cron: &str) -> Result<usize> {
     db.with_conn(|c| {
-        Ok(c.execute(
+        c.execute(
             "UPDATE monitors SET cron_expression = ?1, updated_at = datetime('now') WHERE id = ?2",
             params![cron, id],
-        )?)
+        )
     })
 }
 
 /// # Errors
 pub fn record_run(db: &ProjectDb, id: i64) -> Result<usize> {
     db.with_conn(|c| {
-        Ok(c.execute(
+        c.execute(
             "UPDATE monitors SET last_run_at = datetime('now') WHERE id = ?1",
             params![id],
-        )?)
+        )
     })
 }
 
@@ -114,7 +114,7 @@ pub fn record_failure(db: &ProjectDb, monitor_id: i64, url: &str, error: &str) -
 
 /// # Errors
 pub fn delete(db: &ProjectDb, id: i64) -> Result<usize> {
-    db.with_conn(|c| Ok(c.execute("DELETE FROM monitors WHERE id = ?1", params![id])?))
+    db.with_conn(|c| c.execute("DELETE FROM monitors WHERE id = ?1", params![id]))
 }
 
 #[cfg(test)]

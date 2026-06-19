@@ -25,6 +25,7 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
+use std::hash::BuildHasher;
 
 use crate::Result;
 use crate::ast_deobfuscate::bun_local_renamer::{LocalRenameMap, LocalRenamer, RenameMode, plan_local_renames};
@@ -75,14 +76,14 @@ fn offset_to_line_col(line_starts: &[u32], source: &str, offset: u32) -> (u32, u
 }
 
 /// Maps each binding's `SymbolId` to its sourcemap original name (by position).
-struct SourcemapNameCollector<'c> {
-    by_pos: &'c FxHashMap<(u32, u32), String>,
+struct SourcemapNameCollector<'c, S: BuildHasher> {
+    by_pos: &'c std::collections::HashMap<(u32, u32), String, S>,
     line_starts: Vec<u32>,
     source: &'c str,
     desired: LocalRenameMap,
 }
 
-impl<'a> Traverse<'a, DeobfuscateState> for SourcemapNameCollector<'_> {
+impl<'a, S: BuildHasher> Traverse<'a, DeobfuscateState> for SourcemapNameCollector<'_, S> {
     fn enter_binding_identifier(&mut self, it: &mut BindingIdentifier<'a>, _ctx: &mut Ctx<'a>) {
         let pos = offset_to_line_col(&self.line_starts, self.source, it.span.start);
         if let Some(orig) = self.by_pos.get(&pos)
@@ -94,11 +95,15 @@ impl<'a> Traverse<'a, DeobfuscateState> for SourcemapNameCollector<'_> {
     }
 }
 
-/// Rename bindings to the original names given by `by_pos` (keyed by the
-/// binding's `(1-based line, 0-based UTF-16 col)`), scope-safely. Bindings with
-/// no mapping are left untouched (so the heuristic pass can name them later).
+/// Rename bindings to the original names given by `by_pos`.
+///
+/// The map is keyed by the binding's `(1-based line, 0-based UTF-16 col)`. Bindings
+/// with no mapping are left untouched so the heuristic pass can name them later.
 #[must_use]
-pub fn apply_names_by_position(code: &str, by_pos: &FxHashMap<(u32, u32), String>) -> String {
+pub fn apply_names_by_position<S: BuildHasher>(
+    code: &str,
+    by_pos: &std::collections::HashMap<(u32, u32), String, S>,
+) -> String {
     if by_pos.is_empty() {
         return code.to_string();
     }

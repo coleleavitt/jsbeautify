@@ -66,7 +66,7 @@ pub fn list_groups(db: &ProjectDb) -> Result<Vec<BookmarkGroup>> {
 
 /// # Errors
 pub fn delete_group(db: &ProjectDb, name: &str) -> Result<usize> {
-    db.with_conn(|c| Ok(c.execute("DELETE FROM bookmark_groups WHERE name = ?1", params![name])?))
+    db.with_conn(|c| c.execute("DELETE FROM bookmark_groups WHERE name = ?1", params![name]))
 }
 
 /// # Errors
@@ -179,14 +179,12 @@ pub fn update_bookmark(
     new_file_path: Option<&str>,
 ) -> Result<usize> {
     db.with_conn(|c| {
-        let group_id: Option<i64> = match new_group {
-            Some(name) => c
-                .query_row("SELECT id FROM bookmark_groups WHERE name = ?1", params![name], |r| {
-                    r.get(0)
-                })
-                .ok(),
-            None => None,
-        };
+        let group_id: Option<i64> = new_group.and_then(|name| {
+            c.query_row("SELECT id FROM bookmark_groups WHERE name = ?1", params![name], |r| {
+                r.get(0)
+            })
+            .ok()
+        });
         let n = c.execute(
             "UPDATE bookmarks SET
               group_id  = COALESCE(?1, group_id),
@@ -201,7 +199,7 @@ pub fn update_bookmark(
 
 /// # Errors
 pub fn delete_bookmark(db: &ProjectDb, id: i64) -> Result<usize> {
-    db.with_conn(|c| Ok(c.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])?))
+    db.with_conn(|c| c.execute("DELETE FROM bookmarks WHERE id = ?1", params![id]))
 }
 
 #[cfg(test)]

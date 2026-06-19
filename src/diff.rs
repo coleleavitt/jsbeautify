@@ -85,7 +85,7 @@ pub fn diff_versions(old_source: &str, new_source: &str, file_path: Option<&str>
 }
 
 /// Fast non-cryptographic content fingerprint for change detection.
-/// Uses SipHash (DefaultHasher) — NOT a cryptographic hash. Suitable only
+/// Uses `SipHash` (`DefaultHasher`) — NOT a cryptographic hash. Suitable only
 /// for detecting whether content changed between two versions within the
 /// same process. Not stable across Rust versions or platforms.
 fn content_fingerprint(content: &str) -> String {

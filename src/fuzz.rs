@@ -32,14 +32,16 @@ impl fmt::Display for AttackMode {
     }
 }
 
-impl AttackMode {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for AttackMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_ascii_lowercase().replace('-', "").as_str() {
-            "sniper" => Some(Self::Sniper),
-            "batteringram" => Some(Self::BatteringRam),
-            "pitchfork" => Some(Self::Pitchfork),
-            "clusterbomb" => Some(Self::Clusterbomb),
-            _ => None,
+            "sniper" => Ok(Self::Sniper),
+            "batteringram" => Ok(Self::BatteringRam),
+            "pitchfork" => Ok(Self::Pitchfork),
+            "clusterbomb" => Ok(Self::Clusterbomb),
+            _ => Err(()),
         }
     }
 }
@@ -67,6 +69,9 @@ pub struct FuzzResult {
 }
 
 /// Parse a raw HTTP request (Burp-format `.req` file).
+///
+/// # Errors
+/// Returns an error when the request line is empty or malformed.
 pub fn parse_request(raw: &str) -> Result<RequestTemplate, String> {
     let mut lines = raw.lines();
 
@@ -107,6 +112,7 @@ pub fn parse_request(raw: &str) -> Result<RequestTemplate, String> {
 
 /// Find all marker positions in a template string.
 /// Default markers: FUZZ, FUZZ2, FUZZ3, ...
+#[must_use]
 pub fn find_markers(template: &str, markers: &[String]) -> Vec<(String, Vec<usize>)> {
     markers
         .iter()
@@ -119,17 +125,21 @@ pub fn find_markers(template: &str, markers: &[String]) -> Vec<(String, Vec<usiz
 }
 
 /// Load a wordlist from a file (one word per line).
+///
+/// # Errors
+/// Returns an error when the file cannot be opened or a line cannot be read.
 pub fn load_wordlist(path: &Path) -> Result<Vec<String>, String> {
     let file = fs::File::open(path).map_err(|e| format!("Cannot open wordlist {}: {e}", path.display()))?;
     let reader = BufReader::new(file);
     Ok(reader
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(std::result::Result::ok)
         .filter(|l| !l.is_empty())
         .collect())
 }
 
 /// Generate all payload combinations for the given attack mode.
+#[must_use]
 pub fn generate_combinations(wordlists: &[Vec<String>], mode: AttackMode) -> Vec<Vec<String>> {
     if wordlists.is_empty() {
         return Vec::new();
@@ -142,7 +152,7 @@ pub fn generate_combinations(wordlists: &[Vec<String>], mode: AttackMode) -> Vec
             for (pos, wl) in wordlists.iter().enumerate() {
                 for payload in wl {
                     let mut combo: Vec<String> = wordlists.iter().map(|_| String::new()).collect();
-                    combo[pos] = payload.clone();
+                    payload.clone_into(&mut combo[pos]);
                     combos.push(combo);
                 }
             }
@@ -157,7 +167,7 @@ pub fn generate_combinations(wordlists: &[Vec<String>], mode: AttackMode) -> Vec
         }
         AttackMode::Pitchfork => {
             // Zip across wordlists.
-            let min_len = wordlists.iter().map(|w| w.len()).min().unwrap_or(0);
+            let min_len = wordlists.iter().map(std::vec::Vec::len).min().unwrap_or(0);
             (0..min_len)
                 .map(|i| wordlists.iter().map(|wl| wl[i].clone()).collect())
                 .collect()
@@ -182,16 +192,18 @@ pub fn generate_combinations(wordlists: &[Vec<String>], mode: AttackMode) -> Vec
 }
 
 /// Apply a set of payloads to a template, replacing markers in order.
+#[must_use]
 pub fn apply_payloads(template: &str, markers: &[String], payloads: &[String]) -> String {
     let mut result = template.to_string();
     for (i, marker) in markers.iter().enumerate() {
-        let payload = payloads.get(i).map(|s| s.as_str()).unwrap_or("");
+        let payload = payloads.get(i).map_or("", std::string::String::as_str);
         result = result.replacen(marker.as_str(), payload, 1);
     }
     result
 }
 
 /// Derive the Host and port from the request headers.
+#[must_use]
 pub fn extract_host(template: &RequestTemplate) -> Option<(String, u16, bool)> {
     for (k, v) in &template.headers {
         if k.eq_ignore_ascii_case("Host") {

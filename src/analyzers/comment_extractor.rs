@@ -26,7 +26,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 
     let mut out = Vec::new();
 
-    for comment in parse.program.comments.iter() {
+    for comment in &parse.program.comments {
         let raw = comment.span.source_text(source);
         // Strip delimiters.
         let text = raw
@@ -39,12 +39,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 
         // Check for URL/path patterns in the comment text.
         for cap in helpers::URL_PATTERN.captures_iter(text) {
-            let val = cap.get(1).map(|m| m.as_str()).unwrap_or_else(|| &cap[0]);
+            let val = cap.get(1).map_or_else(|| &cap[0], |m| m.as_str());
             if !helpers::is_path_noise(val) {
                 out.push(AnalyzerMatch {
                     match_kind: KIND_COMMENT_PATH.to_string(),
                     match_value: val.to_string(),
-                    position: pos.clone(),
+                    position: pos,
                     file_type,
                     file_path: file_path.map(str::to_string),
                     severity: Severity::Info,
@@ -56,12 +56,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 
         // Check for hostnames.
         for cap in helpers::HOSTNAME_PATTERN.captures_iter(text) {
-            let val = cap.get(1).map(|m| m.as_str()).unwrap_or_else(|| &cap[0]);
+            let val = cap.get(1).map_or_else(|| &cap[0], |m| m.as_str());
             if !helpers::is_hostname_noise(val) && !helpers::is_path_noise(val) {
                 out.push(AnalyzerMatch {
                     match_kind: KIND_COMMENT_HOSTNAME.to_string(),
                     match_value: val.to_string(),
-                    position: pos.clone(),
+                    position: pos,
                     file_type,
                     file_path: file_path.map(str::to_string),
                     severity: Severity::Info,

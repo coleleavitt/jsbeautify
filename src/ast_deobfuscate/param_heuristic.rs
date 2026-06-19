@@ -103,12 +103,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
 
         // Apply renames
         for (idx, symbol_id, new_name) in &renames {
-            if let Some(param) = func.params.items.get_mut(*idx) {
-                if let BindingPattern::BindingIdentifier(b) = &mut param.pattern {
-                    b.name = ctx.ast.ident(new_name);
-                    self.renames.insert(*symbol_id, new_name.clone());
-                    self.renamed += 1;
-                }
+            if let Some(param) = func.params.items.get_mut(*idx)
+                && let BindingPattern::BindingIdentifier(b) = &mut param.pattern
+            {
+                b.name = ctx.ast.ident(new_name);
+                self.renames.insert(*symbol_id, new_name.clone());
+                self.renamed += 1;
             }
         }
     }

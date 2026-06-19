@@ -32,6 +32,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -40,23 +41,7 @@ pub struct TernaryToIfElse {
     converted_count: usize,
 }
 
-impl TernaryToIfElse {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { converted_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn converted_count(&self) -> usize {
-        self.converted_count
-    }
-}
-
-impl Default for TernaryToIfElse {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(TernaryToIfElse, converted_count, converted_count);
 
 /// Check whether a statement is an `ExpressionStatement` whose expression
 /// is a `ConditionalExpression` (ternary).

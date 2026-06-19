@@ -1,0 +1,218 @@
+//! Bun bundler runtime detection & rename
+//!
+//! Bun (1.4+) wraps every single-file executable in a CJS-style IIFE:
+//! ```js
+//! (function(exports, require, module, __filename, __dirname) {
+//!     // ... entire program here, including the helper preamble
+//! })
+//! ```
+//!
+//! Inside that IIFE, Bun emits a canonical helper preamble of mangled names
+//! (extracted ground truth from the bundler binary):
+//!
+//! | Canonical          | Mangled in cli.2.1.132.js | Body shape                                                |
+//! |--------------------|---------------------------|-----------------------------------------------------------|
+//! | `__create`         | `Sd4`                     | `Object.create`                                           |
+//! | `__getProtoOf`     | `Rd4` (destructured)      | `Object.getPrototypeOf`                                   |
+//! | `__defProp`        | `fjH` (destructured)      | `Object.defineProperty`                                   |
+//! | `__getOwnPropNames`| `UP8` (destructured)      | `Object.getOwnPropertyNames`                              |
+//! | `__getOwnPropDesc` | `Cd4` (destructured)      | `Object.getOwnPropertyDescriptor`                         |
+//! | `__hasOwnProp`     | `XG$`                     | `Object.prototype.hasOwnProperty`                         |
+//! | `__accessProp`     | `JG$`                     | `function (key) { return this[key] }`                     |
+//! | `__commonJS`       | `n`                       | `(H,$) => () => ($\|\|H(($={exports:{}}).exports,$),...)` |
+//! | `__esm`            | `V`                       | `(H,$) => () => (H && ($=H(H=0)), $)`                     |
+//! | `__toESM`          | `m`                       | `(mod,isNode,target) => …`                                |
+//! | `__toCommonJS`     | `n6`                      | WeakMap-cached `__esModule` wrapper                       |
+//! | `__export`         | `j$`                      | `for (q in $) defProp(H,q,{get:$[q],…})`                  |
+//!
+//! This pass:
+//! 1. Detects the top-level Bun CJS wrapper IIFE.
+//! 2. Inside its body, identifies each helper by AST shape.
+//! 3. Renames all references to the canonical name (e.g. `V → __esm`).
+//! 4. Records the map in `DeobfuscateState` for downstream passes.
+//!
+//! No statements are deleted; this is purely a renaming pass. Subsequent passes
+//! (`bun_esm_inliner`, `bun_commonjs_inliner`) consume the canonical names.
+
+use oxc_traverse::TraverseCtx;
+
+use crate::ast_deobfuscate::state::DeobfuscateState;
+
+pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
+
+mod ast_utils;
+mod collector;
+mod descriptor;
+mod matchers;
+mod reexport;
+mod renamer;
+mod string_search;
+mod types;
+
+pub use collector::BunRuntimeCollector;
+pub use renamer::BunRuntimeRenamer;
+pub use types::{BunHelper, BunHelperMap};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxc_allocator::Allocator;
+    use oxc_codegen::Codegen;
+    use oxc_parser::Parser;
+    use oxc_semantic::SemanticBuilder;
+    use oxc_span::SourceType;
+    use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
+
+    fn collect(code: &str) -> BunHelperMap {
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+        let mut prog = parsed.program;
+        let mut collector = BunRuntimeCollector::new();
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+        collector.into_map()
+    }
+
+    fn collect_and_rename(code: &str) -> (String, BunHelperMap) {
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+        let mut prog = parsed.program;
+
+        let mut collector = BunRuntimeCollector::new();
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+        let map = collector.into_map();
+
+        let mut renamer = BunRuntimeRenamer::new(map.clone());
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
+
+        let out = Codegen::new().build(&prog).code;
+        (out, map)
+    }
+
+    #[test]
+    fn detects_esm_helper() {
+        let map = collect("var V = (H, $) => () => (H && ($ = H(H = 0)), $);");
+        assert_eq!(map.get("V"), Some(&BunHelper::Esm));
+    }
+
+    #[test]
+    fn detects_commonjs_helper() {
+        let map = collect("var n = (H, $) => () => ($ || H(($ = { exports: {} }).exports, $), $.exports);");
+        assert_eq!(map.get("n"), Some(&BunHelper::CommonJs));
+    }
+
+    #[test]
+    fn detects_reexport_before_copyprops() {
+        let map = collect(
+            r#"
+            var __defProp = Object.defineProperty;
+            var __getOwnPropNames = Object.getOwnPropertyNames;
+            var R = (H, $, q) => {
+                var K = __getOwnPropNames($);
+                for (let _ of K) if (_ !== "default") __defProp(H, _, { get: () => $[_], enumerable: true });
+                return q;
+            };
+            "#,
+        );
+        assert_eq!(map.get("R"), Some(&BunHelper::ReExport));
+    }
+
+    #[test]
+    fn does_not_detect_broad_reexport_lookalike() {
+        let map = collect(
+            r#"
+            var R = (H, $, q) => {
+                var K = list($);
+                for (let _ of K) if (_ !== "default") H[_] = $[_];
+                return q;
+            };
+            "#,
+        );
+        assert_eq!(map.get("R"), None);
+    }
+
+    #[test]
+    fn detects_copyprops_with_get_own_property_names_loop() {
+        let map = collect(
+            r"
+            var C = (H, $, q) => {
+                var K = Object.getOwnPropertyNames($);
+                for (let _ of K) H[_] = $[_];
+            };
+            ",
+        );
+        assert_eq!(map.get("C"), Some(&BunHelper::CopyProps));
+    }
+
+    #[test]
+    fn detects_destructured_object_aliases() {
+        let map =
+            collect("var { defineProperty: fjH, getOwnPropertyNames: UP8, getOwnPropertyDescriptor: Cd4 } = Object;");
+        assert_eq!(map.get("fjH"), Some(&BunHelper::DefProp));
+        assert_eq!(map.get("UP8"), Some(&BunHelper::GetOwnPropNames));
+        assert_eq!(map.get("Cd4"), Some(&BunHelper::GetOwnPropDesc));
+    }
+
+    #[test]
+    fn detects_create_alias() {
+        let map = collect("var Sd4 = Object.create;");
+        assert_eq!(map.get("Sd4"), Some(&BunHelper::Create));
+    }
+
+    #[test]
+    fn detects_hasownprop() {
+        let map = collect("var XG$ = Object.prototype.hasOwnProperty;");
+        assert_eq!(map.get("XG$"), Some(&BunHelper::HasOwnProp));
+    }
+
+    #[test]
+    fn detects_accessprop_function() {
+        let map = collect("function JG$(H) { return this[H]; }");
+        assert_eq!(map.get("JG$"), Some(&BunHelper::AccessProp));
+    }
+
+    #[test]
+    fn descends_into_cjs_wrapper_iife() {
+        let code = r"
+            (function(exports, require, module, __filename, __dirname) {
+                var V = (H, $) => () => (H && ($ = H(H = 0)), $);
+                var n = (H, $) => () => ($ || H(($ = { exports: {} }).exports, $), $.exports);
+                var Sd4 = Object.create;
+            })(exports, require, module, __filename, __dirname);
+        ";
+        let map = collect(code);
+        assert_eq!(map.get("V"), Some(&BunHelper::Esm));
+        assert_eq!(map.get("n"), Some(&BunHelper::CommonJs));
+        assert_eq!(map.get("Sd4"), Some(&BunHelper::Create));
+    }
+
+    #[test]
+    fn renames_references() {
+        let code = r#"
+            var V = (H, $) => () => (H && ($ = H(H = 0)), $);
+            var modA = V(() => { console.log("a"); });
+            var modB = V(() => { console.log("b"); });
+        "#;
+        let (out, _) = collect_and_rename(code);
+        assert!(out.contains("__esm"), "Should rename V to __esm: {out}");
+        assert!(!out.contains(" V("), "Should not retain V() calls: {out}");
+        // The decl should also be renamed.
+        assert!(out.contains("var __esm ="));
+    }
+
+    #[test]
+    fn renames_destructured_aliases() {
+        let code = r#"
+            var { defineProperty: fjH } = Object;
+            fjH(target, "x", { value: 1 });
+        "#;
+        let (out, _) = collect_and_rename(code);
+        assert!(out.contains("__defProp"), "Should rename fjH to __defProp: {out}");
+        assert!(!out.contains("fjH"), "Should not retain fjH: {out}");
+    }
+}

@@ -1,7 +1,7 @@
 //! `js_files` / `html_files` repository with content-hash-based history.
 //!
 //! Implements the "if hash changed, mark old as history and insert new" pattern
-//! from REPORT_06 §10 (Complete Ingestion Flow).
+//! from `REPORT_06` §10 (Complete Ingestion Flow).
 
 use rusqlite::{Result, params};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub enum IngestionSource {
 
 impl IngestionSource {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Proxy => "PROXY",
             Self::FsIngest => "FS_INGEST",

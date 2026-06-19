@@ -39,9 +39,9 @@ impl CanonicalNamer {
     pub fn build_canonical_map(&mut self, source_code: &str, target_code: &str, matcher: &StatementMatcher) {
         let source_stmts = matcher.extract_statements(source_code);
         let target_stmts = matcher.extract_statements(target_code);
-        let matches = matcher.match_statements(&source_stmts, &target_stmts);
+        let matched_pairs = matcher.match_statements(&source_stmts, &target_stmts);
 
-        for (source_stmt, target_stmt) in matches {
+        for (source_stmt, target_stmt) in matched_pairs {
             self.process_matched_pair(source_stmt, target_stmt);
         }
     }
@@ -92,7 +92,7 @@ impl CanonicalNamer {
     }
 
     #[must_use]
-    pub fn canonical_names_generated(&self) -> usize {
+    pub const fn canonical_names_generated(&self) -> usize {
         self.canonical_counter
     }
 }
@@ -105,22 +105,22 @@ impl Default for CanonicalNamer {
 
 impl<'a> Traverse<'a, DeobfuscateState> for CanonicalNamer {
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end) {
-            if canonical != ident.name.as_str() {
-                ident.name = ctx.ast.ident(canonical);
-                self.changed = true;
-                self.renamed_count += 1;
-            }
+        if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end)
+            && canonical != ident.name.as_str()
+        {
+            ident.name = ctx.ast.ident(canonical);
+            self.changed = true;
+            self.renamed_count += 1;
         }
     }
 
     fn enter_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end) {
-            if canonical != ident.name.as_str() {
-                ident.name = ctx.ast.ident(canonical);
-                self.changed = true;
-                self.renamed_count += 1;
-            }
+        if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end)
+            && canonical != ident.name.as_str()
+        {
+            ident.name = ctx.ast.ident(canonical);
+            self.changed = true;
+            self.renamed_count += 1;
         }
     }
 }

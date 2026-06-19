@@ -7,7 +7,10 @@
 //! - `package.json`-style object literals with `dependencies` keys.
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::*;
+use oxc_ast::ast::{
+    Argument, CallExpression, ExportAllDeclaration, ExportNamedDeclaration, Expression, ImportDeclaration,
+    ImportExpression, ObjectExpression, ObjectPropertyKind, PropertyKey,
+};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -47,7 +50,7 @@ struct NpmVisitor<'s> {
     out: Vec<AnalyzerMatch>,
 }
 
-impl<'s> NpmVisitor<'s> {
+impl NpmVisitor<'_> {
     fn maybe_emit_package(&mut self, name: &str, start: u32, end: u32) {
         if name.is_empty() || name.len() > 256 {
             return;
@@ -83,7 +86,7 @@ impl<'s> NpmVisitor<'s> {
     }
 }
 
-impl<'a, 's> Visit<'a> for NpmVisitor<'s> {
+impl<'a> Visit<'a> for NpmVisitor<'_> {
     fn visit_import_declaration(&mut self, decl: &ImportDeclaration<'a>) {
         let src = decl.source.value.as_str();
         self.maybe_emit_package(src, decl.source.span.start, decl.source.span.end);
@@ -112,10 +115,8 @@ impl<'a, 's> Visit<'a> for NpmVisitor<'s> {
             }
             _ => false,
         };
-        if is_require {
-            if let Some(Argument::StringLiteral(s)) = call.arguments.first() {
-                self.maybe_emit_package(s.value.as_str(), s.span.start, s.span.end);
-            }
+        if is_require && let Some(Argument::StringLiteral(s)) = call.arguments.first() {
+            self.maybe_emit_package(s.value.as_str(), s.span.start, s.span.end);
         }
 
         walk::walk_call_expression(self, call);
@@ -138,24 +139,22 @@ impl<'a, 's> Visit<'a> for NpmVisitor<'s> {
                     PropertyKey::StaticIdentifier(id) => Some(id.name.as_str()),
                     _ => None,
                 };
-                if let Some(key) = key_name {
-                    if PACKAGE_JSON_KEYS.contains(&key) {
-                        // The value should be an ObjectExpression of pkg → version
-                        if let Expression::ObjectExpression(deps) = &p.value {
-                            for dep in &deps.properties {
-                                if let ObjectPropertyKind::ObjectProperty(dp) = dep {
-                                    let pname = match &dp.key {
-                                        PropertyKey::StringLiteral(s) => {
-                                            Some((s.value.as_str(), s.span.start, s.span.end))
-                                        }
-                                        PropertyKey::StaticIdentifier(id) => {
-                                            Some((id.name.as_str(), id.span.start, id.span.end))
-                                        }
-                                        _ => None,
-                                    };
-                                    if let Some((n, s, e)) = pname {
-                                        self.maybe_emit_package(n, s, e);
+                if let Some(key) = key_name
+                    && PACKAGE_JSON_KEYS.contains(&key)
+                {
+                    // The value should be an ObjectExpression of pkg → version
+                    if let Expression::ObjectExpression(deps) = &p.value {
+                        for dep in &deps.properties {
+                            if let ObjectPropertyKind::ObjectProperty(dp) = dep {
+                                let pname = match &dp.key {
+                                    PropertyKey::StringLiteral(s) => Some((s.value.as_str(), s.span.start, s.span.end)),
+                                    PropertyKey::StaticIdentifier(id) => {
+                                        Some((id.name.as_str(), id.span.start, id.span.end))
                                     }
+                                    _ => None,
+                                };
+                                if let Some((n, s, e)) = pname {
+                                    self.maybe_emit_package(n, s, e);
                                 }
                             }
                         }

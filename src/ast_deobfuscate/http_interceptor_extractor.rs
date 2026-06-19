@@ -1,6 +1,6 @@
-//! HTTP interceptor chain reconstructor — extracts Angular HttpClient interceptor logic.
+//! HTTP interceptor chain reconstructor — extracts Angular `HttpClient` interceptor logic.
 //!
-//! Angular apps inject headers via HttpInterceptor classes. In the Schwab SWS gateway,
+//! Angular apps inject headers via `HttpInterceptor` classes. In the Schwab SWS gateway,
 //! the interceptor chain adds these security-critical headers:
 //! - `Schwab-Client-SessionId` — session tracking
 //! - `Schwab-Client-CorrelId` — request correlation
@@ -15,6 +15,32 @@
 //! - `web-crypto-enabled` — feature flag for crypto auth
 
 use regex::Regex;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
+
+// Header assignment: oe["Header-Name"] = value
+static HEADER_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\w+\["(Schwab-[^"]+|DRS-[^"]+|X-Authorization|Authorization|web-crypto-enabled|swscrypto-[^"]+|tenant-config-service|Sch-Uid|Fraudnet-[^"]+|Use-SWS-[^"]+)"\]\s*=\s*([^;,\n]+)"#,
+    )
+    .unwrap()
+});
+
+// sessionStorage.getItem/setItem patterns
+static SESSION_STORAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"sessionStorage\.(?:get|set)Item\("([^"]+)"\)"#).unwrap());
+
+// localStorage patterns
+static LOCAL_STORAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"localStorage\.(?:get|set)Item\("([^"]+)"\)"#).unwrap());
+
+// Cookie reading patterns
+static COOKIE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"document\.cookie[^;]*?["']([A-Z][A-Za-z0-9_-]+)=["']"#).unwrap());
+
+// Policy bypass patterns
+static POLICY_BYPASS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""(Schwab-Skip-[^"]+|Schwab-Migration-[^"]+)""#).unwrap());
 
 /// A detected HTTP header injection.
 #[derive(Debug, Clone)]
@@ -50,33 +76,6 @@ pub struct InterceptorAnalysisResult {
 /// Extract HTTP interceptor patterns from beautified source.
 #[must_use]
 pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
-    lazy_static::lazy_static! {
-        // Header assignment: oe["Header-Name"] = value
-        static ref HEADER_ASSIGN_RE: Regex = Regex::new(
-            r#"\w+\["(Schwab-[^"]+|DRS-[^"]+|X-Authorization|Authorization|web-crypto-enabled|swscrypto-[^"]+|tenant-config-service|Sch-Uid|Fraudnet-[^"]+|Use-SWS-[^"]+)"\]\s*=\s*([^;,\n]+)"#
-        ).unwrap();
-
-        // sessionStorage.getItem/setItem patterns
-        static ref SESSION_STORAGE_RE: Regex = Regex::new(
-            r#"sessionStorage\.(?:get|set)Item\("([^"]+)"\)"#
-        ).unwrap();
-
-        // localStorage patterns
-        static ref LOCAL_STORAGE_RE: Regex = Regex::new(
-            r#"localStorage\.(?:get|set)Item\("([^"]+)"\)"#
-        ).unwrap();
-
-        // Cookie reading patterns
-        static ref COOKIE_RE: Regex = Regex::new(
-            r#"document\.cookie[^;]*?["']([A-Z][A-Za-z0-9_-]+)=["']"#
-        ).unwrap();
-
-        // Policy bypass patterns
-        static ref POLICY_BYPASS_RE: Regex = Regex::new(
-            r#""(Schwab-Skip-[^"]+|Schwab-Migration-[^"]+)""#
-        ).unwrap();
-    }
-
     let mut headers = Vec::new();
     let mut token_storage = Vec::new();
     let mut policy_bypass_flags = Vec::new();
@@ -196,33 +195,32 @@ pub fn format_interceptor_analysis(result: &InterceptorAnalysisResult) -> String
     output.push_str("// ╔══════════════════════════════════════════════════════════╗\n");
     output.push_str("// ║       HTTP INTERCEPTOR CHAIN ANALYSIS                   ║\n");
     output.push_str("// ╠══════════════════════════════════════════════════════════╣\n");
-    output.push_str(&format!("// ║ Headers injected: {}\n", result.headers.len()));
-    output.push_str(&format!(
-        "// ║ Token storage locations: {}\n",
-        result.token_storage.len()
-    ));
-    output.push_str(&format!(
+    let _ = writeln!(output, "// ║ Headers injected: {}", result.headers.len());
+    let _ = writeln!(output, "// ║ Token storage locations: {}\n", result.token_storage.len());
+    let _ = writeln!(
+        output,
         "// ║ Web Crypto auth: {}\n",
         if result.has_crypto_auth { "YES" } else { "NO" }
-    ));
-    output.push_str(&format!(
+    );
+    let _ = writeln!(
+        output,
         "// ║ Risk scoring headers: {}\n",
         if result.has_risk_headers { "YES" } else { "NO" }
-    ));
+    );
 
     if !result.policy_bypass_flags.is_empty() {
         output.push_str("// ║\n// ║ ⚠️  POLICY BYPASS FLAGS:\n");
         for flag in &result.policy_bypass_flags {
-            output.push_str(&format!("// ║   {flag}\n"));
+            let _ = writeln!(output, "// ║   {flag}");
         }
     }
 
     if !result.headers.is_empty() {
         output.push_str("// ║\n// ║ INJECTED HEADERS:\n");
         for h in &result.headers {
-            output.push_str(&format!("// ║   {} ← {}\n", h.header, h.value_source));
+            let _ = writeln!(output, "// ║   {} ← {}", h.header, h.value_source);
             if let Some(ref note) = h.security_note {
-                output.push_str(&format!("// ║     ⚠️  {note}\n"));
+                let _ = writeln!(output, "// ║     ⚠️  {note}");
             }
         }
     }

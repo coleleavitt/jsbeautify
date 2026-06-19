@@ -57,8 +57,10 @@ pub mod fw_zustand;
 pub use match_kind::{AnalyzerMatch, FileType, PositionRange};
 
 /// Deduplicate `matches` so each unique `(match_kind, match_value, file_path,
-/// metadata)` tuple appears only once. Mirrors jxscout's
-/// `finding_per_unique_value` setting (REPORT_03 §"Match → Finding promotion").
+/// metadata)` tuple appears only once.
+///
+/// Mirrors jxscout's `finding_per_unique_value` setting (`REPORT_03` §"Match →
+/// Finding promotion").
 ///
 /// The first occurrence wins — its position/severity is preserved. Order is
 /// otherwise stable.
@@ -79,27 +81,33 @@ pub fn dedup_unique_values(matches: Vec<AnalyzerMatch>) -> Vec<AnalyzerMatch> {
 /// Default: every analyzer enabled.
 #[derive(Debug, Clone)]
 pub struct AnalyzerConfig {
-    pub secrets: bool,
-    pub sensitive_props: bool,
-    pub paths_hostnames: bool,
-    pub graphql: bool,
-    pub sinks: bool,
-    pub npm_packages: bool,
-    pub comments: bool,
-    pub framework_recon: bool,
+    pub secrets: AnalyzerToggle,
+    pub sensitive_props: AnalyzerToggle,
+    pub paths_hostnames: AnalyzerToggle,
+    pub graphql: AnalyzerToggle,
+    pub sinks: AnalyzerToggle,
+    pub npm_packages: AnalyzerToggle,
+    pub comments: AnalyzerToggle,
+    pub framework_recon: AnalyzerToggle,
     /// API-call + storage (`localStorage`/`sessionStorage`/…) extraction.
-    pub api_calls: bool,
+    pub api_calls: AnalyzerToggle,
     /// Entropy-based high-entropy-secret detection (complements regex bank).
-    pub entropy_secrets: bool,
+    pub entropy_secrets: AnalyzerToggle,
     /// Taint-lite source→sink analysis (DOM-XSS / open-redirect).
-    pub taint: bool,
+    pub taint: AnalyzerToggle,
     /// IDOR / broken-object-reference endpoint candidates.
-    pub idor: bool,
+    pub idor: AnalyzerToggle,
     /// Client-side prototype-pollution candidate detection.
-    pub proto_pollution: bool,
+    pub proto_pollution: AnalyzerToggle,
     /// Resolve dynamic (template/concat) endpoints into concrete paths.
-    pub resolve_endpoints: bool,
+    pub resolve_endpoints: AnalyzerToggle,
 }
+
+/// Public analyzer on/off field type.
+///
+/// This remains a `bool` alias so existing struct literals continue to compile
+/// while the config type can distinguish toggle fields from unrelated booleans.
+pub type AnalyzerToggle = bool;
 
 impl Default for AnalyzerConfig {
     fn default() -> Self {
@@ -124,7 +132,8 @@ impl Default for AnalyzerConfig {
 
 impl AnalyzerConfig {
     /// Only enable the secret/credential scanner (regex + entropy).
-    pub fn secrets_only() -> Self {
+    #[must_use]
+    pub const fn secrets_only() -> Self {
         Self {
             secrets: true,
             sensitive_props: false,
@@ -144,7 +153,8 @@ impl AnalyzerConfig {
     }
 
     /// Only enable the sink/XSS detectors.
-    pub fn sinks_only() -> Self {
+    #[must_use]
+    pub const fn sinks_only() -> Self {
         Self {
             secrets: false,
             sensitive_props: false,
@@ -277,19 +287,17 @@ mod tests {
             kinds
                 .iter()
                 .any(|k| k.contains("google") || k.contains("api_key") || k.contains("secret")),
-            "expected secret match; got kinds: {:?}",
-            kinds
+            "expected secret match; got kinds: {kinds:?}"
         );
         // Should fire dangerouslySetInnerHTML.
         assert!(
             kinds.contains("dangerously_set_inner_html"),
-            "expected sink match; got: {:?}",
-            kinds
+            "expected sink match; got: {kinds:?}"
         );
         // Should fire graphql.
-        assert!(kinds.contains("graphql"), "expected graphql match; got: {:?}", kinds);
+        assert!(kinds.contains("graphql"), "expected graphql match; got: {kinds:?}");
         // Should fire npm (axios, react).
-        assert!(kinds.contains("npm_package"), "expected npm match; got: {:?}", kinds);
+        assert!(kinds.contains("npm_package"), "expected npm match; got: {kinds:?}");
     }
 
     #[test]

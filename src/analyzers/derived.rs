@@ -13,9 +13,9 @@ use regex::Regex;
 /// Configuration for a single derived analyzer.
 #[derive(Debug, Clone)]
 pub struct DerivedAnalyzer {
-    /// The match kind to filter from (e.g. "path", "hostname", "npm_package").
+    /// The match kind to filter from (e.g. "path", "hostname", "`npm_package`").
     pub original_match_kind: String,
-    /// The new match kind to emit (e.g. "admin_path", "internal_hostname").
+    /// The new match kind to emit (e.g. "`admin_path`", "`internal_hostname`").
     pub new_match_kind: String,
     /// Include patterns — at least one must match the value. Empty = include all.
     pub include_patterns: Vec<Regex>,
@@ -25,6 +25,10 @@ pub struct DerivedAnalyzer {
 
 impl DerivedAnalyzer {
     /// Create a new derived analyzer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`regex::Error`] if any include or exclude pattern is invalid.
     pub fn new(
         original_match_kind: impl Into<String>,
         new_match_kind: impl Into<String>,
@@ -42,17 +46,18 @@ impl DerivedAnalyzer {
     }
 
     /// Apply this derived analyzer to a set of matches.
-    /// Returns only the matches that pass the filter, with the new match_kind.
+    /// Returns only the matches that pass the filter, with the new `match_kind`.
+    #[must_use]
     pub fn apply(&self, matches: &[AnalyzerMatch]) -> Vec<AnalyzerMatch> {
         matches
             .iter()
             .filter(|m| m.match_kind == self.original_match_kind)
             .filter(|m| {
                 // Include filter: if patterns exist, at least one must match
-                if !self.include_patterns.is_empty() {
-                    if !self.include_patterns.iter().any(|re| re.is_match(&m.match_value)) {
-                        return false;
-                    }
+                if !self.include_patterns.is_empty()
+                    && !self.include_patterns.iter().any(|re| re.is_match(&m.match_value))
+                {
+                    return false;
                 }
                 // Exclude filter: if any matches, drop
                 if self.exclude_patterns.iter().any(|re| re.is_match(&m.match_value)) {
@@ -63,7 +68,7 @@ impl DerivedAnalyzer {
             .map(|m| AnalyzerMatch {
                 match_kind: self.new_match_kind.clone(),
                 match_value: m.match_value.clone(),
-                position: m.position.clone(),
+                position: m.position,
                 file_type: m.file_type,
                 file_path: m.file_path.clone(),
                 severity: severity_for_kind(&self.new_match_kind),
@@ -75,6 +80,7 @@ impl DerivedAnalyzer {
 }
 
 /// Apply multiple derived analyzers in sequence to a match set.
+#[must_use]
 pub fn apply_all(derived: &[DerivedAnalyzer], matches: &[AnalyzerMatch]) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
     for d in derived {

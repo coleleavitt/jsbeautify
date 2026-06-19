@@ -1,4 +1,4 @@
-//! JSON.parse() evaluation for string decoders
+//! `JSON.parse()` evaluation for string decoders
 //!
 //! Detects `JSON.parse()` calls with string literals.
 //! Currently a detection pass that counts occurrences.
@@ -14,6 +14,7 @@
 use oxc_ast::ast::{CallExpression, Expression};
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -23,17 +24,7 @@ pub struct JsonParseEvaluator {
 }
 
 impl JsonParseEvaluator {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { evaluated_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn evaluated_count(&self) -> usize {
-        self.evaluated_count
-    }
-
-    /// Check if this is a JSON.parse() call with a string literal
+    /// Check if this is a `JSON.parse()` call with a string literal
     fn is_json_parse_with_string(call: &CallExpression<'_>) -> bool {
         // Check if callee is JSON.parse
         let is_json_parse = if let Expression::StaticMemberExpression(member) = &call.callee {
@@ -60,11 +51,7 @@ impl JsonParseEvaluator {
     }
 }
 
-impl Default for JsonParseEvaluator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(JsonParseEvaluator, evaluated_count, evaluated_count);
 
 impl<'a> Traverse<'a, DeobfuscateState> for JsonParseEvaluator {
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, _ctx: &mut Ctx<'a>) {
@@ -110,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_detect_json_parse_array() {
-        let code = r#"JSON.parse('[1,2,3]')"#;
+        let code = r"JSON.parse('[1,2,3]')";
         let count = run_detect(code);
         assert_eq!(count, 1, "Should detect JSON.parse with array, got: {count}");
     }
@@ -124,28 +111,28 @@ mod tests {
 
     #[test]
     fn test_detect_json_parse_number() {
-        let code = r#"JSON.parse('42')"#;
+        let code = r"JSON.parse('42')";
         let count = run_detect(code);
         assert_eq!(count, 1, "Should detect JSON.parse with number, got: {count}");
     }
 
     #[test]
     fn test_detect_json_parse_boolean() {
-        let code = r#"JSON.parse('true')"#;
+        let code = r"JSON.parse('true')";
         let count = run_detect(code);
         assert_eq!(count, 1, "Should detect JSON.parse with boolean, got: {count}");
     }
 
     #[test]
     fn test_ignore_json_parse_variable() {
-        let code = r#"JSON.parse(variable)"#;
+        let code = r"JSON.parse(variable)";
         let count = run_detect(code);
         assert_eq!(count, 0, "Should NOT detect JSON.parse with variable, got: {count}");
     }
 
     #[test]
     fn test_ignore_json_parse_no_args() {
-        let code = r#"JSON.parse()"#;
+        let code = r"JSON.parse()";
         let count = run_detect(code);
         assert_eq!(count, 0, "Should NOT detect JSON.parse with no args, got: {count}");
     }

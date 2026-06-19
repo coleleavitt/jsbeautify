@@ -8,7 +8,7 @@
 //!
 //! ONLY fires when:
 //! 1. The first argument is the literal `null` or the identifier `undefined`.
-//! 2. For `apply`, the 2nd argument is a literal ArrayExpression with no spread elements.
+//! 2. For `apply`, the 2nd argument is a literal `ArrayExpression` with no spread elements.
 //!
 use oxc_allocator::{CloneIn, Vec as OxcVec};
 use oxc_ast::ast::{Argument, ArrayExpressionElement, CallExpression, Expression};
@@ -17,6 +17,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -25,23 +26,7 @@ pub struct ApplyCallSimplifier {
     rewrites: usize,
 }
 
-impl ApplyCallSimplifier {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { rewrites: 0 }
-    }
-
-    #[must_use]
-    pub const fn rewrites(&self) -> usize {
-        self.rewrites
-    }
-}
-
-impl Default for ApplyCallSimplifier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(ApplyCallSimplifier, rewrites, rewrites);
 
 fn is_null_or_undefined(expr: &Expression<'_>) -> bool {
     match expr {

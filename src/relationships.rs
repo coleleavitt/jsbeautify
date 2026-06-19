@@ -2,7 +2,7 @@
 //!
 //! Pure-data port of jxscout's `project-db/js_loader_relationships.rs`,
 //! `iframe_loader_relationships.rs`, `html_files_inline_js.rs`, and
-//! `discovered_lazy_loaded_js_files.rs` (REPORT_06 §7 "Relationship Graph
+//! `discovered_lazy_loaded_js_files.rs` (`REPORT_06` §7 "Relationship Graph
 //! System"). No SQLite — this is the in-memory model usable for single-run
 //! analysis or JSON export.
 //!
@@ -26,22 +26,21 @@
 //! No HTTP fetching — this is offline analysis only. To resolve relative
 //! URLs against a base, callers should pass the page URL as `page_url`.
 
-use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
-lazy_static! {
-    static ref SCRIPT_TAG_RE: Regex =
-        Regex::new(r#"(?si)<script(?P<attrs>(?:\s[^>]*)?)>(?P<body>.*?)</script>"#).unwrap();
-    static ref IFRAME_TAG_RE: Regex = Regex::new(r#"(?si)<iframe(?P<attrs>\s[^>]*)?>"#).unwrap();
-    static ref LINK_TAG_RE: Regex = Regex::new(r#"(?si)<link(?P<attrs>\s[^>]*)/?>"#).unwrap();
-    static ref ATTR_SRC_RE: Regex = Regex::new(r#"(?i)\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref ATTR_HREF_RE: Regex = Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref ATTR_TYPE_RE: Regex = Regex::new(r#"(?i)\btype\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref ATTR_REL_RE: Regex = Regex::new(r#"(?i)\brel\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref ATTR_AS_RE: Regex = Regex::new(r#"(?i)\bas\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref SOURCE_MAP_URL_RE: Regex = Regex::new(r#"(?im)//[#@]\s*sourceMappingURL\s*=\s*(\S+)"#).unwrap();
-}
+static SCRIPT_TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?si)<script(?P<attrs>(?:\s[^>]*)?)>(?P<body>.*?)</script>").unwrap());
+static IFRAME_TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?si)<iframe(?P<attrs>\s[^>]*)?>").unwrap());
+static LINK_TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?si)<link(?P<attrs>\s[^>]*)/?>").unwrap());
+static ATTR_SRC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bsrc\s*=\s*["']([^"']+)["']"#).unwrap());
+static ATTR_HREF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap());
+static ATTR_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\btype\s*=\s*["']([^"']+)["']"#).unwrap());
+static ATTR_REL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\brel\s*=\s*["']([^"']+)["']"#).unwrap());
+static ATTR_AS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bas\s*=\s*["']([^"']+)["']"#).unwrap());
+static SOURCE_MAP_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?im)//[#@]\s*sourceMappingURL\s*=\s*(\S+)").unwrap());
 
 /// Kind of edge in the asset graph. Matches jxscout's relationship-table names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -98,24 +97,29 @@ impl AssetGraph {
         for cap in SCRIPT_TAG_RE.captures_iter(html) {
             let attrs = cap.name("attrs").map_or("", |m| m.as_str());
             let body = cap.name("body").map_or("", |m| m.as_str());
-            let line = byte_offset_to_line(html, cap.get(0).unwrap().start());
+            let Some(script_match) = cap.get(0) else {
+                continue;
+            };
+            let line = byte_offset_to_line(html, script_match.start());
 
             let type_attr = ATTR_TYPE_RE
                 .captures(attrs)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_ascii_lowercase());
             // Skip JSON/template scripts, but allow type="module" and type missing.
-            let is_js = match type_attr.as_deref() {
-                None | Some("") | Some("text/javascript") | Some("application/javascript") | Some("module") => true,
-                _ => false,
-            };
+            let is_js = matches!(
+                type_attr.as_deref(),
+                None | Some("" | "text/javascript" | "application/javascript" | "module")
+            );
             if !is_js {
                 continue;
             }
 
             if let Some(src_cap) = ATTR_SRC_RE.captures(attrs) {
-                let raw_src = src_cap.get(1).unwrap().as_str();
-                let target = resolve(&base, raw_src);
+                let Some(raw_src) = src_cap.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
+                let target = resolve(base.as_ref(), raw_src);
                 relations.push(AssetRelation {
                     kind: RelationKind::JsLoader,
                     target,
@@ -132,10 +136,12 @@ impl AssetGraph {
 
                 // Source-map references inside inline blocks.
                 for sm in SOURCE_MAP_URL_RE.captures_iter(body) {
-                    let url = sm.get(1).unwrap().as_str().trim_matches(|c| c == '"' || c == '\'');
+                    let Some(url) = sm.get(1).map(|m| m.as_str().trim_matches(|c| c == '"' || c == '\'')) else {
+                        continue;
+                    };
                     relations.push(AssetRelation {
                         kind: RelationKind::SourceMap,
-                        target: resolve(&base, url),
+                        target: resolve(base.as_ref(), url),
                         line,
                         inline_content: String::new(),
                     });
@@ -146,12 +152,17 @@ impl AssetGraph {
         // <iframe src=...>
         for cap in IFRAME_TAG_RE.captures_iter(html) {
             let attrs = cap.name("attrs").map_or("", |m| m.as_str());
-            let line = byte_offset_to_line(html, cap.get(0).unwrap().start());
+            let Some(iframe_match) = cap.get(0) else {
+                continue;
+            };
+            let line = byte_offset_to_line(html, iframe_match.start());
             if let Some(src_cap) = ATTR_SRC_RE.captures(attrs) {
-                let raw = src_cap.get(1).unwrap().as_str();
+                let Some(raw) = src_cap.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
                 relations.push(AssetRelation {
                     kind: RelationKind::IframeLoader,
-                    target: resolve(&base, raw),
+                    target: resolve(base.as_ref(), raw),
                     line,
                     inline_content: String::new(),
                 });
@@ -161,7 +172,10 @@ impl AssetGraph {
         // <link rel="preload" as="script" href=...> and <link rel="modulepreload" href=...>
         for cap in LINK_TAG_RE.captures_iter(html) {
             let attrs = cap.name("attrs").map_or("", |m| m.as_str());
-            let line = byte_offset_to_line(html, cap.get(0).unwrap().start());
+            let Some(link_match) = cap.get(0) else {
+                continue;
+            };
+            let line = byte_offset_to_line(html, link_match.start());
 
             let rel = ATTR_REL_RE
                 .captures(attrs)
@@ -172,19 +186,20 @@ impl AssetGraph {
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_ascii_lowercase());
 
-            let is_lazy_chunk = match rel.as_deref() {
-                Some("modulepreload") => true,
-                Some("preload") if as_attr.as_deref() == Some("script") => true,
-                _ => false,
-            };
+            let is_lazy_chunk = matches!(
+                (rel.as_deref(), as_attr.as_deref()),
+                (Some("modulepreload"), _) | (Some("preload"), Some("script"))
+            );
             if !is_lazy_chunk {
                 continue;
             }
             if let Some(href_cap) = ATTR_HREF_RE.captures(attrs) {
-                let raw = href_cap.get(1).unwrap().as_str();
+                let Some(raw) = href_cap.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
                 relations.push(AssetRelation {
                     kind: RelationKind::LazyChunk,
-                    target: resolve(&base, raw),
+                    target: resolve(base.as_ref(), raw),
                     line,
                     inline_content: String::new(),
                 });
@@ -227,14 +242,14 @@ impl AssetGraph {
     }
 }
 
-fn resolve(base: &Option<url::Url>, raw: &str) -> String {
-    match base {
-        Some(b) => match b.join(raw) {
-            Ok(joined) => joined.to_string(),
-            Err(_) => raw.to_string(),
+fn resolve(base: Option<&url::Url>, raw: &str) -> String {
+    base.map_or_else(
+        || raw.to_string(),
+        |b| {
+            b.join(raw)
+                .map_or_else(|_| raw.to_string(), |joined| joined.to_string())
         },
-        None => raw.to_string(),
-    }
+    )
 }
 
 fn byte_offset_to_line(s: &str, offset: usize) -> u32 {

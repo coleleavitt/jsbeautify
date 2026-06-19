@@ -6,6 +6,7 @@ use oxc_syntax::number::NumberBase;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -15,16 +16,6 @@ pub struct StrengthReducer {
 }
 
 impl StrengthReducer {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { changed: false }
-    }
-
-    #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
-    }
-
     fn try_reduce_multiply<'a>(&mut self, binary: &BinaryExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
         if binary.operator != BinaryOperator::Multiplication {
             return None;
@@ -138,11 +129,7 @@ impl StrengthReducer {
     }
 }
 
-impl Default for StrengthReducer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+flag_pass!(StrengthReducer, changed, has_changed);
 
 impl<'a> Traverse<'a, DeobfuscateState> for StrengthReducer {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

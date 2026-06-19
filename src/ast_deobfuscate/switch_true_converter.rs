@@ -9,6 +9,7 @@
 use oxc_ast::ast::{Expression, SwitchStatement};
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -18,26 +19,12 @@ pub struct SwitchTrueConverter {
 }
 
 impl SwitchTrueConverter {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { converted_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn converted_count(&self) -> usize {
-        self.converted_count
-    }
-
     fn is_switch_true(switch_stmt: &SwitchStatement<'_>) -> bool {
         matches!(&switch_stmt.discriminant, Expression::BooleanLiteral(b) if b.value)
     }
 }
 
-impl Default for SwitchTrueConverter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(SwitchTrueConverter, converted_count, converted_count);
 
 impl<'a> Traverse<'a, DeobfuscateState> for SwitchTrueConverter {
     fn enter_switch_statement(&mut self, stmt: &mut SwitchStatement<'a>, _ctx: &mut Ctx<'a>) {

@@ -14,6 +14,7 @@
 use oxc_ast::ast::{AssignmentTarget, Expression};
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -22,23 +23,7 @@ pub struct CommaReturnSimplifier {
     simplified: usize,
 }
 
-impl CommaReturnSimplifier {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { simplified: 0 }
-    }
-
-    #[must_use]
-    pub const fn simplified(&self) -> usize {
-        self.simplified
-    }
-}
-
-impl Default for CommaReturnSimplifier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(CommaReturnSimplifier, simplified, simplified);
 
 impl<'a> Traverse<'a, DeobfuscateState> for CommaReturnSimplifier {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, _ctx: &mut Ctx<'a>) {

@@ -1,6 +1,6 @@
 //! Persistent event bus backed by SQLite.
 //!
-//! Implements jxscout's job-queue pattern (REPORT_06 §10):
+//! Implements jxscout's job-queue pattern (`REPORT_06` §10):
 //!   1. Producer publishes an `events` row.
 //!   2. For each registered subscriber on the topic, a `subscriber_jobs` row
 //!      is inserted in `pending` state.
@@ -188,12 +188,12 @@ pub fn heartbeat(db: &ProjectDb, job_id: i64) -> Result<()> {
 /// # Errors
 pub fn requeue_stale(db: &ProjectDb, staleness_seconds: i64) -> Result<usize> {
     db.with_conn(|c| {
-        Ok(c.execute(
+        c.execute(
             "UPDATE subscriber_jobs SET status = 'pending', locked_at = NULL
              WHERE status = 'running' AND
                    (heartbeat_at IS NULL OR heartbeat_at < datetime('now', ?1))",
             params![format!("-{staleness_seconds} seconds")],
-        )?)
+        )
     })
 }
 

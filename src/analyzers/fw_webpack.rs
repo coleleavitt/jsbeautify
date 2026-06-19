@@ -17,34 +17,33 @@
 
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// `(self|window|globalThis|this).webpackChunk<uniqueName> =`. Group 1 = the
-    /// build's unique chunk-loading global name (library/output.uniqueName).
-    static ref JSONP_RE: Regex =
-        Regex::new(r#"(?:self|window|globalThis|this)\.(webpackChunk[A-Za-z0-9_$]*)"#).unwrap();
+/// `(self|window|globalThis|this).webpackChunk<uniqueName> =`. Group 1 = the
+/// build's unique chunk-loading global name (library/output.uniqueName).
+static JSONP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:self|window|globalThis|this)\.(webpackChunk[A-Za-z0-9_$]*)").unwrap());
 
-    /// The webpack runtime symbols (literal even in mangled bundles).
-    static ref RUNTIME_RE: Regex =
-        Regex::new(r#"(__webpack_require__|__webpack_modules__|__webpack_exports__)"#).unwrap();
+/// The webpack runtime symbols (literal even in mangled bundles).
+static RUNTIME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(__webpack_require__|__webpack_modules__|__webpack_exports__)").unwrap());
 
-    /// A chunk-filename function `X.u = ...` / `X.miniCssF = ...` / `X.k = ...`.
-    /// Captures the function tail up to the statement end so the embedded
-    /// `{id:"name"}` map(s) can be mined from it. `.u` => JS chunk URL,
-    /// `.miniCssF` => CSS chunk URL, `.k` => hot-update filename.
-    static ref CHUNK_FN_RE: Regex =
-        Regex::new(r#"\.(u|miniCssF|k)\s*=\s*(?:function\s*\([^)]*\)|[A-Za-z0-9_$]+\s*=>|\([^)]*\)\s*=>)([^;\n]{0,2000})"#)
-            .unwrap();
+/// A chunk-filename function `X.u = ...` / `X.miniCssF = ...` / `X.k = ...`.
+/// Captures the function tail up to the statement end so the embedded
+/// `{id:"name"}` map(s) can be mined from it. `.u` => JS chunk URL,
+/// `.miniCssF` => CSS chunk URL, `.k` => hot-update filename.
+static CHUNK_FN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.(u|miniCssF|k)\s*=\s*(?:function\s*\([^)]*\)|[A-Za-z0-9_$]+\s*=>|\([^)]*\)\s*=>)([^;\n]{0,2000})")
+        .unwrap()
+});
 
-    /// A `chunkId:"chunkName"` pair inside a chunk map. Keys may be bare numbers
-    /// or quoted; values are quoted chunk names. Either quote style is accepted
-    /// (minifiers configured for single quotes still emit valid maps). Group 1 =
-    /// numeric id, group 2 = quoted id, group 3 = name.
-    static ref CHUNK_PAIR_RE: Regex =
-        Regex::new(r#"(?:(\d+)|["']([^"']+)["'])\s*:\s*["']([^"']+)["']"#).unwrap();
-}
+/// A `chunkId:"chunkName"` pair inside a chunk map. Keys may be bare numbers
+/// or quoted; values are quoted chunk names. Either quote style is accepted
+/// (minifiers configured for single quotes still emit valid maps). Group 1 =
+/// numeric id, group 2 = quoted id, group 3 = name.
+static CHUNK_PAIR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:(\d+)|["']([^"']+)["'])\s*:\s*["']([^"']+)["']"#).unwrap());
 
 /// A chunk-name value is a real name (vs. a content hash) if it carries a
 /// path-ish / wordy character. Pure `[0-9a-f]+` hashes are skipped.
@@ -53,6 +52,10 @@ fn looks_like_chunk_name(v: &str) -> bool {
 }
 
 /// Scan source for webpack signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
@@ -138,7 +141,7 @@ mod tests {
     #[test]
     fn detects_jsonp_global_and_runtime() {
         let src =
-            r#"(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[1],{2:function(e,t,__webpack_require__){}}]);"#;
+            r"(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[1],{2:function(e,t,__webpack_require__){}}]);";
         let m = analyze(src, Some("t.js"), FileType::Js);
         let g = m
             .iter()

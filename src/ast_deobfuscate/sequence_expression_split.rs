@@ -24,6 +24,7 @@ use oxc_ast::ast::{BlockStatement, Expression, FunctionBody, Program, Statement}
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -32,23 +33,7 @@ pub struct SequenceExpressionSplitter {
     split_count: usize,
 }
 
-impl SequenceExpressionSplitter {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { split_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn split_count(&self) -> usize {
-        self.split_count
-    }
-}
-
-impl Default for SequenceExpressionSplitter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(SequenceExpressionSplitter, split_count, split_count);
 
 impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {

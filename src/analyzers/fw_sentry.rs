@@ -1,66 +1,48 @@
 //! Sentry browser SDK recon analyzer. Fingerprints the @sentry/* runtime,
 //! transport DSNs, and build-time markers left in production bundles.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! All literals confirmed against the cloned upstream source at
-//! /home/cole/RustProjects/forks/frameworks/sentry-js:
-//!   - DSN host/org regex .................. packages/core/src/utils/dsn.ts
-//!                                           (DSN_REGEX, ORG_ID_REGEX `^o(\d+)\.`)
-//!   - ingest auth querystring ............. packages/core/src/api.ts
-//!                                           (`sentry_version`, `sentry_key`),
-//!                                           packages/core/src/utils/isSentryRequestUrl.ts
-//!                                           (`/(^|&|\?)sentry_key=/`),
-//!                                           packages/browser/src/diagnose-sdk.ts
-//!                                           (`?sentry_version=7&sentry_key=...`)
-//!   - __SENTRY__ carrier .................. packages/core/src/carrier.ts
-//!   - sentry.javascript.<pkg> sdk name .... packages/core/src/utils/sdkMetadata.ts:21
-//!                                           (`sdk.name = `sentry.javascript.${name}``),
-//!                                           packages/browser/src/profiling/utils.ts:237
-//!   - integration .name literals .......... packages/browser/src/integrations/breadcrumbs.ts:60,
-//!                                           globalhandlers.ts:24, httpclient.ts:21,
-//!                                           Replay (packages/core/src/logs/internal.ts:120)
-//!   - _sentryDebugIds / _debugIds ......... packages/core/src/utils/debug-ids.ts:30-31,
-//!                                           packages/core/src/utils/worldwide.ts:43-49
-//!   - SENTRY_RELEASE/DSN/ENVIRONMENT ...... packages/core/src/utils/worldwide.ts:32-34
-//!   - Spotlight localhost:8969 ............ packages/browser/src/integrations/spotlight.ts:20
-//!                                           (`'http://localhost:8969/stream'`)
+//! `/home/cole/RustProjects/forks/frameworks/sentry-js`:
+//!
+//! - DSN host/org regex -> packages/core/src/utils/dsn.ts
+//! - ingest auth querystring -> packages/core/src/api.ts
+//! - `__SENTRY__` carrier -> packages/core/src/carrier.ts
+//! - `sentry.javascript.<pkg>` SDK name -> packages/core/src/utils/sdkMetadata.ts:21
+//! - integration `.name` literals -> packages/browser/src/integrations
+//! - `_sentryDebugIds` / `_debugIds` -> packages/core/src/utils/debug-ids.ts:30-31
+//! - `SENTRY_RELEASE` / `SENTRY_DSN` / `SENTRY_ENVIRONMENT` -> packages/core/src/utils/worldwide.ts
+//! - Spotlight `localhost:8969` -> packages/browser/src/integrations/spotlight.ts:20
 
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
+
+static DSN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https://([0-9a-fA-F]{16,64})@(o\d+\.ingest(?:\.[a-z]{2,4})?\.sentry\.io)/(\d+)").unwrap()
+});
+static INGEST_AUTH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"sentry_version=7&sentry_key=([0-9a-fA-F]{16,64})").unwrap());
+static SDK_NAME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sentry\.javascript\.([a-z][a-z0-9-]*)").unwrap());
+static INTEGRATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"name:["'](Breadcrumbs|GlobalHandlers|Replay|HttpClient)["']"#).unwrap());
+static ENV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"SENTRY_(?:RELEASE|DSN|ENVIRONMENT)\b").unwrap());
+
+const SENTRY_CARRIER: &str = "__SENTRY__";
+const DEBUG_ID_MARKERS: [&str; 2] = ["_sentryDebugIds", "_debugIds"];
+const SPOTLIGHT_HOST: &str = "localhost:8969";
+const SPOTLIGHT_STREAM: &str = "localhost:8969/stream";
 
 /// Scan source for Sentry browser SDK signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
-    lazy_static::lazy_static! {
-        // Full DSN: https://<publicKey>@o<orgId>.ingest(.<region>)?.sentry.io/<projectId>
-        // Anchored on the org host + .sentry.io, never a bare URL.
-        static ref DSN_RE: Regex = Regex::new(
-            r#"https://([0-9a-fA-F]{16,64})@(o\d+\.ingest(?:\.[a-z]{2,4})?\.sentry\.io)/(\d+)"#
-        ).unwrap();
-        // Ingest envelope endpoint auth querystring: ...?sentry_version=7&sentry_key=<key>
-        static ref INGEST_AUTH_RE: Regex = Regex::new(
-            r#"sentry_version=7&sentry_key=([0-9a-fA-F]{16,64})"#
-        ).unwrap();
-        // Global carrier object that every Sentry SDK pins to the host global.
-        static ref CARRIER_RE: Regex = Regex::new(r#"__SENTRY__"#).unwrap();
-        // SDK name template: sentry.javascript.<pkg> (browser, react, vue, ...).
-        static ref SDK_NAME_RE: Regex = Regex::new(
-            r#"sentry\.javascript\.([a-z][a-z0-9-]*)"#
-        ).unwrap();
-        // Integration `name` literal for high-signal default integrations.
-        static ref INTEGRATION_RE: Regex = Regex::new(
-            r#"name:["'](Breadcrumbs|GlobalHandlers|Replay|HttpClient)["']"#
-        ).unwrap();
-        // Debug-id maps injected by the bundler plugin (source map correlation).
-        static ref DEBUG_ID_RE: Regex = Regex::new(r#"_sentryDebugIds|_debugIds"#).unwrap();
-        // Build-time environment markers.
-        static ref ENV_RE: Regex = Regex::new(r#"SENTRY_(?:RELEASE|DSN|ENVIRONMENT)\b"#).unwrap();
-        // Spotlight (dev sidecar) default endpoint.
-        static ref SPOTLIGHT_RE: Regex = Regex::new(r#"localhost:8969(?:/stream)?"#).unwrap();
-    }
 
     // sentry_dsn — full DSN (Medium): leaks the project's public ingest key + org/project ids.
     for caps in DSN_RE.captures_iter(source) {
@@ -110,13 +92,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // sentry_global — the __SENTRY__ carrier.
-    for caps in CARRIER_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
+    for (start, value) in source.match_indices(SENTRY_CARRIER) {
         out.push(
             AnalyzerMatch::new(
                 "sentry_global",
-                whole.as_str(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                value,
+                PositionRange::from_byte_range(source, start, start + value.len()),
                 file_type,
                 file_path.map(str::to_string),
             )
@@ -161,19 +142,20 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // sentry_debug_id — debug-id map globals injected by the bundler plugin.
-    for caps in DEBUG_ID_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
-        out.push(
-            AnalyzerMatch::new(
-                "sentry_debug_id",
-                whole.as_str(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
-                file_type,
-                file_path.map(str::to_string),
-            )
-            .with_provenance(Provenance::Other)
-            .with_severity(Severity::Info),
-        );
+    for marker in DEBUG_ID_MARKERS {
+        for (start, value) in source.match_indices(marker) {
+            out.push(
+                AnalyzerMatch::new(
+                    "sentry_debug_id",
+                    value,
+                    PositionRange::from_byte_range(source, start, start + value.len()),
+                    file_type,
+                    file_path.map(str::to_string),
+                )
+                .with_provenance(Provenance::Other)
+                .with_severity(Severity::Info),
+            );
+        }
     }
 
     // sentry_env — build-time SENTRY_* environment markers.
@@ -193,13 +175,17 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // sentry_spotlight — local Spotlight sidecar endpoint left in a shipped bundle.
-    for caps in SPOTLIGHT_RE.captures_iter(source) {
-        let whole = caps.get(0).unwrap();
+    for (start, _) in source.match_indices(SPOTLIGHT_HOST) {
+        let value = if source[start..].starts_with(SPOTLIGHT_STREAM) {
+            SPOTLIGHT_STREAM
+        } else {
+            SPOTLIGHT_HOST
+        };
         out.push(
             AnalyzerMatch::new(
                 "sentry_spotlight",
-                whole.as_str(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                value,
+                PositionRange::from_byte_range(source, start, start + value.len()),
                 file_type,
                 file_path.map(str::to_string),
             )
@@ -237,8 +223,7 @@ mod tests {
         assert!(dsns.iter().any(|x| {
             x.metadata
                 .as_ref()
-                .map(|md| md["host"].as_str() == Some("o447951.ingest.us.sentry.io"))
-                .unwrap_or(false)
+                .is_some_and(|md| md["host"].as_str() == Some("o447951.ingest.us.sentry.io"))
         }));
     }
 

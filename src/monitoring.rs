@@ -148,7 +148,7 @@ impl MonitoringService {
             "embeds": [{
                 "title": title,
                 "description": format!("URL: {}\nNew hash: {}", ev.url, ev.new_hash),
-                "color": 0x38BDF8,
+                "color": 0x38_BD_F8,
             }]
         });
         let _ = self

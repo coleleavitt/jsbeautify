@@ -1,81 +1,63 @@
-//! React recon analyzer. Detects React 19 / React Compiler runtime fingerprints
-//! that survive minification in production bundles (the memo-cache sentinel +
-//! `_c(N)` cache prelude, the `$$typeof` element-symbol factory tags, and the
-//! versioned `__*_INTERNALS*` / `__COMPILER_RUNTIME` export names).
+//! React recon analyzer.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Detects React 19 / React Compiler runtime fingerprints that survive
+//! minification in production bundles: memo-cache sentinels, `_c(N)` cache
+//! preludes, `$$typeof` element-symbol factory tags, and runtime export names.
+//!
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Signatures confirmed against the cloned React source (react @ 19.3.0,
 //! `ReactVersions.js` L?: `const ReactVersion = '19.3.0';`):
-//!   - memo-cache sentinel + `const $ = _c(N)` prelude + `$[i] === Symbol.for(
-//!     "react.memo_cache_sentinel")` guard chain:
-//!       compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/
-//!         compiler/allow-global-mutation-in-effect-indirect-usecallback.expect.md
-//!         (`import { c as _c } from "react/compiler-runtime";` / `const $ = _c(6);`
-//!          / `if ($[0] === Symbol.for("react.memo_cache_sentinel")) {`)
-//!     The cache fn is `react/compiler-runtime`'s `c`, aliased `_c`:
-//!       packages/react/src/ReactCompilerRuntime.js
-//!         (`export {useMemoCache as c} from './ReactHooks';`)
-//!   - `$$typeof` element tagging via the element symbols:
-//!       packages/react/src/jsx/ReactJSXElement.js
-//!         (`REACT_ELEMENT_TYPE` == `Symbol.for('react.transitional.element')`,
-//!          `element = { $$typeof: REACT_ELEMENT_TYPE, type, key, props, ... }`)
-//!       packages/react/src/ReactForwardRef.js  (`$$typeof: REACT_FORWARD_REF_TYPE`)
-//!       packages/react/src/ReactMemo.js         (`$$typeof: REACT_MEMO_TYPE`)
-//!       packages/react/src/ReactLazy.js         (`$$typeof: REACT_LAZY_TYPE`)
-//!       packages/react/src/ReactContext.js      (`$$typeof: REACT_CONTEXT_TYPE`,
-//!                                                 `REACT_CONSUMER_TYPE`)
-//!       (`react.transitional.element` / `react.portal` literals also verified in
-//!        packages/react/src/jsx/ReactJSXElement.js L165 and
-//!        packages/react-reconciler/src/__tests__/ReactPersistent-test.js L31)
-//!   - runtime internals export names / compiler-runtime re-export:
-//!       packages/react/src/ReactClient.js L110-111
-//!         (`ReactSharedInternals as
-//!            __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE,`
-//!          `ReactCompilerRuntime as __COMPILER_RUNTIME,`)
-//!       legacy `__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED` is the React
-//!       <= 18 internals name (not present in the 19.3.0 clone) — used purely to
-//!       discriminate the version era.
+//! - memo-cache sentinel + `const $ = _c(N)` prelude + sentinel guard chain
+//! - `$$typeof` element tagging via `Symbol.for("react.<kind>")` element symbols
+//! - runtime internals export names / compiler-runtime re-export from `ReactClient.js`
+//! - legacy `__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED` for React <= 18
 
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// Canonical React-Compiler cache prelude: `const $ = _c(6);`. `_c` is the
-    /// import alias for `react/compiler-runtime`'s `c` (== `useMemoCache`). One
-    /// prelude per compiled function; capture group 1 is the slot count N.
-    /// Confirmed: allow-global-mutation-in-effect-indirect-usecallback.expect.md.
-    static ref COMPILER_PRELUDE_RE: Regex = Regex::new(r#"\b_c\(\s*(\d+)\s*\)"#).unwrap();
+/// Canonical React-Compiler cache prelude: `const $ = _c(6);`. `_c` is the
+/// import alias for `react/compiler-runtime`'s `c` (== `useMemoCache`). One
+/// prelude per compiled function; capture group 1 is the slot count N.
+/// Confirmed: allow-global-mutation-in-effect-indirect-usecallback.expect.md.
+static COMPILER_PRELUDE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b_c\(\s*(\d+)\s*\)").unwrap());
 
-    /// The memo-cache guard chain `X[i] === Symbol.for("react.memo_cache_sentinel")`.
-    /// The sentinel string literal always survives minification even when the
-    /// `_c` alias is mangled. Group 1 = cache var, group 2 = slot index.
-    static ref SENTINEL_CHAIN_RE: Regex = Regex::new(
-        r#"([A-Za-z_$][0-9A-Za-z_$]*)\[(\d+)\]\s*===\s*Symbol\.for\(\s*["']react\.memo_cache_sentinel["']\s*\)"#,
-    )
-    .unwrap();
+/// The memo-cache guard chain `X[i] === Symbol.for("react.memo_cache_sentinel")`.
+/// The sentinel string literal always survives minification even when the
+/// `_c` alias is mangled. Group 1 = cache var, group 2 = slot index.
+static SENTINEL_CHAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"([A-Za-z_$][0-9A-Za-z_$]*)\[(\d+)\]\s*===\s*Symbol\.for\(\s*["']react\.memo_cache_sentinel["']\s*\)"#)
+        .unwrap()
+});
 
-    /// Element/factory `$$typeof` symbols created via `Symbol.for("react.<kind>")`.
-    /// Deliberately excludes `react.memo_cache_sentinel` (the trailing quote after
-    /// `memo` prevents a partial match). Group 1 = the `react.<kind>` symbol name.
-    static ref ELEMENT_SYMBOL_RE: Regex = Regex::new(
+/// Element/factory `$$typeof` symbols created via `Symbol.for("react.<kind>")`.
+/// Deliberately excludes `react.memo_cache_sentinel` (the trailing quote after
+/// `memo` prevents a partial match). Group 1 = the `react.<kind>` symbol name.
+static ELEMENT_SYMBOL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r#"Symbol\.for\(\s*["'](react\.(?:transitional\.element|forward_ref|memo|lazy|context|consumer|portal|fragment|suspense|profiler|strict_mode|provider))["']\s*\)"#,
     )
-    .unwrap();
+    .unwrap()
+});
 
-    /// React shared-internals / compiler-runtime export names. The modern client
-    /// name (`__CLIENT_INTERNALS_...`) marks React 19+, the legacy fired name
-    /// marks <= 18, and `__COMPILER_RUNTIME` flags compiler-emitted bundles.
-    /// ReactClient.js L110-111. Group 1 = the matched internals identifier.
-    static ref RUNTIME_FP_RE: Regex = Regex::new(
-        r#"(__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE|__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED|__COMPILER_RUNTIME)"#,
+/// React shared-internals / compiler-runtime export names. The modern client
+/// name (`__CLIENT_INTERNALS_...`) marks React 19+, the legacy fired name
+/// marks <= 18, and `__COMPILER_RUNTIME` flags compiler-emitted bundles.
+/// ReactClient.js L110-111. Group 1 = the matched internals identifier.
+static RUNTIME_FP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE|__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED|__COMPILER_RUNTIME)",
     )
-    .unwrap();
-}
+    .unwrap()
+});
 
 /// Scan source for React signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
@@ -111,12 +93,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
             let mut max_idx: i64 = -1;
             let mut span: Option<(usize, usize)> = None;
             for caps in SENTINEL_CHAIN_RE.captures_iter(source) {
-                if let Some(idx) = caps.get(2).and_then(|m| m.as_str().parse::<i64>().ok()) {
-                    if idx > max_idx {
-                        max_idx = idx;
-                        let whole = caps.get(0).unwrap();
-                        span = Some((whole.start(), whole.end()));
-                    }
+                if let Some(idx) = caps.get(2).and_then(|m| m.as_str().parse::<i64>().ok())
+                    && idx > max_idx
+                {
+                    max_idx = idx;
+                    let whole = caps.get(0).unwrap();
+                    span = Some((whole.start(), whole.end()));
                 }
             }
             if let Some((start, end)) = span {
@@ -293,7 +275,7 @@ mod tests {
         assert_eq!(meta["has_compiler_runtime"], true);
 
         // Legacy (pre-19) internals name flips the era and clears the runtime flag.
-        let legacy = r#"n.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED=o;"#;
+        let legacy = r"n.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED=o;";
         let lm = analyze(legacy, None, FileType::Js);
         let lfp = lm
             .iter()

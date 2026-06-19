@@ -1,67 +1,59 @@
-//! Next.js (app-router / RSC) recon analyzer. Surfaces React Server Component
-//! flight-stream, server-action, env, webpack-runtime, and `__NEXT_DATA__`
-//! signatures that survive minification in production bundles.
+//! Next.js (app-router / RSC) recon analyzer.
+//!
+//! Surfaces React Server Component flight-stream, server-action, env,
+//! webpack-runtime, and `__NEXT_DATA__` signatures that survive minification in
+//! production bundles.
 //!
 //! Signatures confirmed against the cloned Next.js source
 //! (`/home/cole/RustProjects/forks/frameworks/nextjs`):
-//!   - `self.__next_f` flight push:
-//!       packages/next/src/server/app-render/use-flight-response.tsx:227
-//!       packages/next/src/server/app-render/stream-ops.node.ts:910
-//!       packages/next/src/client/app-index.tsx:174
-//!   - flight `:I` import rows / `:HL` (H + "L") hint rows:
-//!       packages/next/src/compiled/react-server-dom-webpack/cjs/
-//!         react-server-dom-webpack-server.edge.production.js:1451 (`":I"`)
-//!         react-server-dom-webpack-server.edge.production.js:1104 (`":H"` + code)
-//!   - `createServerReference("<id>", ...)` server-action proxy:
-//!       packages/next/src/build/webpack/loaders/
-//!         next-flight-server-reference-proxy-loader.ts:24
-//!   - `webpackChunk_N_E` runtime global (`library: '_N_E'`):
-//!       packages/next/src/build/webpack-config.ts:1325
-//!   - `__NEXT_DATA__` buildId/props:
-//!       packages/next/src/client/index.tsx:206, :271
-//!       packages/next/src/shared/lib/utils.ts:92 (`buildId: string`)
+//! - `self.__next_f` flight push -> app-render/use-flight-response.tsx:227
+//! - flight `:I` import rows / `:HL` hint rows -> react-server-dom-webpack server
+//! - `createServerReference("<id>", ...)` server-action proxy -> next-flight loader
+//! - `webpackChunk_N_E` runtime global (`library: '_N_E'`) -> webpack-config.ts:1325
+//! - `__NEXT_DATA__` buildId/props -> client/index.tsx and shared/lib/utils.ts
 //!
 //! Emits `AnalyzerMatch`. All regexes use only `regex`-crate-supported syntax
 //! (no lookaround / backreferences).
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// `self.__next_f.push([...])` or `(self.__next_f=self.__next_f||[]).push([...])`.
-    /// Captures the leading bytes of the pushed payload.
-    static ref FLIGHT_RE: Regex = Regex::new(
-        r#"self\.__next_f(?:\s*=\s*self\.__next_f\s*\|\|\s*\[\s*\])?\s*\)?\s*\.push\(\s*\[([^\n\]]{0,80})"#
-    ).unwrap();
+/// `self.__next_f.push([...])` or `(self.__next_f=self.__next_f||[]).push([...])`.
+/// Captures the leading bytes of the pushed payload.
+static FLIGHT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"self\.__next_f(?:\s*=\s*self\.__next_f\s*\|\|\s*\[\s*\])?\s*\)?\s*\.push\(\s*\[([^\n\]]{0,80})")
+        .unwrap()
+});
 
-    /// Flight stream rows: `<hexId>:I[...]` (module import) and `<hexId>:HL[...]`
-    /// (preload hint, H-row with code `L`). Captures id, tag, payload prefix.
-    static ref FLIGHT_ROW_RE: Regex =
-        // No leading `\b`: flight rows are separated by the `\n` escape
+/// Flight stream rows: `<hexId>:I[...]` (module import) and `<hexId>:HL[...]`
+/// (preload hint, H-row with code `L`). Captures id, tag, payload prefix.
+static FLIGHT_ROW_RE: LazyLock<Regex> =
+    LazyLock::new(|| // No leading `\b`: flight rows are separated by the `\n` escape
         // (`\` + `n`), so the id is often preceded by a word char (`n`) and a
         // word boundary would never match the row after the first.
-        Regex::new(r#"([0-9a-f]{1,8}):(HL|I)\[([^\n\]]{0,160})"#).unwrap();
+        Regex::new(r"([0-9a-f]{1,8}):(HL|I)\[([^\n\]]{0,160})").unwrap());
 
-    /// `createServerReference("<hexid>", ...)` server-action reference. Matches
-    /// both the bare call and the `(0,n.createServerReference)(...)` member form.
-    static ref SERVER_ACTION_RE: Regex =
-        Regex::new(r#"(?:\(\s*0\s*,\s*[A-Za-z_$][0-9A-Za-z_$]*\.createServerReference\s*\)|createServerReference)\s*\(\s*"([0-9a-fA-F]{8,})""#).unwrap();
+/// `createServerReference("<hexid>", ...)` server-action reference. Matches
+/// both the bare call and the `(0,n.createServerReference)(...)` member form.
+static SERVER_ACTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:\(\s*0\s*,\s*[A-Za-z_$][0-9A-Za-z_$]*\.createServerReference\s*\)|createServerReference)\s*\(\s*"([0-9a-fA-F]{8,})""#).unwrap()
+});
 
-    /// `NEXT_PUBLIC_<NAME>` build-time inlined env identifier.
-    static ref PUBLIC_ENV_RE: Regex = Regex::new(r#"\bNEXT_PUBLIC_([A-Z0-9_]+)"#).unwrap();
+/// `NEXT_PUBLIC_<NAME>` build-time inlined env identifier.
+static PUBLIC_ENV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bNEXT_PUBLIC_([A-Z0-9_]+)").unwrap());
 
-    /// `webpackChunk_N_E` webpack runtime global (the `_N_E` chunk-loading library).
-    static ref WEBPACK_CHUNK_RE: Regex = Regex::new(r#"webpackChunk_N_E"#).unwrap();
+const WEBPACK_CHUNK_GLOBAL: &str = "webpackChunk_N_E";
+const NEXT_DATA_GLOBAL: &str = "__NEXT_DATA__";
 
-    /// `__NEXT_DATA__` pages-router hydration payload (script id or window global).
-    static ref NEXT_DATA_RE: Regex = Regex::new(r#"__NEXT_DATA__"#).unwrap();
-
-    /// `"buildId":"<id>"` field inside the `__NEXT_DATA__` JSON payload.
-    static ref BUILD_ID_RE: Regex = Regex::new(r#""buildId":"([^"]{1,200})""#).unwrap();
-}
+/// `"buildId":"<id>"` field inside the `__NEXT_DATA__` JSON payload.
+static BUILD_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""buildId":"([^"]{1,200})""#).unwrap());
 
 /// Scan source for Next.js app-router / RSC signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
@@ -146,12 +138,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // 5. webpackChunk_N_E runtime global.
-    for m in WEBPACK_CHUNK_RE.find_iter(source) {
+    for (start, value) in source.match_indices(WEBPACK_CHUNK_GLOBAL) {
         out.push(
             AnalyzerMatch::new(
                 "next_webpack_chunk",
-                m.as_str().to_string(),
-                PositionRange::from_byte_range(source, m.start(), m.end()),
+                value.to_string(),
+                PositionRange::from_byte_range(source, start, start + value.len()),
                 file_type,
                 file_path.map(str::to_string),
             )
@@ -165,11 +157,11 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
         .captures(source)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string());
-    for m in NEXT_DATA_RE.find_iter(source) {
+    for (start, value) in source.match_indices(NEXT_DATA_GLOBAL) {
         let mut am = AnalyzerMatch::new(
             "next_data",
-            "__NEXT_DATA__",
-            PositionRange::from_byte_range(source, m.start(), m.end()),
+            value,
+            PositionRange::from_byte_range(source, start, start + value.len()),
             file_type,
             file_path.map(str::to_string),
         )

@@ -2,15 +2,16 @@
 //!
 //! Ports `crates/core/analyzers/src/js_ast_graphql_analyzer.rs`.
 //!
-//! Looks for string literals & template literals containing `query`,
-//! `mutation`, or `fragment` keywords with a `{` body, plus calls like
-//! `gql\`...\`` (Apollo / urql tagged template).
+//! Looks for string literals and template literals containing `query`,
+//! `mutation`, or `fragment` keywords with a `{` body, plus `gql` tagged
+//! templates (Apollo / urql).
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::*;
+use oxc_ast::ast::{Expression, StringLiteral, TaggedTemplateExpression, TemplateLiteral};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
+use std::sync::LazyLock;
 
 use super::ast_walker::span_to_pos;
 use super::helpers;
@@ -37,25 +38,23 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 /// (`operation_type`, `operation_name`, `fragment_name`, `on_type`) so consumers
 /// get an indexed operation catalog rather than just raw SDL.
 fn gql_metadata(body: &str) -> serde_json::Value {
-    lazy_static::lazy_static! {
-        static ref OP_RE: regex::Regex =
-            regex::Regex::new(r"(?m)^\s*(query|mutation|subscription)\s+([A-Za-z_]\w*)").unwrap();
-        static ref FRAG_RE: regex::Regex =
-            regex::Regex::new(r"(?m)^\s*fragment\s+([A-Za-z_]\w*)\s+on\s+([A-Za-z_]\w*)").unwrap();
-        static ref OP_ANON_RE: regex::Regex =
-            regex::Regex::new(r"(?m)^\s*(query|mutation|subscription)\b").unwrap();
-    }
+    static OP_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?m)^\s*(query|mutation|subscription)\s+([A-Za-z_]\w*)").unwrap());
+    static FRAG_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?m)^\s*fragment\s+([A-Za-z_]\w*)\s+on\s+([A-Za-z_]\w*)").unwrap());
+    static OP_ANON_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?m)^\s*(query|mutation|subscription)\b").unwrap());
     let mut op_type: Option<String> = None;
     let mut op_name: Option<String> = None;
     let mut frag_name: Option<String> = None;
-    let mut on_type: Option<String> = None;
+    let mut fragment_type: Option<String> = None;
     if let Some(c) = OP_RE.captures(body) {
         op_type = Some(c[1].to_string());
         op_name = Some(c[2].to_string());
     } else if let Some(c) = FRAG_RE.captures(body) {
         op_type = Some("fragment".to_string());
         frag_name = Some(c[1].to_string());
-        on_type = Some(c[2].to_string());
+        fragment_type = Some(c[2].to_string());
     } else if let Some(c) = OP_ANON_RE.captures(body) {
         op_type = Some(c[1].to_string());
     }
@@ -63,7 +62,7 @@ fn gql_metadata(body: &str) -> serde_json::Value {
         "operation_type": op_type,
         "operation_name": op_name,
         "fragment_name": frag_name,
-        "on_type": on_type,
+        "on_type": fragment_type,
     })
 }
 
@@ -74,7 +73,7 @@ struct GqlVisitor<'s> {
     out: Vec<AnalyzerMatch>,
 }
 
-impl<'s> GqlVisitor<'s> {
+impl GqlVisitor<'_> {
     fn maybe_emit(&mut self, body: &str, start: u32, end: u32) {
         // Heuristic: must start with a GraphQL keyword (case-sensitive — GraphQL is case-sensitive)
         // AND have a `{` somewhere.
@@ -108,7 +107,7 @@ impl<'s> GqlVisitor<'s> {
     }
 }
 
-impl<'a, 's> Visit<'a> for GqlVisitor<'s> {
+impl<'a> Visit<'a> for GqlVisitor<'_> {
     fn visit_string_literal(&mut self, lit: &StringLiteral<'a>) {
         if lit.value.len() < 16 || lit.value.len() > 16 * 1024 {
             return;
@@ -120,7 +119,7 @@ impl<'a, 's> Visit<'a> for GqlVisitor<'s> {
         let joined: String = lit
             .quasis
             .iter()
-            .filter_map(|q| q.value.cooked.as_ref().map(|s| s.as_str()))
+            .filter_map(|q| q.value.cooked.as_ref().map(oxc_ast::ast::Str::as_str))
             .collect::<Vec<_>>()
             .join("");
         if joined.len() >= 16 {
@@ -141,7 +140,7 @@ impl<'a, 's> Visit<'a> for GqlVisitor<'s> {
                 .quasi
                 .quasis
                 .iter()
-                .filter_map(|q| q.value.cooked.as_ref().map(|s| s.as_str()))
+                .filter_map(|q| q.value.cooked.as_ref().map(oxc_ast::ast::Str::as_str))
                 .collect::<Vec<_>>()
                 .join("");
             let meta = gql_metadata(&joined);
@@ -182,17 +181,17 @@ mod tests {
 
     #[test]
     fn finds_gql_tagged_template() {
-        let src = r#"
+        let src = r"
             import gql from 'graphql-tag';
             const Q = gql`query { me { id } }`;
-        "#;
+        ";
         let ms = analyze(src, None, FileType::Js);
         assert!(!ms.is_empty());
     }
 
     #[test]
     fn ignores_non_gql_templates() {
-        let src = r#"const x = `not a query`;"#;
+        let src = r"const x = `not a query`;";
         let ms = analyze(src, None, FileType::Js);
         assert!(ms.is_empty());
     }

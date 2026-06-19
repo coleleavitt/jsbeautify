@@ -13,20 +13,18 @@
 //!   - Contains a template placeholder (`${...}`)
 //!   - Contains a unicode escape (`\u0041`)
 
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::stopwords;
 
-lazy_static! {
-    static ref HEX: Regex = Regex::new(r"^[0-9a-f]{8,}$").unwrap();
-    static ref BASE64: Regex = Regex::new(r"^[A-Za-z0-9+/]{20,}={0,2}$").unwrap();
-    static ref SHORT_UPPER: Regex = Regex::new(r"^[A-Z]{2,3}$").unwrap();
-    static ref MANGLED: Regex = Regex::new(r"^\$[a-f0-9]+\$").unwrap();
-    static ref TMPL: Regex = Regex::new(r"\$\{[^}]*\}").unwrap();
-    static ref UNICODE_ESC: Regex = Regex::new(r"[\\][ux][0-9a-fA-F]{2,4}").unwrap();
-    static ref NUM_PREFIX: Regex = Regex::new(r"^\d+[a-zA-Z]+").unwrap();
-}
+static HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{8,}$").unwrap());
+static BASE64: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9+/]{20,}={0,2}$").unwrap());
+static SHORT_UPPER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]{2,3}$").unwrap());
+static MANGLED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\$[a-f0-9]+\$").unwrap());
+static TMPL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{[^}]*\}").unwrap());
+static UNICODE_ESC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\][ux][0-9a-fA-F]{2,4}").unwrap());
+static NUM_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+[a-zA-Z]+").unwrap());
 
 /// Return `true` if `word` should be dropped from the wordlist.
 #[must_use]
@@ -66,6 +64,7 @@ pub fn is_noise(word: &str) -> bool {
 }
 
 /// Check membership in all three stopword lists (case-insensitive via `lower`).
+#[must_use]
 pub fn is_stopword(lower: &str) -> bool {
     stopwords::ENGLISH.contains(&lower)
         || stopwords::JS_KEYWORDS.contains(&lower)

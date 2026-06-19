@@ -39,6 +39,7 @@ impl ScopeMatcher {
     /// Create a new scope matcher from in-scope and out-of-scope pattern lists.
     ///
     /// Patterns are comma-separated strings or pre-split slices.
+    #[must_use]
     pub fn new(in_scope: &[&str], out_of_scope: &[&str]) -> Self {
         Self {
             in_scope: in_scope.iter().map(|p| ScopePattern::parse(p)).collect(),
@@ -47,12 +48,13 @@ impl ScopeMatcher {
     }
 
     /// Parse from comma-separated strings (jxscout CLI format).
+    #[must_use]
     pub fn from_csv(in_scope_csv: &str, out_of_scope_csv: &str) -> Self {
         let parse_csv = |s: &str| -> Vec<ScopePattern> {
             s.split(',')
-                .map(|p| p.trim())
+                .map(str::trim)
                 .filter(|p| !p.is_empty())
-                .map(|p| ScopePattern::parse(p))
+                .map(ScopePattern::parse)
                 .collect()
         };
         Self {
@@ -64,10 +66,11 @@ impl ScopeMatcher {
     /// Check if a hostname/URL is in scope.
     ///
     /// Logic:
-    /// 1. If out_of_scope matches → NOT in scope (exclusions take precedence)
-    /// 2. If in_scope is empty → everything is in scope
-    /// 3. If in_scope matches → in scope
+    /// 1. If `out_of_scope` matches → NOT in scope (exclusions take precedence)
+    /// 2. If `in_scope` is empty → everything is in scope
+    /// 3. If `in_scope` matches → in scope
     /// 4. Otherwise → NOT in scope
+    #[must_use]
     pub fn is_in_scope(&self, hostname: &str) -> bool {
         let host = extract_hostname(hostname);
 
@@ -86,6 +89,7 @@ impl ScopeMatcher {
     }
 
     /// Filter a list of values, keeping only in-scope ones.
+    #[must_use]
     pub fn filter_in_scope<'a>(&self, values: &'a [String]) -> Vec<&'a String> {
         values.iter().filter(|v| self.is_in_scope(v)).collect()
     }
@@ -95,24 +99,21 @@ impl ScopePattern {
     fn parse(pattern: &str) -> Self {
         let p = pattern.trim().to_ascii_lowercase();
 
-        let kind = if p.starts_with("*.") {
-            // Subdomain wildcard: *.example.com
-            PatternKind::SubdomainWildcard(p[2..].to_string())
-        } else if p.starts_with('*') && p.ends_with('*') && p.len() > 2 {
-            // Contains: *internal*
-            PatternKind::Contains(p[1..p.len() - 1].to_string())
-        } else if p.contains('*') || p.contains('?') {
-            // Complex glob → convert to regex
-            let regex_str = glob_to_regex(&p);
-            match regex::Regex::new(&regex_str) {
-                Ok(re) => PatternKind::Regex(re),
-                Err(_) => PatternKind::Exact(p),
-            }
-        } else {
-            PatternKind::Exact(p)
-        };
+        let kind = p.strip_prefix("*.").map_or_else(
+            || {
+                if p.starts_with('*') && p.ends_with('*') && p.len() > 2 {
+                    PatternKind::Contains(p[1..p.len() - 1].to_string())
+                } else if p.contains('*') || p.contains('?') {
+                    let regex_str = glob_to_regex(&p);
+                    regex::Regex::new(&regex_str).map_or_else(|_| PatternKind::Exact(p.clone()), PatternKind::Regex)
+                } else {
+                    PatternKind::Exact(p.clone())
+                }
+            },
+            |rest| PatternKind::SubdomainWildcard(rest.to_string()),
+        );
 
-        ScopePattern { kind }
+        Self { kind }
     }
 
     fn matches(&self, hostname: &str) -> bool {
@@ -148,15 +149,11 @@ fn glob_to_regex(glob: &str) -> String {
 fn extract_hostname(input: &str) -> String {
     let s = input.trim();
     // Strip protocol
-    let without_proto = if let Some(rest) = s.strip_prefix("https://") {
-        rest
-    } else if let Some(rest) = s.strip_prefix("http://") {
-        rest
-    } else if let Some(rest) = s.strip_prefix("//") {
-        rest
-    } else {
-        s
-    };
+    let without_proto = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .or_else(|| s.strip_prefix("//"))
+        .unwrap_or(s);
     // Take until path/port
     without_proto
         .split('/')

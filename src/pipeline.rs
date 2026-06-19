@@ -1,6 +1,8 @@
-//! Unified ingestion pipeline — the seam between capture sources (Mindemon
-//! browser dumps over HTTP, the MITM proxy, fs ingestion) and the analysis
-//! backend (beautify / deobfuscate / analyzers / sourcemap reversal / DB / WS).
+//! Unified ingestion pipeline.
+//!
+//! This is the seam between capture sources (Mindemon browser dumps over HTTP,
+//! the MITM proxy, fs ingestion) and the analysis backend (beautify /
+//! deobfuscate / analyzers / sourcemap reversal / DB / WS).
 //!
 //! This is the integration layer that turns js-beautify-rs's previously-unwired
 //! library modules (`db`, `websocket`, `hooks`, `analyzers`, `sourcemap`,
@@ -52,9 +54,10 @@ impl AssetKind {
     #[must_use]
     pub fn classify(url: &str, content_type: &str) -> Self {
         let ct = content_type.to_ascii_lowercase();
-        let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        let extension = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str);
 
-        if path.ends_with(".map") || ct.contains("application/json") && path.contains(".map") {
+        if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("map")) {
             return Self::SourceMap;
         }
         if ct.contains("javascript") || ct.contains("ecmascript") {
@@ -70,19 +73,21 @@ impl AssetKind {
             return Self::Json;
         }
         // Fall back to extension.
-        if path.ends_with(".mjs")
-            || path.ends_with(".cjs")
-            || path.ends_with(".js")
-            || path.ends_with(".jsx")
-            || path.ends_with(".ts")
-            || path.ends_with(".tsx")
-        {
+        if extension.is_some_and(|ext| {
+            ["mjs", "cjs", "js", "jsx", "ts", "tsx"]
+                .iter()
+                .any(|expected| ext.eq_ignore_ascii_case(expected))
+        }) {
             Self::JavaScript
-        } else if path.ends_with(".html") || path.ends_with(".htm") {
+        } else if extension.is_some_and(|ext| {
+            ["html", "htm"]
+                .iter()
+                .any(|expected| ext.eq_ignore_ascii_case(expected))
+        }) {
             Self::Html
-        } else if path.ends_with(".css") {
+        } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("css")) {
             Self::Css
-        } else if path.ends_with(".json") {
+        } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
             Self::Json
         } else {
             Self::Other
@@ -90,7 +95,7 @@ impl AssetKind {
     }
 
     #[must_use]
-    pub fn file_type(self) -> FileType {
+    pub const fn file_type(self) -> FileType {
         match self {
             Self::Html => FileType::Html,
             Self::SourceMap => FileType::SourceMap,
@@ -100,7 +105,7 @@ impl AssetKind {
     }
 
     #[must_use]
-    pub fn is_text(self) -> bool {
+    pub const fn is_text(self) -> bool {
         !matches!(self, Self::Other)
     }
 }
@@ -152,8 +157,7 @@ impl Default for PipelineConfig {
         Self {
             workdir: db::default_project_db_path("default")
                 .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".")),
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
             analyzer: AnalyzerConfig::default(),
             deobfuscate: true,
             max_text_bytes: usize::MAX,
@@ -199,7 +203,7 @@ impl Pipeline {
     }
 
     #[must_use]
-    pub fn db(&self) -> &ProjectDb {
+    pub const fn db(&self) -> &ProjectDb {
         &self.db
     }
 
@@ -470,17 +474,16 @@ fn looks_minified(src: &str) -> bool {
 /// Map a URL to a safe relative filesystem path `<host>/<path>`.
 fn url_to_rel_path(url: &str, kind: AssetKind) -> PathBuf {
     let no_frag = url.split(['?', '#']).next().unwrap_or(url);
-    let (host, path) = if let Some(rest) = no_frag
+    let (host, path) = no_frag
         .strip_prefix("https://")
         .or_else(|| no_frag.strip_prefix("http://"))
-    {
-        match rest.split_once('/') {
-            Some((h, p)) => (h.to_string(), p.to_string()),
-            None => (rest.to_string(), String::new()),
-        }
-    } else {
-        ("local".to_string(), no_frag.trim_start_matches('/').to_string())
-    };
+        .map_or_else(
+            || ("local".to_string(), no_frag.trim_start_matches('/').to_string()),
+            |rest| match rest.split_once('/') {
+                Some((h, p)) => (h.to_string(), p.to_string()),
+                None => (rest.to_string(), String::new()),
+            },
+        );
 
     let mut out = PathBuf::from(sanitize_segment(&host));
     if path.is_empty() {
@@ -497,14 +500,14 @@ fn url_to_rel_path(url: &str, kind: AssetKind) -> PathBuf {
     let needs_name = out
         .file_name()
         .and_then(|s| s.to_str())
-        .map_or(true, |s| !s.contains('.'));
+        .is_none_or(|s| !s.contains('.'));
     if needs_name {
         out.push(default_index_name(kind));
     }
     out
 }
 
-fn default_index_name(kind: AssetKind) -> &'static str {
+const fn default_index_name(kind: AssetKind) -> &'static str {
     match kind {
         AssetKind::Html => "index.html",
         AssetKind::Css => "index.css",
@@ -549,7 +552,7 @@ pub struct PipelineIngestor {
 
 impl PipelineIngestor {
     #[must_use]
-    pub fn new(pipeline: Arc<Pipeline>) -> Self {
+    pub const fn new(pipeline: Arc<Pipeline>) -> Self {
         Self { pipeline }
     }
 }
@@ -583,6 +586,7 @@ impl crate::proxy::Ingestor for PipelineIngestor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::{Ingestor, ProxyExchange};
 
     fn test_pipeline() -> Pipeline {
         let db = ProjectDb::open_in_memory().unwrap();
@@ -673,7 +677,6 @@ mod tests {
     async fn proxy_ingestor_persists_js() {
         let p = Arc::new(test_pipeline());
         let ing = PipelineIngestor::new(p.clone());
-        use crate::proxy::{Ingestor, ProxyExchange};
         ing.on_exchange(ProxyExchange {
             url: "https://victim.test/x/main.js".into(),
             method: "GET".into(),

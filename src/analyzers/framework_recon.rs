@@ -11,35 +11,32 @@
 use super::match_kind::{AnalyzerMatch, FileType};
 
 mod adapters;
+mod backend;
+
+use backend::{FunctionBackend, run_all};
+
+const NATIVE_BACKENDS: &[FunctionBackend] = &[
+    FunctionBackend::new(super::fw_react::analyze),
+    FunctionBackend::new(super::fw_vue::analyze),
+    FunctionBackend::new(super::fw_svelte::analyze),
+    FunctionBackend::new(super::fw_redux::analyze),
+    FunctionBackend::new(super::fw_zustand::analyze),
+    FunctionBackend::new(super::fw_vite::analyze),
+    FunctionBackend::new(super::fw_rollup::analyze),
+    FunctionBackend::new(super::fw_module_federation::analyze),
+    FunctionBackend::new(super::fw_sentry::analyze),
+    FunctionBackend::new(super::fw_preact::analyze),
+    FunctionBackend::new(super::fw_solid::analyze),
+    FunctionBackend::new(super::fw_next_rsc::analyze),
+    FunctionBackend::new(super::fw_webpack::analyze),
+];
 
 /// Run every framework recon analyzer over `source`.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
-
-    // Native framework analyzers (regex → AnalyzerMatch, uniform API).
-    out.extend(super::fw_react::analyze(source, file_path, file_type));
-    out.extend(super::fw_vue::analyze(source, file_path, file_type));
-    out.extend(super::fw_svelte::analyze(source, file_path, file_type));
-    out.extend(super::fw_redux::analyze(source, file_path, file_type));
-    out.extend(super::fw_zustand::analyze(source, file_path, file_type));
-    out.extend(super::fw_vite::analyze(source, file_path, file_type));
-    out.extend(super::fw_rollup::analyze(source, file_path, file_type));
-    out.extend(super::fw_module_federation::analyze(source, file_path, file_type));
-    out.extend(super::fw_sentry::analyze(source, file_path, file_type));
-    out.extend(super::fw_preact::analyze(source, file_path, file_type));
-    out.extend(super::fw_solid::analyze(source, file_path, file_type));
-    out.extend(super::fw_next_rsc::analyze(source, file_path, file_type));
-    out.extend(super::fw_webpack::analyze(source, file_path, file_type));
-
-    // Adapters over the (now-compiled) ast_deobfuscate framework extractors.
-    out.extend(adapters::ngrx(source, file_path, file_type));
-    out.extend(adapters::angular(source, file_path, file_type));
-    out.extend(adapters::rxjs(source, file_path, file_type));
-    out.extend(adapters::single_spa(source, file_path, file_type));
-    out.extend(adapters::launchdarkly(source, file_path, file_type));
-    out.extend(adapters::http_interceptor(source, file_path, file_type));
-
+    run_all(NATIVE_BACKENDS, source, file_path, file_type, &mut out);
+    adapters::analyze(source, file_path, file_type, &mut out);
     out
 }
 

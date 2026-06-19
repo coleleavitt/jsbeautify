@@ -4,6 +4,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -13,16 +14,6 @@ pub struct ArrayUnpacker {
 }
 
 impl ArrayUnpacker {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { changed: false }
-    }
-
-    #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
-    }
-
     fn try_unpack<'a>(&mut self, member: &MemberExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
         let MemberExpression::ComputedMemberExpression(computed) = member else {
             return None;
@@ -61,11 +52,7 @@ impl ArrayUnpacker {
     }
 }
 
-impl Default for ArrayUnpacker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+flag_pass!(ArrayUnpacker, changed, has_changed);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ArrayUnpacker {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

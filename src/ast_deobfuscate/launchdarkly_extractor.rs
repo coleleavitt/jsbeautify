@@ -1,6 +1,6 @@
-//! LaunchDarkly feature flag extractor — identifies all feature flags and their defaults.
+//! `LaunchDarkly` feature flag extractor — identifies all feature flags and their defaults.
 //!
-//! Schwab uses LaunchDarkly for feature gating. Flag names follow the pattern:
+//! Schwab uses `LaunchDarkly` for feature gating. Flag names follow the pattern:
 //! `RelTgl_EMOST-NNNNNN_Platform_Date` where:
 //! - `RelTgl` = Release Toggle
 //! - `EMOST-NNNNNN` = Jira ticket number
@@ -12,6 +12,8 @@
 //! bypassed.
 
 use regex::Regex;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
 
 /// A detected feature flag evaluation.
 #[derive(Debug, Clone)]
@@ -26,7 +28,7 @@ pub struct FeatureFlag {
     pub deploy_date: Option<String>,
 }
 
-/// LaunchDarkly SDK configuration.
+/// `LaunchDarkly` SDK configuration.
 #[derive(Debug, Clone)]
 pub struct LdConfig {
     /// Client-side SDK key
@@ -43,42 +45,33 @@ pub struct FeatureFlagResult {
     pub total_evaluations: usize,
 }
 
-/// Extract LaunchDarkly feature flag patterns from source.
+/// Extract `LaunchDarkly` feature flag patterns from source.
 #[must_use]
 pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
-    lazy_static::lazy_static! {
-        // Flag evaluation calls: variation/variationDetail and the typed
-        // helpers (boolVariation/stringVariation/numberVariation/jsonVariation).
-        // Group 1 = flag key, group 2 = default value (optional).
-        static ref VARIATION_RE: Regex = Regex::new(
+    // Flag evaluation calls: variation/variationDetail and the typed
+    // helpers (boolVariation/stringVariation/numberVariation/jsonVariation).
+    // Group 1 = flag key, group 2 = default value (optional).
+    static VARIATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
             r#"(?:variation|variationDetail|boolVariation|stringVariation|numberVariation|jsonVariation)\(\s*"([^"]+)"(?:\s*,\s*([^)]+?))?\)"#
-        ).unwrap();
+        ).unwrap()
+    });
 
-        // SDK key patterns (LaunchDarkly client IDs are typically 24-char hex)
-        static ref SDK_KEY_RE: Regex = Regex::new(
-            r#"["']([0-9a-f]{24})["']"#
-        ).unwrap();
+    // SDK key patterns (LaunchDarkly client IDs are typically 24-char hex)
+    static SDK_KEY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["']([0-9a-f]{24})["']"#).unwrap());
 
-        // Client-side environment id embedded in LD stream/poll/event URLs:
-        // /sdk/evalx/<envId>, /sdk/goals/<envId>, /eval/<envId>, /events/bulk/<envId>.
-        static ref ENV_RE: Regex = Regex::new(
-            r#"/(?:sdk/(?:evalx|goals|eval)|eval|events/bulk)/([a-f0-9]{24})"#
-        ).unwrap();
+    // Client-side environment id embedded in LD stream/poll/event URLs:
+    // /sdk/evalx/<envId>, /sdk/goals/<envId>, /eval/<envId>, /events/bulk/<envId>.
+    static ENV_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"/(?:sdk/(?:evalx|goals|eval)|eval|events/bulk)/([a-f0-9]{24})").unwrap());
 
-        // LaunchDarkly identify call
-        static ref IDENTIFY_RE: Regex = Regex::new(
-            r#"(?:ldclient|LDClient)\.identify\("#
-        ).unwrap();
+    // LaunchDarkly identify call
+    static IDENTIFY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:ldclient|LDClient)\.identify\(").unwrap());
 
-        // Ticket/date pattern from flag name
-        static ref TICKET_RE: Regex = Regex::new(
-            r"(?:EMOST|Emost)-(\d{6})"
-        ).unwrap();
+    // Ticket/date pattern from flag name
+    static TICKET_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:EMOST|Emost)-(\d{6})").unwrap());
 
-        static ref DATE_RE: Regex = Regex::new(
-            r"_(\d{8})$"
-        ).unwrap();
-    }
+    static DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_(\d{8})$").unwrap());
 
     let mut flags = Vec::new();
     let total_evaluations = VARIATION_RE.find_iter(source).count();
@@ -113,6 +106,7 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
     let is_launchdarkly = source.contains("X-LaunchDarkly")
         || source.contains("LaunchDarkly")
         || source.contains("LDClient")
+        || IDENTIFY_RE.is_match(source)
         || source.contains("ldclient")
         || source.contains("ldClient")
         || source.contains("launchdarkly")
@@ -137,7 +131,7 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
 
     let config = LdConfig { sdk_key, environment };
 
-    flags.sort_by(|a, b| a.key.cmp(&b.key));
+    flags.sort_by_key(|flag| flag.key.clone());
 
     FeatureFlagResult {
         flags,
@@ -157,21 +151,22 @@ pub fn format_feature_flags(result: &FeatureFlagResult) -> String {
     output.push_str("// ╔══════════════════════════════════════════════════════════╗\n");
     output.push_str("// ║         LAUNCHDARKLY FEATURE FLAGS                      ║\n");
     output.push_str("// ╠══════════════════════════════════════════════════════════╣\n");
-    output.push_str(&format!(
+    let _ = writeln!(
+        output,
         "// ║ Total flags: {}  |  Evaluations: {}\n",
         result.flags.len(),
         result.total_evaluations
-    ));
+    );
 
     if let Some(ref key) = result.config.sdk_key {
-        output.push_str(&format!("// ║ SDK Key: {key}\n"));
+        let _ = writeln!(output, "// ║ SDK Key: {key}");
     }
 
     output.push_str("// ║\n// ║ FLAGS:\n");
     for flag in &result.flags {
         let default = flag.default_value.as_deref().unwrap_or("?");
         let ticket = flag.ticket.as_deref().unwrap_or("");
-        output.push_str(&format!("// ║   {} (default: {}) {}\n", flag.key, default, ticket));
+        let _ = writeln!(output, "// ║   {} (default: {}) {}", flag.key, default, ticket);
     }
 
     output.push_str("// ╚══════════════════════════════════════════════════════════╝\n");

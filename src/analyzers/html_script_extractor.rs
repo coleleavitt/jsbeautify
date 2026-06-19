@@ -5,13 +5,12 @@
 //! Pulls inline `<script>` contents from HTML so they can be fed through
 //! the analyzer pipeline.
 
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    static ref SCRIPT_RE: Regex = Regex::new(r"(?si)<script(?:\s[^>]*)?>(?P<body>.*?)</script>").unwrap();
-    static ref TYPE_RE: Regex = Regex::new(r#"(?i)type\s*=\s*["']([^"']+)["']"#).unwrap();
-}
+static SCRIPT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?si)<script(?:\s[^>]*)?>(?P<body>.*?)</script>").unwrap());
+static TYPE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)type\s*=\s*["']([^"']+)["']"#).unwrap());
 
 /// Allowed MIME types for JavaScript content.
 const JS_TYPES: &[&str] = &[
@@ -37,6 +36,10 @@ pub struct ScriptBlock {
 ///
 /// Skips `<script src="...">` (external scripts) and non-JS types
 /// (e.g. `type="application/json"`, `type="text/template"`).
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn extract_scripts(html: &str) -> Vec<ScriptBlock> {
     let mut blocks = Vec::new();
@@ -50,26 +53,26 @@ pub fn extract_scripts(html: &str) -> Vec<ScriptBlock> {
             // Check that src= appears before the closing `>`
             let close_gt = tag_start.find('>').unwrap_or(tag_start.len());
             let src_pos = tag_start.find("src=").or_else(|| tag_start.find("src ="));
-            if let Some(sp) = src_pos {
-                if sp < close_gt {
-                    continue;
-                }
+            if let Some(sp) = src_pos
+                && sp < close_gt
+            {
+                continue;
             }
         }
 
         // Check type attribute
-        let tag_header = &html[full.start()..full.start() + html[full.start()..].find('>').unwrap_or(0) + 1];
+        let tag_header = &html[full.start()..=(full.start() + html[full.start()..].find('>').unwrap_or(0))];
         let script_type = TYPE_RE
             .captures(tag_header)
             .map(|c| c[1].to_ascii_lowercase())
             .unwrap_or_default();
 
-        let is_js = JS_TYPES.iter().any(|t| *t == script_type.as_str());
+        let is_js = JS_TYPES.contains(&script_type.as_str());
         if !is_js {
             continue;
         }
 
-        let body = cap.name("body").map(|m| m.as_str()).unwrap_or("");
+        let body = cap.name("body").map_or("", |m| m.as_str());
         if body.trim().is_empty() {
             continue;
         }

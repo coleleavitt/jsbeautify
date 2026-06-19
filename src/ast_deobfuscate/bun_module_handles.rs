@@ -95,7 +95,7 @@ pub struct BunModuleHandleRenamer {
 
 impl BunModuleHandleRenamer {
     #[must_use]
-    pub fn new(map: BunModuleHandleMap) -> Self {
+    pub const fn new(map: BunModuleHandleMap) -> Self {
         Self {
             map,
             renamed_decls: 0,

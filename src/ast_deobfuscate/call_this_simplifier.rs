@@ -14,6 +14,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -22,23 +23,7 @@ pub struct CallThisSimplifier {
     rewrites: usize,
 }
 
-impl CallThisSimplifier {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { rewrites: 0 }
-    }
-
-    #[must_use]
-    pub const fn rewrites(&self) -> usize {
-        self.rewrites
-    }
-}
-
-impl Default for CallThisSimplifier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(CallThisSimplifier, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for CallThisSimplifier {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

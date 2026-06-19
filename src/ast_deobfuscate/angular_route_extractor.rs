@@ -7,11 +7,33 @@
 //! ```
 //!
 //! This module extracts the route→chunk mapping to produce a route table like:
-//! - `/hard-token` → chunk 3832 (HardTokenModule)
-//! - `/mfa-enrollment` → chunk 7794 (MfaEnrollmentModule)
-//! - `/update-password` → chunk 6848 (UpdatePasswordModule)
+//! - `/hard-token` → chunk 3832 (`HardTokenModule`)
+//! - `/mfa-enrollment` → chunk 7794 (`MfaEnrollmentModule`)
+//! - `/update-password` → chunk 6848 (`UpdatePasswordModule`)
 
 use regex::Regex;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
+
+// path: "some-path", loadChildren: () => ...ensureChunk(NNNN)...
+static ROUTE_ENSURE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"path:\s*"([^"]*)"[^}]*?(?:loadChildren|loadComponent)\s*:\s*\(\)\s*=>[^}]*?(?:ensureChunk|\.e)\((\d+)\)"#,
+    )
+    .unwrap()
+});
+
+// path: "some-path", loadChildren: () => import(...)...then(m => m.SomeModule)
+static ROUTE_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"path:\s*"([^"]*)"[^}]*?(?:loadChildren|loadComponent)\s*:\s*\(\)\s*=>.*?\.then\(\w+\s*=>\s*\w+\.(\w+)\)"#,
+    )
+    .unwrap()
+});
+
+// Simpler pattern: path: "x" appearing near a chunk number
+static PATH_CHUNK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"path:\s*"([^"]+)"[^}]{0,200}?(\d{3,5})\)"#).unwrap());
 
 /// A single extracted route entry.
 #[derive(Debug, Clone)]
@@ -35,28 +57,6 @@ pub struct RouteExtractionResult {
 pub fn extract_routes(source: &str) -> RouteExtractionResult {
     let mut routes = Vec::new();
     let mut chunk_to_route: Vec<(u32, String)> = Vec::new();
-
-    lazy_static::lazy_static! {
-        // path: "some-path", loadChildren: () => ...ensureChunk(NNNN)...
-        static ref ROUTE_ENSURE_RE: Regex = Regex::new(
-            r#"path:\s*"([^"]*)"[^}]*?(?:loadChildren|loadComponent)\s*:\s*\(\)\s*=>[^}]*?(?:ensureChunk|\.e)\((\d+)\)"#
-        ).unwrap();
-
-        // path: "some-path", loadChildren: () => import(...)...then(m => m.SomeModule)
-        static ref ROUTE_IMPORT_RE: Regex = Regex::new(
-            r#"path:\s*"([^"]*)"[^}]*?(?:loadChildren|loadComponent)\s*:\s*\(\)\s*=>.*?\.then\(\w+\s*=>\s*\w+\.(\w+)\)"#
-        ).unwrap();
-
-        // Simpler pattern: path: "x" appearing near a chunk number
-        static ref PATH_CHUNK_RE: Regex = Regex::new(
-            r#"path:\s*"([^"]+)"[^}]{0,200}?(\d{3,5})\)"#
-        ).unwrap();
-
-        // Module name in .then(m => m.XXXModule)
-        static ref MODULE_NAME_RE: Regex = Regex::new(
-            r#"\.then\(\w+\s*=>\s*\w+\.(\w+Module)\)"#
-        ).unwrap();
-    }
 
     // First pass: ensureChunk patterns
     for caps in ROUTE_ENSURE_RE.captures_iter(source) {
@@ -144,10 +144,7 @@ pub fn format_route_table(result: &RouteExtractionResult) -> String {
 
         let module_display = route.module_name.as_deref().unwrap_or("");
 
-        output.push_str(&format!(
-            "{:<30} → chunk {:<6} {}\n",
-            path_display, chunk_display, module_display
-        ));
+        let _ = writeln!(output, "{path_display:<30} → chunk {chunk_display:<6} {module_display}");
     }
 
     output.push_str("// ╚══════════════════════════════════════════════════════════╝\n");

@@ -7,7 +7,7 @@
 //! `TemplateLiteral`, and apply the noise filter from [`super::helpers`].
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::*;
+use oxc_ast::ast::{StringLiteral, TemplateLiteral};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -47,7 +47,7 @@ struct PathHostVisitor<'s> {
     out: Vec<AnalyzerMatch>,
 }
 
-impl<'s> PathHostVisitor<'s> {
+impl PathHostVisitor<'_> {
     fn harvest_string(&mut self, value: &str, span_start: u32, span_end: u32) {
         if value.is_empty() || value.len() > 2048 {
             return;
@@ -60,12 +60,11 @@ impl<'s> PathHostVisitor<'s> {
         for m in helpers::URL_PATTERN.find_iter(value) {
             let s = m.as_str();
             // Reject URLs to ignored hosts
-            if let Ok(parsed) = url::Url::parse(s) {
-                if let Some(host) = parsed.host_str() {
-                    if helpers::is_hostname_noise(host) {
-                        continue;
-                    }
-                }
+            if let Ok(parsed) = url::Url::parse(s)
+                && let Some(host) = parsed.host_str()
+                && helpers::is_hostname_noise(host)
+            {
+                continue;
             }
             self.out.push(AnalyzerMatch {
                 match_kind: "url".into(),
@@ -80,27 +79,27 @@ impl<'s> PathHostVisitor<'s> {
         }
 
         // Hostname match (bare host without scheme)
-        if let Some(caps) = helpers::HOSTNAME_PATTERN.captures(value) {
-            if let Some(g) = caps.get(1) {
-                let host = g.as_str();
-                if !helpers::is_hostname_noise(host) && host.contains('.') && !host.starts_with('.') {
-                    // Skip if it's the same content the URL_PATTERN already captured
-                    let already_url = self
-                        .out
-                        .iter()
-                        .any(|m| m.match_kind == "url" && m.match_value.contains(host));
-                    if !already_url {
-                        self.out.push(AnalyzerMatch {
-                            match_kind: "hostname".into(),
-                            match_value: host.to_string(),
-                            position: span_to_pos(self.source, span_start, span_end),
-                            file_type: self.file_type,
-                            file_path: self.file_path.map(str::to_string),
-                            severity: Severity::Info,
-                            provenance: Provenance::Ast,
-                            metadata: None,
-                        });
-                    }
+        if let Some(caps) = helpers::HOSTNAME_PATTERN.captures(value)
+            && let Some(g) = caps.get(1)
+        {
+            let host = g.as_str();
+            if !helpers::is_hostname_noise(host) && host.contains('.') && !host.starts_with('.') {
+                // Skip if it's the same content the URL_PATTERN already captured
+                let already_url = self
+                    .out
+                    .iter()
+                    .any(|m| m.match_kind == "url" && m.match_value.contains(host));
+                if !already_url {
+                    self.out.push(AnalyzerMatch {
+                        match_kind: "hostname".into(),
+                        match_value: host.to_string(),
+                        position: span_to_pos(self.source, span_start, span_end),
+                        file_type: self.file_type,
+                        file_path: self.file_path.map(str::to_string),
+                        severity: Severity::Info,
+                        provenance: Provenance::Ast,
+                        metadata: None,
+                    });
                 }
             }
         }
@@ -134,21 +133,21 @@ impl<'s> PathHostVisitor<'s> {
 
     fn harvest_comment(&mut self, text: &str, base_start: u32) {
         // For comments we use comment_path / comment_hostname / comment_url kinds.
-        if let Some(caps) = helpers::HOSTNAME_PATTERN.captures(text) {
-            if let Some(g) = caps.get(1) {
-                let host = g.as_str();
-                if !helpers::is_hostname_noise(host) && host.contains('.') {
-                    self.out.push(AnalyzerMatch {
-                        match_kind: "comment_hostname".into(),
-                        match_value: host.to_string(),
-                        position: span_to_pos(self.source, base_start, base_start + text.len() as u32),
-                        file_type: self.file_type,
-                        file_path: self.file_path.map(str::to_string),
-                        severity: Severity::Info,
-                        provenance: Provenance::Comment,
-                        metadata: None,
-                    });
-                }
+        if let Some(caps) = helpers::HOSTNAME_PATTERN.captures(text)
+            && let Some(g) = caps.get(1)
+        {
+            let host = g.as_str();
+            if !helpers::is_hostname_noise(host) && host.contains('.') {
+                self.out.push(AnalyzerMatch {
+                    match_kind: "comment_hostname".into(),
+                    match_value: host.to_string(),
+                    position: span_to_pos(self.source, base_start, base_start + text.len() as u32),
+                    file_type: self.file_type,
+                    file_path: self.file_path.map(str::to_string),
+                    severity: Severity::Info,
+                    provenance: Provenance::Comment,
+                    metadata: None,
+                });
             }
         }
         for m in helpers::PATH_PATTERN.find_iter(text) {
@@ -169,7 +168,7 @@ impl<'s> PathHostVisitor<'s> {
     }
 }
 
-impl<'a, 's> Visit<'a> for PathHostVisitor<'s> {
+impl<'a> Visit<'a> for PathHostVisitor<'_> {
     fn visit_string_literal(&mut self, lit: &StringLiteral<'a>) {
         self.harvest_string(lit.value.as_str(), lit.span.start, lit.span.end);
     }
@@ -233,7 +232,7 @@ mod tests {
 
     #[test]
     fn template_literal_static_parts() {
-        let src = r#"const x = `hello /api/v2/${user}/items`;"#;
+        let src = r"const x = `hello /api/v2/${user}/items`;";
         let k = kinds(src);
         assert!(k.iter().any(|s| s == "path"));
     }

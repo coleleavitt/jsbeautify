@@ -117,7 +117,7 @@ pub struct UnaryProxyInliner {
 
 impl UnaryProxyInliner {
     #[must_use]
-    pub fn new(proxies: FxHashMap<String, UnaryProxyInfo>) -> Self {
+    pub const fn new(proxies: FxHashMap<String, UnaryProxyInfo>) -> Self {
         Self { proxies, inlined: 0 }
     }
 

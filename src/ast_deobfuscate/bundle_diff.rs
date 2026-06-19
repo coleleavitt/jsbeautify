@@ -11,6 +11,7 @@
 //! make chunk-level diffing precise.
 
 use rustc_hash::FxHashMap;
+use std::fmt::Write as _;
 
 /// A webpack chunk with its metadata.
 #[derive(Debug, Clone)]
@@ -39,16 +40,11 @@ pub struct BundleDiffResult {
 #[must_use]
 pub fn parse_chunk_manifest(source: &str) -> Vec<ChunkInfo> {
     use regex::Regex;
+    use std::sync::LazyLock;
 
-    lazy_static::lazy_static! {
-        static ref CHUNK_HASH_RE: Regex = Regex::new(
-            r#"(\d+):\s*"([0-9a-f]{16,})""#
-        ).unwrap();
+    static CHUNK_HASH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\d+):\s*"([0-9a-f]{16,})""#).unwrap());
 
-        static ref CHUNK_NAME_RE: Regex = Regex::new(
-            r#"(\d+):\s*"([a-z][\w-]+)""#
-        ).unwrap();
-    }
+    static CHUNK_NAME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\d+):\s*"([a-z][\w-]+)""#).unwrap());
 
     let mut chunks: FxHashMap<u32, ChunkInfo> = FxHashMap::default();
 
@@ -128,21 +124,22 @@ pub fn diff_manifests(source: &[ChunkInfo], target: &[ChunkInfo]) -> BundleDiffR
 pub fn format_bundle_diff(diff: &BundleDiffResult, source_env: &str, target_env: &str) -> String {
     let mut output = String::new();
     output.push_str("// ╔══════════════════════════════════════════════════════════╗\n");
-    output.push_str(&format!("// ║  BUNDLE DIFF: {source_env} → {target_env}\n"));
+    let _ = writeln!(output, "// ║  BUNDLE DIFF: {source_env} → {target_env}");
     output.push_str("// ╠══════════════════════════════════════════════════════════╣\n");
-    output.push_str(&format!(
+    let _ = writeln!(
+        output,
         "// ║ Unchanged: {}  Modified: {}  Added: {}  Removed: {}\n",
         diff.unchanged_count,
         diff.modified_chunks.len(),
         diff.added_chunks.len(),
         diff.removed_chunks.len()
-    ));
+    );
 
     if !diff.added_chunks.is_empty() {
         output.push_str("// ║\n// ║ NEW CHUNKS (about to ship):\n");
         for chunk in &diff.added_chunks {
             let name = chunk.name.as_deref().unwrap_or("");
-            output.push_str(&format!("// ║   + chunk {} ({}) [{}]\n", chunk.id, chunk.hash, name));
+            let _ = writeln!(output, "// ║   + chunk {} ({}) [{}]", chunk.id, chunk.hash, name);
         }
     }
 
@@ -150,7 +147,7 @@ pub fn format_bundle_diff(diff: &BundleDiffResult, source_env: &str, target_env:
         output.push_str("// ║\n// ║ REMOVED CHUNKS:\n");
         for chunk in &diff.removed_chunks {
             let name = chunk.name.as_deref().unwrap_or("");
-            output.push_str(&format!("// ║   - chunk {} ({}) [{}]\n", chunk.id, chunk.hash, name));
+            let _ = writeln!(output, "// ║   - chunk {} ({}) [{}]", chunk.id, chunk.hash, name);
         }
     }
 
@@ -158,13 +155,14 @@ pub fn format_bundle_diff(diff: &BundleDiffResult, source_env: &str, target_env:
         output.push_str("// ║\n// ║ MODIFIED CHUNKS (code changed):\n");
         for (src, tgt) in &diff.modified_chunks {
             let name = src.name.as_deref().or(tgt.name.as_deref()).unwrap_or("");
-            output.push_str(&format!(
+            let _ = writeln!(
+                output,
                 "// ║   ~ chunk {} {} → {} [{}]\n",
                 src.id,
                 &src.hash[..8],
                 &tgt.hash[..8],
                 name
-            ));
+            );
         }
     }
 

@@ -1,80 +1,71 @@
-//! Svelte 5 recon analyzer. Detects Svelte runtime/compiler fingerprints that
-//! survive minification in production bundles — hoisted template strings (which
-//! leak routes/forms/classes), scoped-style hashes, store references, the public
-//! version marker, and the per-component `$$css` style object.
+//! Svelte 5 recon analyzer.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Detects runtime/compiler fingerprints that survive minification in production
+//! bundles: hoisted template strings, scoped-style hashes, store references, the
+//! public version marker, and the per-component `$$css` style object.
 //!
-//! Signatures confirmed against the cloned Svelte source (packages/svelte/src):
-//!   - `from_html` / `from_svg` / `from_mathml` / `from_tree` hoisted templates:
-//!     internal/client/dom/template.js (from_html L53, from_namespace L101,
-//!     from_svg L154, from_mathml L163, from_tree L219); codegen emits
-//!     `$.from_${namespace}(\`...\`, flags)` /  `$.from_tree([...])` in
-//!     compiler/phases/3-transform/client/transform-template/index.js (L29-31).
-//!   - `svelte-<hash>` scoped class: compiler/validate-options.js L78
-//!     (`svelte-${hash(...)}`); hash is `(n>>>0).toString(36)` base36, utils.js L13.
-//!     Applied to class attrs in 3-transform/client/visitors/RegularElement.js L245-249.
-//!   - `store_get(ref,'$name',...)`: internal/client/reactivity/store.js L36 and
-//!     internal/server/index.js L243 (`store_name` is the `$`-prefixed auto-sub name).
-//!   - `window.__svelte.v` version Set: internal/disclose-version.js L5
-//!     (`((window.__svelte ??= {}).v ??= new Set()).add(PUBLIC_VERSION)`).
-//!   - `$$css = { hash, code }` style object: compiler/phases/3-transform/client/
-//!     transform-client.js L413-419 (`b.const('$$css', { hash, code })` +
-//!     `$.append_styles($$anchor, $$css)`).
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
+//!
+//! Signatures confirmed against the cloned Svelte source (`packages/svelte/src`):
+//!
+//! - `from_html` / `from_svg` / `from_mathml` / `from_tree` hoisted templates
+//! - `svelte-<hash>` scoped class from compiler output
+//! - `store_get(ref, "$name", ...)` auto-subscription reads
+//! - `window.__svelte.v` version Set from `internal/disclose-version.js`
+//! - `$$css = { hash, code }` style object from `transform-client.js`
 
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// Hoisted template call: `$.from_html(`<...>`, flags)` (also `from_svg` /
-    /// `from_mathml`). The `$.` namespace prefix is optional/renameable, so we
-    /// only anchor on the stable export name + an immediately-following string
-    /// literal. Group 1 = variant; groups 2/3/4 = backtick/single/double html.
-    /// template.js L53/L154/L163; codegen transform-template/index.js L29.
-    static ref TEMPLATE_RE: Regex = Regex::new(
+/// Hoisted template call: `$.from_html(`<...>`, flags)` (also `from_svg` /
+/// `from_mathml`). The `$.` namespace prefix is optional/renameable, so we
+/// only anchor on the stable export name + an immediately-following string
+/// literal. Group 1 = variant; groups 2/3/4 = backtick/single/double html.
+/// template.js L53/L154/L163; codegen transform-template/index.js L29.
+static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r#"(?:[\w$]+\.)?from_(html|svg|mathml)\(\s*(?:`((?:[^`\\]|\\.)*)`|'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")"#,
     )
-    .unwrap();
+    .unwrap()
+});
 
-    /// Tree-mode template: `$.from_tree([...])` (`fragments: 'tree'` builds).
-    /// Capture group 1 is the leading structure segment (reveals tag names).
-    /// template.js L219; codegen transform-template/index.js L29.
-    static ref TREE_RE: Regex =
-        Regex::new(r#"(?:[\w$]+\.)?from_tree\(\s*\[([^\]]{0,200})"#).unwrap();
+/// Tree-mode template: `$.from_tree([...])` (`fragments: 'tree'` builds).
+/// Capture group 1 is the leading structure segment (reveals tag names).
+/// template.js L219; codegen transform-template/index.js L29.
+static TREE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:[\w$]+\.)?from_tree\(\s*\[([^\]]{0,200})").unwrap());
 
-    /// `href`/`action`/`src`/`formaction` attribute values inside a captured
-    /// template — surfaced as endpoint metadata.
-    static ref ATTR_ENDPOINT_RE: Regex =
-        Regex::new(r#"(?:href|action|formaction|src)\s*=\s*["']([^"']+)["']"#).unwrap();
+/// `href`/`action`/`src`/`formaction` attribute values inside a captured
+/// template — surfaced as endpoint metadata.
+static ATTR_ENDPOINT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:href|action|formaction|src)\s*=\s*["']([^"']+)["']"#).unwrap());
 
-    /// Scoped-style class `svelte-<hash>`, hash = base36 of a u32 (4-7 chars).
-    /// `\b` keeps it a standalone token so the word-based internal classes
-    /// (`svelte-css-wrapper`, `svelte-element`, ...) don't bleed in; a digit
-    /// requirement (enforced in code) filters the remaining all-letter words.
-    /// validate-options.js L78, utils.js L13.
-    static ref SCOPE_CLASS_RE: Regex = Regex::new(r#"svelte-([0-9a-z]{4,8})\b"#).unwrap();
+/// Scoped-style class `svelte-<hash>`, hash = base36 of a u32 (4-7 chars).
+/// `\b` keeps it a standalone token so the word-based internal classes
+/// (`svelte-css-wrapper`, `svelte-element`, ...) don't bleed in; a digit
+/// requirement (enforced in code) filters the remaining all-letter words.
+/// validate-options.js L78, utils.js L13.
+static SCOPE_CLASS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"svelte-([0-9a-z]{4,8})\b").unwrap());
 
-    /// Auto-subscription read: `store_get(ref,'$name',stores)`. Capture group 1
-    /// is the `$`-prefixed store name. store.js L36 / server/index.js L243.
-    static ref STORE_REF_RE: Regex =
-        Regex::new(r#"store_get\([^,]*,\s*["'](\$[A-Za-z_$][A-Za-z0-9_$]*)["']"#).unwrap();
+/// Auto-subscription read: `store_get(ref,'$name',stores)`. Capture group 1
+/// is the `$`-prefixed store name. store.js L36 / server/index.js L243.
+static STORE_REF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"store_get\([^,]*,\s*["'](\$[A-Za-z_$][A-Za-z0-9_$]*)["']"#).unwrap());
 
-    /// Public version marker `((window.__svelte ??= {}).v ??= new Set()).add("x.y.z")`.
-    /// Requires `.v` + `.add(<semver>)` so the sibling `.uid` / `.h` accesses don't
-    /// match. Capture group 1 = inlined PUBLIC_VERSION. disclose-version.js L5.
-    static ref VERSION_RE: Regex = Regex::new(
-        r#"window\.__svelte[^;]{0,160}?\.v\b[^;]{0,160}?\.add\(\s*["']([0-9]+\.[0-9]+\.[0-9]+[^"']*)["']"#,
-    )
-    .unwrap();
+/// Public version marker `((window.__svelte ??= {}).v ??= new Set()).add("x.y.z")`.
+/// Requires `.v` + `.add(<semver>)` so the sibling `.uid` / `.h` accesses don't
+/// match. Capture group 1 = inlined `PUBLIC_VERSION`. disclose-version.js L5.
+static VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"window\.__svelte[^;]{0,160}?\.v\b[^;]{0,160}?\.add\(\s*["']([0-9]+\.[0-9]+\.[0-9]+[^"']*)["']"#)
+        .unwrap()
+});
 
-    /// Per-component style object `$$css = { hash:'svelte-...', code:... }`,
-    /// fed to `$.append_styles`. Capture group 1 = the scope hash; the trailing
-    /// `,code:` anchor keeps this svelte-specific. transform-client.js L413-419.
-    static ref CSS_RE: Regex =
-        Regex::new(r#"\$\$css\s*=\s*\{\s*hash:\s*["'](svelte-[0-9a-z]+)["']\s*,\s*code:"#).unwrap();
-}
+/// Per-component style object `$$css = { hash:'svelte-...', code:... }`,
+/// fed to `$.append_styles`. Capture group 1 = the scope hash; the trailing
+/// `,code:` anchor keeps this svelte-specific. transform-client.js L413-419.
+static CSS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\$\$css\s*=\s*\{\s*hash:\s*["'](svelte-[0-9a-z]+)["']\s*,\s*code:"#).unwrap());
 
 /// Pull `href`/`action`/`src` endpoint values out of a captured template string.
 fn template_endpoints(html: &str) -> Vec<String> {
@@ -85,6 +76,10 @@ fn template_endpoints(html: &str) -> Vec<String> {
 }
 
 /// Scan source for Svelte signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();

@@ -1,6 +1,6 @@
 //! Hook system — external process execution on events.
 //!
-//! Ports jxscout's `crates/core/hooks/` (REPORT_06 §6). Each hook is a
+//! Ports jxscout's `crates/core/hooks/` (`REPORT_06` §6). Each hook is a
 //! user script spawned via `tokio::process::Command` with event JSON on
 //! stdin. No sandboxing — full system access at jxscout process privileges.
 //!
@@ -24,13 +24,13 @@ use tokio::process::Command;
 pub struct HookConfig {
     pub script: String,
     pub concurrency: Option<u32>,
-    /// Optional filter by file_types.
+    /// Optional filter by `file_types`.
     pub file_types: Option<Vec<String>>,
     /// Optional filter by match kinds.
     pub kinds: Option<Vec<String>>,
 }
 
-/// Full hooks configuration keyed by event topic → hook_name → config.
+/// Full hooks configuration keyed by event topic → `hook_name` → config.
 pub type HooksMap = HashMap<String, HashMap<String, HookConfig>>;
 
 /// Run all hooks registered for `topic`, passing `payload` as JSON on stdin.
@@ -102,6 +102,7 @@ async fn run_script(script: &str, stdin_data: &[u8]) -> Result<std::process::Exi
 ///
 /// # Errors
 /// Parsing failures.
+#[must_use]
 pub fn parse_hooks(value: &serde_json::Value) -> HooksMap {
     let mut out = HooksMap::new();
     let Some(obj) = value.get("hooks").and_then(|v| v.as_object()) else {

@@ -5,6 +5,7 @@
 //! Parses Burp-exported `.req` files, sends them over HTTP(S), and saves
 //! the response as a `.res` file alongside.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use crate::fuzz;
 /// Configuration for the repeater.
 #[derive(Debug, Clone)]
 pub struct RepeaterConfig {
-    /// Override target URL (e.g. "https://host:443"). If None, derived from Host header.
+    /// Override target URL (e.g. "<https://host:443>"). If None, derived from Host header.
     pub url: Option<String>,
     /// Proxy host (optional).
     pub proxy_host: Option<String>,
@@ -49,6 +50,10 @@ pub struct RepeaterResult {
 }
 
 /// Replay a raw .req file and return the response.
+///
+/// # Errors
+/// Returns an error when parsing, client construction, request sending, or
+/// response-body reading fails.
 pub fn replay(req_content: &str, config: &RepeaterConfig) -> Result<RepeaterResult, String> {
     let mut template = fuzz::parse_request(req_content)?;
 
@@ -72,7 +77,7 @@ pub fn replay(req_content: &str, config: &RepeaterConfig) -> Result<RepeaterResu
 
     // Determine target URL
     let target_url = if let Some(ref url) = config.url {
-        format!("{}{}", url.trim_end_matches('/'), &template.path)
+        format!("{}{}", url.trim_end_matches('/'), template.path)
     } else {
         // Derive from Host header
         let (host, port, is_tls) = fuzz::extract_host(&template).ok_or("No Host header and no --url specified")?;
@@ -90,7 +95,7 @@ pub fn replay(req_content: &str, config: &RepeaterConfig) -> Result<RepeaterResu
         .danger_accept_invalid_certs(true);
 
     if let (Some(ph), Some(pp)) = (&config.proxy_host, config.proxy_port) {
-        let proxy_url = format!("http://{}:{}", ph, pp);
+        let proxy_url = format!("http://{ph}:{pp}");
         client_builder =
             client_builder.proxy(reqwest::Proxy::all(&proxy_url).map_err(|e| format!("Invalid proxy: {e}"))?);
     }
@@ -138,6 +143,10 @@ pub fn replay(req_content: &str, config: &RepeaterConfig) -> Result<RepeaterResu
 }
 
 /// Replay a .req file from disk, save the response as .res alongside.
+///
+/// # Errors
+/// Returns an error when reading the request, replaying it, or writing the
+/// response file fails.
 pub fn replay_file(req_path: &Path, config: &RepeaterConfig) -> Result<RepeaterResult, String> {
     let content = fs::read_to_string(req_path).map_err(|e| format!("Cannot read {}: {e}", req_path.display()))?;
 
@@ -155,7 +164,7 @@ pub fn replay_file(req_path: &Path, config: &RepeaterConfig) -> Result<RepeaterR
 fn format_response(result: &RepeaterResult) -> String {
     let mut out = format!("HTTP/1.1 {}\r\n", result.status_code);
     for (k, v) in &result.headers {
-        out.push_str(&format!("{}: {}\r\n", k, v));
+        write!(out, "{k}: {v}\r\n").ok();
     }
     out.push_str("\r\n");
     out.push_str(&result.body);

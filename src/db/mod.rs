@@ -1,12 +1,12 @@
 //! SQLite-backed project database.
 //!
 //! Ports `crates/core/project-db/` and parts of `crates/core/db/` from
-//! jxscout-pro-v2. Schema mirrors REPORT_02 / REPORT_05 / REPORT_06.
+//! jxscout-pro-v2. Schema mirrors `REPORT_02` / `REPORT_05` / `REPORT_06`.
 //!
 //! ## Tables
 //!
 //! Core ingestion:
-//!   - `projects` — project registry (name, working_directory, timestamps)
+//!   - `projects` — project registry (name, `working_directory`, timestamps)
 //!   - `html_files` / `js_files` — captured source files with content hash
 //!   - `html_files_inline_js` — inline `<script>` blocks
 //!   - `js_loader_relationships` / `iframe_loader_relationships` — page→asset edges
@@ -17,7 +17,7 @@
 //! Analysis:
 //!   - `analysis_run` — one row per (file, analyzer) invocation
 //!   - `matches` — per-finding rows with seen/uninteresting flags
-//!   - `findings` — promoted matches with severity + dedup_key
+//!   - `findings` — promoted matches with severity + `dedup_key`
 //!   - `unique_words` / `word_occurrences` — wordlist DB (FTS5-backed)
 //!
 //! Triage / workflow:
@@ -30,7 +30,7 @@
 //! Event bus:
 //!   - `events` / `subscribers` / `subscriber_jobs` (lease-based queue)
 //!
-//! Pragmas: WAL mode, NORMAL synchronous, foreign_keys ON, busy_timeout 5000.
+//! Pragmas: WAL mode, NORMAL synchronous, `foreign_keys` ON, `busy_timeout` 5000.
 
 use rusqlite::{Connection, OpenFlags, params};
 use std::path::{Path, PathBuf};
@@ -46,10 +46,12 @@ pub mod relationships;
 pub mod schema;
 pub mod words;
 
-/// One project DB. Wraps a `rusqlite::Connection` behind a Mutex so it can be
-/// shared across analyzer/monitor/proxy threads. SQLite's WAL mode supports
-/// concurrent readers natively; a single writer serialised through the mutex
-/// is the safe baseline.
+/// One project DB.
+///
+/// Wraps a `rusqlite::Connection` behind a Mutex so it can be shared across
+/// analyzer/monitor/proxy threads. SQLite's WAL mode supports concurrent
+/// readers natively; a single writer serialised through the mutex is the safe
+/// baseline.
 #[derive(Clone)]
 pub struct ProjectDb {
     conn: Arc<Mutex<Connection>>,
@@ -112,7 +114,7 @@ impl ProjectDb {
     where
         F: FnOnce(&Connection) -> T,
     {
-        let g = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let g = self.conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&g)
     }
 
@@ -138,7 +140,7 @@ impl ProjectDb {
         })
     }
 
-    /// Sha-256 hex of `bytes`. Used for content_hash columns.
+    /// Sha-256 hex of `bytes`. Used for `content_hash` columns.
     #[must_use]
     pub fn content_hash(bytes: &[u8]) -> String {
         use sha2::{Digest, Sha256};

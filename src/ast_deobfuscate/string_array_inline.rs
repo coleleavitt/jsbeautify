@@ -12,6 +12,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -21,16 +22,6 @@ pub struct StringArrayInliner {
 }
 
 impl StringArrayInliner {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { changed: false }
-    }
-
-    #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
-    }
-
     fn try_inline_array_access<'a>(
         &mut self,
         member: &ComputedMemberExpression<'a>,
@@ -84,11 +75,7 @@ impl StringArrayInliner {
     }
 }
 
-impl Default for StringArrayInliner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+flag_pass!(StringArrayInliner, changed, has_changed);
 
 impl<'a> Traverse<'a, DeobfuscateState> for StringArrayInliner {
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

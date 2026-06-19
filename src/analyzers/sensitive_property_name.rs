@@ -14,7 +14,10 @@
 //! skipped because the expression isn't statically known.
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::*;
+use oxc_ast::ast::{
+    Class, ClassElement, JSXAttributeItem, JSXAttributeName, JSXOpeningElement, ObjectExpression, ObjectPattern,
+    ObjectPropertyKind, PropertyKey,
+};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -47,7 +50,7 @@ struct PropNameVisitor<'a> {
     out: Vec<AnalyzerMatch>,
 }
 
-impl<'a> PropNameVisitor<'a> {
+impl PropNameVisitor<'_> {
     fn check_key(&mut self, name: &str, start: u32, end: u32) {
         for rule in regex_bank::property_name_rules() {
             if rule.regex.is_match(name) {
@@ -131,10 +134,10 @@ impl<'a> Visit<'a> for PropNameVisitor<'a> {
 
     fn visit_jsx_opening_element(&mut self, it: &JSXOpeningElement<'a>) {
         for attr in &it.attributes {
-            if let JSXAttributeItem::Attribute(a) = attr {
-                if let JSXAttributeName::Identifier(id) = &a.name {
-                    self.check_key(&id.name, id.span.start, id.span.end);
-                }
+            if let JSXAttributeItem::Attribute(a) = attr
+                && let JSXAttributeName::Identifier(id) = &a.name
+            {
+                self.check_key(&id.name, id.span.start, id.span.end);
             }
         }
         walk::walk_jsx_opening_element(self, it);
@@ -152,14 +155,13 @@ mod tests {
         let kinds: Vec<_> = matches.iter().map(|m| m.match_kind.as_str()).collect();
         assert!(
             kinds.iter().any(|k| k.contains("secret")),
-            "expected secret match, got {:?}",
-            kinds
+            "expected secret match, got {kinds:?}"
         );
     }
 
     #[test]
     fn detects_authorization_in_destructuring() {
-        let src = r#"const { authorization, name } = headers;"#;
+        let src = r"const { authorization, name } = headers;";
         let matches = analyze(src, None, FileType::Js);
         assert!(matches.iter().any(|m| m.match_kind.contains("authorization")));
     }
@@ -168,6 +170,6 @@ mod tests {
     fn ignores_benign_keys() {
         let src = r#"const obj = { foo: 1, bar: 2, baz: "x" };"#;
         let matches = analyze(src, None, FileType::Js);
-        assert!(matches.is_empty(), "should not flag benign keys: {:?}", matches);
+        assert!(matches.is_empty(), "should not flag benign keys: {matches:?}");
     }
 }

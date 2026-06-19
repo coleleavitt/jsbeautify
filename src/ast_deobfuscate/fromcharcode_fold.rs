@@ -13,6 +13,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -21,23 +22,7 @@ pub struct FromCharCodeFolder {
     folded: usize,
 }
 
-impl FromCharCodeFolder {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { folded: 0 }
-    }
-
-    #[must_use]
-    pub const fn folded(&self) -> usize {
-        self.folded
-    }
-}
-
-impl Default for FromCharCodeFolder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(FromCharCodeFolder, folded, folded);
 
 fn is_string_from_charcode(expr: &Expression<'_>) -> bool {
     let Expression::StaticMemberExpression(sme) = expr else {

@@ -1,72 +1,54 @@
-//! Module Federation recon analyzer. Surfaces MF runtime globals, remote entry
-//! URLs (cross-origin attack surface), exposed module maps, shared dependency
-//! version tables, and mf-manifest/mf-stats document shapes in production
-//! bundles.
+//! Module Federation recon analyzer.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Surfaces MF runtime globals, remote entry URLs, exposed module maps, shared
+//! dependency version tables, and mf-manifest/mf-stats document shapes in
+//! production bundles.
+//!
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Literal signatures confirmed against the cloned current source at
 //! /home/cole/RustProjects/forks/frameworks/module-federation :
-//!   - `__FEDERATION__.__INSTANCES__`  -> packages/runtime/src/utils.ts:18, index.ts:119
-//!   - `<require>.federation = { ... }` -> packages/enhanced/src/lib/container/runtime/utils.ts:41
-//!     (getFederationGlobalScope returns `${require||'__webpack_require__'}.federation`)
-//!   - `remoteInfos` items `{alias,name,entry,shareScope,externalType}`
-//!     -> packages/enhanced/src/lib/container/runtime/getFederationGlobal.ts:25-51
-//!   - `exposes` array `{id,name,path}` (ManifestExpose) -> packages/sdk/src/types/manifest.ts:39-43;
-//!     container `var moduleMap = {...}` -> packages/enhanced/src/lib/container/ContainerEntryModule.ts:279
-//!   - `shared` entries `{id,name,version,singleton,requiredVersion}` (ManifestShared)
-//!     -> packages/sdk/src/types/manifest.ts:9-21
-//!   - manifest/stats top-level `{id,name,metaData,shared,remotes,exposes}`
-//!     -> packages/sdk/src/types/manifest.ts:46-54, packages/sdk/src/types/stats.ts:135-142
+//! - `__FEDERATION__.__INSTANCES__` -> packages/runtime/src/utils.ts:18, index.ts:119
+//! - `<require>.federation = { ... }` -> packages/enhanced/src/lib/container/runtime/utils.ts:41
+//! - `remoteInfos` items `{alias,name,entry,shareScope,externalType}` -> packages/enhanced/src/lib/container/runtime/getFederationGlobal.ts:25-51
+//! - `exposes` array `{id,name,path}` (`ManifestExpose`) -> packages/sdk/src/types/manifest.ts:39-43
+//! - `shared` entries `{id,name,version,singleton,requiredVersion}` (`ManifestShared`) -> packages/sdk/src/types/manifest.ts:9-21
+//! - manifest/stats top-level `{id,name,metaData,shared,remotes,exposes}` -> packages/sdk/src/types/manifest.ts:46-54
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
+
+static MF_RUNTIME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:__FEDERATION__(?:\.__INSTANCES__)?|\.federation\s*=\s*\{)").unwrap());
+static MF_REMOTE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"["']?name["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?entry["']?\s*:\s*["'](https?://[^"']+|[^"']*remoteEntry[^"']*)["']"#,
+    )
+    .unwrap()
+});
+static MF_EXPOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"["']exposes["']\s*:\s*\[\s*\{[^}]*["']path["']\s*:\s*["'](\./[^"']+)["']"#).unwrap()
+});
+static MF_SHARED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"["']name["']\s*:\s*["']([^"']+)["']\s*,\s*["']version["']\s*:\s*["']([^"']+)["']\s*,\s*["']singleton["']"#,
+    )
+    .unwrap()
+});
+static MF_MANIFEST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"["']id["']\s*:\s*["']([^"']+)["']\s*,\s*["']name["']\s*:\s*["']([^"']+)["']\s*,\s*["']metaData["']"#)
+        .unwrap()
+});
 
 /// Scan source for Module Federation signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
-    lazy_static::lazy_static! {
-        // mf_runtime: the MF runtime global. `__FEDERATION__[.__INSTANCES__]`
-        // (runtime/src/utils.ts) or the bundler-emitted `<require>.federation = {`
-        // assignment (enhanced .../runtime/utils.ts:41).
-        static ref MF_RUNTIME_RE: Regex = Regex::new(
-            r#"(?:__FEDERATION__(?:\.__INSTANCES__)?|\.federation\s*=\s*\{)"#
-        ).unwrap();
-
-        // mf_remote: a remote descriptor pairing a `name` with an `entry` URL,
-        // as emitted into remoteInfos / initOptions.remotes
-        // (getFederationGlobal.ts builds `{alias,name,entry,shareScope,...}`).
-        // Keys may be JSON-quoted or bare object-literal keys. Captures
-        // (1)=remote name, (2)=remoteEntry URL.
-        // The entry is either an absolute URL or a relative `remoteEntry`-shaped
-        // path (`/remotes/app/remoteEntry.js`, `./remoteEntry.js`). Requiring one
-        // of those shapes (rather than any string) keeps the `{name,entry}`
-        // adjacency from matching ordinary object literals like `{name,entry:"main"}`.
-        static ref MF_REMOTE_RE: Regex = Regex::new(
-            r#"["']?name["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?entry["']?\s*:\s*["'](https?://[^"']+|[^"']*remoteEntry[^"']*)["']"#
-        ).unwrap();
-
-        // mf_expose: an `exposes` array whose first object carries a `./`-prefixed
-        // `path` (ManifestExpose {id,name,path}). Captures (1)=expose path.
-        static ref MF_EXPOSE_RE: Regex = Regex::new(
-            r#"["']exposes["']\s*:\s*\[\s*\{[^}]*["']path["']\s*:\s*["'](\./[^"']+)["']"#
-        ).unwrap();
-
-        // mf_shared: a shared dependency version-table entry. Anchored by the
-        // MF-specific `singleton` key following name+version (ManifestShared).
-        // Captures (1)=package name, (2)=resolved version.
-        static ref MF_SHARED_RE: Regex = Regex::new(
-            r#"["']name["']\s*:\s*["']([^"']+)["']\s*,\s*["']version["']\s*:\s*["']([^"']+)["']\s*,\s*["']singleton["']"#
-        ).unwrap();
-
-        // mf_manifest: the mf-manifest.json / mf-stats.json document head
-        // `{id,name,metaData,...}`. The camelCase `metaData` discriminates the
-        // MF document from generic {id,name} objects. Captures (1)=id, (2)=name.
-        static ref MF_MANIFEST_RE: Regex = Regex::new(
-            r#"["']id["']\s*:\s*["']([^"']+)["']\s*,\s*["']name["']\s*:\s*["']([^"']+)["']\s*,\s*["']metaData["']"#
-        ).unwrap();
-    }
 
     // mf_runtime — runtime global presence.
     for caps in MF_RUNTIME_RE.captures_iter(source) {

@@ -1,0 +1,6 @@
+# Keep scratch / pipeline-evidence dirs out of the codegraph index — they are not
+# source and badly skew analysis (e.g. obfuscated .sisyphus/evidence/*.js dominated
+# the complexity ranking). Re-index after editing: `codegraph index`.
+.sisyphus/
+.jfc/
+research/

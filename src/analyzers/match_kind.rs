@@ -18,15 +18,31 @@ impl FileType {
     /// Infer from filename extension. Defaults to `Js`.
     #[must_use]
     pub fn from_path(path: &str) -> Self {
-        let lower = path.to_ascii_lowercase();
-        if lower.ends_with(".html") || lower.ends_with(".htm") {
+        if path_has_extension(path, &["html", "htm"]) {
             Self::Html
-        } else if lower.ends_with(".js.map") || lower.ends_with(".map") {
+        } else if ends_with_ignore_ascii_case(path, ".js.map") || path_has_extension(path, &["map"]) {
             Self::SourceMap
         } else {
             Self::Js
         }
     }
+}
+
+fn path_has_extension(path: &str, extensions: &[&str]) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            extensions
+                .iter()
+                .any(|expected| extension.eq_ignore_ascii_case(expected))
+        })
+}
+
+fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
+    let bytes = value.as_bytes();
+    let suffix = suffix.as_bytes();
+    bytes.len() >= suffix.len() && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -90,17 +106,20 @@ fn byte_offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
     (line, col)
 }
 
-/// How an analyzer arrived at a match. Mirrors jxscout's internal MatchKind enum
-/// (ASTPath, RegexPath, RegexBuiltIn, etc.) so consumers can distinguish a path
-/// the AST analyzer found from one the regex pass surfaced.
+/// How an analyzer arrived at a match.
+///
+/// Mirrors jxscout's internal `MatchKind` enum (`ASTPath`, `RegexPath`,
+/// `RegexBuiltIn`, etc.) so consumers can distinguish a path the AST analyzer
+/// found from one the regex pass surfaced.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Provenance {
     /// AST-walked literal/template (path, hostname, GraphQL, package, etc.)
     Ast,
-    /// User-supplied regex (CLI --custom-regex or settings analyzer.custom_analyzers)
+    /// User-supplied regex (CLI --custom-regex or settings `analyzer.custom_analyzers`)
     RegexUser,
-    /// Built-in secret regex (regex_bank)
+    /// Built-in secret regex (`regex_bank`)
     RegexBuiltIn,
     /// Derived analyzer (filter on existing matches)
     Derived,
@@ -109,13 +128,8 @@ pub enum Provenance {
     /// Comment-driven extraction
     Comment,
     /// Unknown / legacy
+    #[default]
     Other,
-}
-
-impl Default for Provenance {
-    fn default() -> Self {
-        Self::Other
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -139,7 +153,7 @@ pub struct AnalyzerMatch {
     pub metadata: Option<serde_json::Value>,
 }
 
-fn default_severity() -> Severity {
+const fn default_severity() -> Severity {
     Severity::Info
 }
 
@@ -169,13 +183,13 @@ impl AnalyzerMatch {
     }
 
     #[must_use]
-    pub fn with_provenance(mut self, p: Provenance) -> Self {
+    pub const fn with_provenance(mut self, p: Provenance) -> Self {
         self.provenance = p;
         self
     }
 
     #[must_use]
-    pub fn with_severity(mut self, s: Severity) -> Self {
+    pub const fn with_severity(mut self, s: Severity) -> Self {
         self.severity = s;
         self
     }

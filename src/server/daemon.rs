@@ -72,8 +72,7 @@ impl ServeConfig {
     pub fn workdir(&self) -> PathBuf {
         crate::db::default_project_db_path(&self.project_name)
             .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf)
     }
 }
 
@@ -150,7 +149,7 @@ pub async fn serve(cfg: ServeConfig) -> Result<(), String> {
         _ = tokio::signal::ctrl_c() => {
             eprintln!("\n[daemon] shutdown requested; stopping.");
         }
-        _ = wait_all(tasks) => {
+        () = wait_all(tasks) => {
             eprintln!("[daemon] all subsystems exited.");
         }
     }

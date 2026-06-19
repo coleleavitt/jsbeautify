@@ -56,7 +56,7 @@ pub trait NameSuggester {
 // ── OpenAI-compatible HTTP provider ──────────────────────────────────────────
 
 /// Suggester backed by the shared [`LlmClient`] (any OpenAI-compatible
-/// endpoint: OpenAI, OpenRouter, Ollama, llama.cpp, …).
+/// endpoint: `OpenAI`, `OpenRouter`, Ollama, llama.cpp, …).
 pub struct OpenAiCompatSuggester {
     client: LlmClient,
 }
@@ -94,10 +94,10 @@ impl NameSuggester for OpenAiCompatSuggester {
             Use only valid JS identifiers; never reserved words. Respond with ONLY a JSON array \
             of strings, one per input, in the same order.";
         let user = serde_json::Value::Array(user_items).to_string();
-        match self.client.chat(system, &user) {
-            Ok(content) => parse_name_array(&content, requests.len()),
-            Err(_) => vec![None; requests.len()],
-        }
+        self.client.chat(system, &user).map_or_else(
+            |_| vec![None; requests.len()],
+            |content| parse_name_array(&content, requests.len()),
+        )
     }
 }
 
@@ -130,7 +130,7 @@ struct LlmCandidateCollector {
 }
 
 impl LlmCandidateCollector {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { candidates: Vec::new() }
     }
 }

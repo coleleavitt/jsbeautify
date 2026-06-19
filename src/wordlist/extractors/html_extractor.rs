@@ -8,46 +8,48 @@
 //!   - `html_img_alt`       — `<img alt="...">` attribute values
 //!   - `html_meta_content`  — `<meta content="...">` for og:title, description, etc.
 
-use lazy_static::lazy_static;
 use regex::Regex;
 use rustc_hash::FxHashSet;
+use std::sync::LazyLock;
 
 use crate::wordlist::filter;
 
-lazy_static! {
-    static ref TAG_RE: Regex = Regex::new(r"<[^>]*>").unwrap();
-    static ref COMMENT_RE: Regex = Regex::new(r"<!--([\s\S]*?)-->").unwrap();
-    static ref IMG_ALT_RE: Regex = Regex::new(r#"(?i)<img[^>]+alt\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref META_CONTENT_RE: Regex = Regex::new(
-        r#"(?i)<meta[^>]+(?:name|property)\s*=\s*["'](?:og:title|og:description|twitter:description|keywords)["'][^>]+content\s*=\s*["']([^"']+)["']"#
-    ).unwrap();
-    static ref META_CONTENT_REV_RE: Regex = Regex::new(
-        r#"(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:name|property)\s*=\s*["'](?:og:title|og:description|twitter:description|keywords)["']"#
-    ).unwrap();
-    static ref SCRIPT_RE: Regex = Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap();
-    static ref STYLE_RE: Regex = Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap();
-    // Match jxscout's WORD_REGEX exactly: identifier-like tokens with hyphen/underscore preserved.
-    // The previous version used [a-zA-Z][a-zA-Z0-9']{1,} which split kebab-case.
-    static ref WORD_RE: Regex = Regex::new(r"\b[a-zA-Z][a-zA-Z0-9_\-]{1,}\b").unwrap();
+pub use super::html_config::{HtmlExtractConfig, HtmlExtractSources};
 
-    static ref TITLE_RE: Regex = Regex::new(r"(?si)<title[^>]*>([\s\S]*?)</title>").unwrap();
-    static ref META_DESCRIPTION_RE: Regex = Regex::new(
-        r#"(?i)<meta[^>]+name\s*=\s*["']description["'][^>]+content\s*=\s*["']([^"']+)["']"#
-    ).unwrap();
-    static ref META_DESCRIPTION_REV_RE: Regex = Regex::new(
-        r#"(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']description["']"#
-    ).unwrap();
-    // <article data-topic="..."> / <section data-summary="...">
-    static ref TOPIC_ATTR_RE: Regex = Regex::new(
-        r#"(?i)\b(?:data-)?topic\s*=\s*["']([^"']+)["']"#
-    ).unwrap();
-    static ref SUMMARY_ATTR_RE: Regex = Regex::new(
-        r#"(?i)\b(?:data-)?summary\s*=\s*["']([^"']+)["']"#
-    ).unwrap();
-    // href="...?foo=bar&baz=qux" — strip the query and pull keys+values
-    static ref HREF_RE: Regex = Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
-    static ref ACTION_RE: Regex = Regex::new(r#"(?i)\baction\s*=\s*["']([^"']+)["']"#).unwrap();
-}
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
+static COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<!--([\s\S]*?)-->").unwrap());
+static IMG_ALT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)<img[^>]+alt\s*=\s*["']([^"']+)["']"#).unwrap());
+static META_CONTENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)<meta[^>]+(?:name|property)\s*=\s*["'](?:og:title|og:description|twitter:description|keywords)["'][^>]+content\s*=\s*["']([^"']+)["']"#
+    ).unwrap()
+});
+static META_CONTENT_REV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:name|property)\s*=\s*["'](?:og:title|og:description|twitter:description|keywords)["']"#
+    ).unwrap()
+});
+static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap());
+static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap());
+// Match jxscout's WORD_REGEX exactly: identifier-like tokens with hyphen/underscore preserved.
+// The previous version used [a-zA-Z][a-zA-Z0-9']{1,} which split kebab-case.
+static WORD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-zA-Z][a-zA-Z0-9_\-]{1,}\b").unwrap());
+static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?si)<title[^>]*>([\s\S]*?)</title>").unwrap());
+static META_DESCRIPTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)<meta[^>]+name\s*=\s*["']description["'][^>]+content\s*=\s*["']([^"']+)["']"#).unwrap()
+});
+static META_DESCRIPTION_REV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']description["']"#).unwrap()
+});
+// <article data-topic="..."> / <section data-summary="...">
+static TOPIC_ATTR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\b(?:data-)?topic\s*=\s*["']([^"']+)["']"#).unwrap());
+static SUMMARY_ATTR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\b(?:data-)?summary\s*=\s*["']([^"']+)["']"#).unwrap());
+// href="...?foo=bar&baz=qux" — strip the query and pull keys+values
+static HREF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap());
+static ACTION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\baction\s*=\s*["']([^"']+)["']"#).unwrap());
 
 pub const SOURCE_BODY_TEXT: &str = "html_body_text";
 pub const SOURCE_COMMENT: &str = "html_comment";
@@ -58,36 +60,6 @@ pub const SOURCE_DESCRIPTION: &str = "html_description";
 pub const SOURCE_TOPIC: &str = "html_topic";
 pub const SOURCE_SUMMARY: &str = "html_summary";
 pub const SOURCE_QUERY_PARAM: &str = "html_query_param";
-
-/// Which HTML extraction sources to enable.
-#[derive(Debug, Clone)]
-pub struct HtmlExtractConfig {
-    pub body_text: bool,
-    pub comments: bool,
-    pub img_alt: bool,
-    pub meta_content: bool,
-    pub title: bool,
-    pub description: bool,
-    pub topic: bool,
-    pub summary: bool,
-    pub query_param: bool,
-}
-
-impl Default for HtmlExtractConfig {
-    fn default() -> Self {
-        Self {
-            body_text: true,
-            comments: true,
-            img_alt: true,
-            meta_content: true,
-            title: true,
-            description: true,
-            topic: true,
-            summary: true,
-            query_param: true,
-        }
-    }
-}
 
 /// A word with its source category.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -118,7 +90,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     };
 
     // 1. HTML comments
-    if config.comments {
+    if config.comments() {
         for cap in COMMENT_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_COMMENT);
@@ -127,7 +99,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 2. img alt attributes
-    if config.img_alt {
+    if config.img_alt() {
         for cap in IMG_ALT_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_IMG_ALT);
@@ -136,7 +108,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 3. meta content (description, og:title, etc.)
-    if config.meta_content {
+    if config.meta_content() {
         for cap in META_CONTENT_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_META_CONTENT);
@@ -150,7 +122,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 4. Body text (strip scripts, styles, tags)
-    if config.body_text {
+    if config.body_text() {
         let no_scripts = SCRIPT_RE.replace_all(html, " ");
         let no_styles = STYLE_RE.replace_all(&no_scripts, " ");
         let stripped = TAG_RE.replace_all(&no_styles, " ");
@@ -160,7 +132,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 5. <title>
-    if config.title {
+    if config.title() {
         for cap in TITLE_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_TITLE);
@@ -169,7 +141,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 6. <meta name="description">
-    if config.description {
+    if config.description() {
         for cap in META_DESCRIPTION_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_DESCRIPTION);
@@ -183,7 +155,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 7. topic / data-topic attributes
-    if config.topic {
+    if config.topic() {
         for cap in TOPIC_ATTR_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_TOPIC);
@@ -192,7 +164,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 8. summary / data-summary attributes
-    if config.summary {
+    if config.summary() {
         for cap in SUMMARY_ATTR_RE.captures_iter(html) {
             for w in WORD_RE.find_iter(&cap[1]) {
                 push(w.as_str(), SOURCE_SUMMARY);
@@ -201,7 +173,7 @@ pub fn extract_sourced(html: &str, config: &HtmlExtractConfig) -> Vec<HtmlSource
     }
 
     // 9. URL query params from href= and action= attributes
-    if config.query_param {
+    if config.query_param() {
         for re in [&*HREF_RE, &*ACTION_RE] {
             for cap in re.captures_iter(html) {
                 let url = &cap[1];
@@ -315,7 +287,22 @@ mod tests {
             .map(|w| w.word.as_str())
             .collect();
         // jxscout's WORD_REGEX preserves these as one token each.
-        assert!(title.iter().any(|w| *w == "auth-token-key"));
-        assert!(title.iter().any(|w| *w == "example_value"));
+        assert!(title.contains(&"auth-token-key"));
+        assert!(title.contains(&"example_value"));
+    }
+
+    #[test]
+    fn source_accessors_disable_categories() {
+        let html = r"
+            <title>Admin Portal</title>
+            <body><!-- auth comment --><p>Visible Body</p></body>
+        ";
+        let config = HtmlExtractConfig::default().with_comments(false).with_title(false);
+
+        let words = extract_sourced(html, &config);
+
+        assert!(!words.iter().any(|w| w.source == SOURCE_COMMENT));
+        assert!(!words.iter().any(|w| w.source == SOURCE_TITLE));
+        assert!(words.iter().any(|w| w.source == SOURCE_BODY_TEXT));
     }
 }

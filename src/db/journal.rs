@@ -2,6 +2,7 @@
 
 use rusqlite::{Result, params};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 use super::ProjectDb;
 
@@ -16,7 +17,7 @@ pub enum EntryType {
 
 impl EntryType {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Test => "test",
             Self::Hypothesis => "hypothesis",
@@ -24,15 +25,19 @@ impl EntryType {
             Self::Recon => "recon",
         }
     }
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "test" => Self::Test,
-            "hypothesis" => Self::Hypothesis,
-            "observation" => Self::Observation,
-            "recon" => Self::Recon,
-            _ => return None,
-        })
+}
+
+impl std::str::FromStr for EntryType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "test" => Ok(Self::Test),
+            "hypothesis" => Ok(Self::Hypothesis),
+            "observation" => Ok(Self::Observation),
+            "recon" => Ok(Self::Recon),
+            _ => Err(()),
+        }
     }
 }
 
@@ -46,21 +51,25 @@ pub enum Status {
 
 impl Status {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Untested => "untested",
             Self::Confirmed => "confirmed",
             Self::Disproved => "disproved",
         }
     }
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "untested" => Self::Untested,
-            "confirmed" => Self::Confirmed,
-            "disproved" => Self::Disproved,
-            _ => return None,
-        })
+}
+
+impl std::str::FromStr for Status {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "untested" => Ok(Self::Untested),
+            "confirmed" => Ok(Self::Confirmed),
+            "disproved" => Ok(Self::Disproved),
+            _ => Err(()),
+        }
     }
 }
 
@@ -141,10 +150,10 @@ pub fn list(db: &ProjectDb, f: &JournalFilter<'_>) -> Result<Vec<JournalEntry>> 
     }
     sql.push_str(" ORDER BY id DESC");
     if let Some(l) = f.limit {
-        sql.push_str(&format!(" LIMIT {l}"));
+        write!(sql, " LIMIT {l}").ok();
     }
     if let Some(o) = f.offset {
-        sql.push_str(&format!(" OFFSET {o}"));
+        write!(sql, " OFFSET {o}").ok();
     }
 
     db.with_conn(|c| {
@@ -185,7 +194,7 @@ pub fn summary(db: &ProjectDb) -> Result<Vec<(String, String, i64)>> {
 
 /// # Errors
 pub fn delete(db: &ProjectDb, id: i64) -> Result<usize> {
-    db.with_conn(|c| Ok(c.execute("DELETE FROM journal_entries WHERE id = ?1", params![id])?))
+    db.with_conn(|c| c.execute("DELETE FROM journal_entries WHERE id = ?1", params![id]))
 }
 
 #[cfg(test)]

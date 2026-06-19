@@ -241,10 +241,10 @@ mod tests {
     impl ChatBackend for ScriptedBackend {
         fn respond(&mut self, _system: &str, transcript: &str) -> Result<String, String> {
             // Record which tool results have appeared so the test can assert flow.
-            if let Some(last) = transcript.lines().last() {
-                if last.starts_with("TOOL ") {
-                    self.seen_tools.push(last.to_string());
-                }
+            if let Some(last) = transcript.lines().last()
+                && last.starts_with("TOOL ")
+            {
+                self.seen_tools.push(last.to_string());
             }
             let r = self
                 .replies
@@ -289,13 +289,12 @@ mod tests {
     fn unparseable_reply_becomes_report() {
         let findings = vec![mk("hostname", "a.com", Severity::Info)];
         let inv = Investigation::new(&findings, None);
-        struct Once(bool);
-        impl ChatBackend for Once {
-            fn respond(&mut self, _s: &str, _t: &str) -> Result<String, String> {
-                Ok("no json here, just a summary".to_string())
-            }
-        }
-        let report = investigate(&mut Once(false), &inv, 5).unwrap();
+        let mut backend = ScriptedBackend {
+            replies: vec!["no json here, just a summary".to_string()],
+            i: 0,
+            seen_tools: Vec::new(),
+        };
+        let report = investigate(&mut backend, &inv, 5).unwrap();
         assert!(report.report.contains("summary"));
     }
 

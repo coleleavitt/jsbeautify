@@ -8,6 +8,7 @@ use oxc_allocator::CloneIn;
 use oxc_ast::ast::{BlockStatement, FunctionBody, Program, Statement};
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -16,23 +17,7 @@ pub struct EmptyStatementCleanup {
     removed_count: usize,
 }
 
-impl EmptyStatementCleanup {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { removed_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn removed_count(&self) -> usize {
-        self.removed_count
-    }
-}
-
-impl Default for EmptyStatementCleanup {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(EmptyStatementCleanup, removed_count, removed_count);
 
 impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {

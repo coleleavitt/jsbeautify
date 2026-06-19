@@ -1,7 +1,7 @@
 //! Transmit Security SDK decoder — maps auth API calls and fingerprinting patterns.
 //!
-//! Schwab uses Transmit Security's XmSdk v10.15.7 for:
-//! - Device fingerprinting (device_id, os_type, device_model)
+//! Schwab uses Transmit Security's `XmSdk` v10.15.7 for:
+//! - Device fingerprinting (`device_id`, `os_type`, `device_model`)
 //! - WebAuthn/FIDO2 registration and authentication
 //! - Risk scoring (DRS-Session-Token)
 //! - Multi-factor authentication orchestration
@@ -26,6 +26,8 @@
 //! | `auth/create_debug_token` | Debug/test token (SHOULD NOT BE IN PROD) |
 
 use regex::Regex;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
 
 /// A detected Transmit Security API call.
 #[derive(Debug, Clone)]
@@ -47,37 +49,63 @@ pub struct FingerprintField {
 pub struct TransmitAnalysisResult {
     pub api_calls: Vec<TransmitApiCall>,
     pub fingerprint_fields: Vec<FingerprintField>,
-    pub has_webauthn: bool,
-    pub has_cross_device: bool,
-    pub has_debug_token: bool,
-    pub risk_session_detected: bool,
+    pub capabilities: TransmitCapabilities,
     pub sdk_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransmitCapabilities(u8);
+
+impl TransmitCapabilities {
+    const WEBAUTHN: u8 = 1;
+    const CROSS_DEVICE: u8 = 1 << 1;
+    const DEBUG_TOKEN: u8 = 1 << 2;
+    const RISK_SESSION: u8 = 1 << 3;
+
+    const fn insert(&mut self, flag: u8) {
+        self.0 |= flag;
+    }
+
+    #[must_use]
+    pub const fn has_webauthn(self) -> bool {
+        self.0 & Self::WEBAUTHN != 0
+    }
+
+    #[must_use]
+    pub const fn has_cross_device(self) -> bool {
+        self.0 & Self::CROSS_DEVICE != 0
+    }
+
+    #[must_use]
+    pub const fn has_debug_token(self) -> bool {
+        self.0 & Self::DEBUG_TOKEN != 0
+    }
+
+    #[must_use]
+    pub const fn risk_session_detected(self) -> bool {
+        self.0 & Self::RISK_SESSION != 0
+    }
 }
 
 /// Extract Transmit Security SDK patterns from source.
 #[must_use]
 pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
-    lazy_static::lazy_static! {
-        static ref AUTH_ENDPOINT_RE: Regex = Regex::new(
-            r#"["'](auth/[a-z_/]+)["']"#
-        ).unwrap();
+    static AUTH_ENDPOINT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["'](auth/[a-z_/]+)["']"#).unwrap());
 
-        static ref WEBAUTHN_RE: Regex = Regex::new(
-            r#"["']((?:auth/)?webauthn/[a-z_/-]+)["']"#
-        ).unwrap();
+    static WEBAUTHN_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"["']((?:auth/)?webauthn/[a-z_/-]+)["']"#).unwrap());
 
-        static ref VERSION_RE: Regex = Regex::new(
-            r#"(?:version|VERSION|sdk_version)['":\s]+["']?(\d+\.\d+\.\d+)"#
-        ).unwrap();
+    static VERSION_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?:version|VERSION|sdk_version)['":\s]+["']?(\d+\.\d+\.\d+)"#).unwrap());
 
-        static ref FINGERPRINT_RE: Regex = Regex::new(
+    static FINGERPRINT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
             r#"["'](device_id|device_model|os_type|os_version|persistence_mode|browser_name|browser_version|screen_resolution|timezone|language|platform)["']"#
-        ).unwrap();
+        ).unwrap()
+    });
 
-        static ref RISK_TOKEN_RE: Regex = Regex::new(
-            r#"DRS-Session-Token|DRS-Action-Type|riskDataRequired|riskSessionToken"#
-        ).unwrap();
-    }
+    static RISK_TOKEN_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"DRS-Session-Token|DRS-Action-Type|riskDataRequired|riskSessionToken").unwrap());
 
     let mut api_calls = Vec::new();
     let mut fingerprint_fields = Vec::new();
@@ -126,10 +154,19 @@ pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string());
 
-    let has_webauthn = source.contains("webauthn/authenticate") || source.contains("webauthn/register");
-    let has_cross_device = source.contains("cross-device") || source.contains("cross_device");
-    let has_debug_token = source.contains("create_debug_token");
-    let risk_session_detected = RISK_TOKEN_RE.is_match(source);
+    let mut capabilities = TransmitCapabilities::default();
+    if source.contains("webauthn/authenticate") || source.contains("webauthn/register") {
+        capabilities.insert(TransmitCapabilities::WEBAUTHN);
+    }
+    if source.contains("cross-device") || source.contains("cross_device") {
+        capabilities.insert(TransmitCapabilities::CROSS_DEVICE);
+    }
+    if source.contains("create_debug_token") {
+        capabilities.insert(TransmitCapabilities::DEBUG_TOKEN);
+    }
+    if RISK_TOKEN_RE.is_match(source) {
+        capabilities.insert(TransmitCapabilities::RISK_SESSION);
+    }
 
     // Deduplicate
     api_calls.sort_by(|a, b| a.endpoint.cmp(&b.endpoint));
@@ -138,10 +175,7 @@ pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
     TransmitAnalysisResult {
         api_calls,
         fingerprint_fields,
-        has_webauthn,
-        has_cross_device,
-        has_debug_token,
-        risk_session_detected,
+        capabilities,
         sdk_version,
     }
 }
@@ -205,32 +239,47 @@ pub fn format_transmit_analysis(result: &TransmitAnalysisResult) -> String {
     output.push_str("// ╠══════════════════════════════════════════════════════════╣\n");
 
     if let Some(ref ver) = result.sdk_version {
-        output.push_str(&format!("// ║ SDK Version: {ver}\n"));
+        let _ = writeln!(output, "// ║ SDK Version: {ver}");
     }
 
-    output.push_str(&format!(
-        "// ║ WebAuthn/FIDO2: {}\n",
-        if result.has_webauthn { "YES" } else { "NO" }
-    ));
-    output.push_str(&format!(
-        "// ║ Cross-Device Auth: {}\n",
-        if result.has_cross_device { "YES" } else { "NO" }
-    ));
-    output.push_str(&format!(
-        "// ║ Risk Scoring (DRS): {}\n",
-        if result.risk_session_detected { "YES" } else { "NO" }
-    ));
+    let _ = writeln!(
+        output,
+        "// ║ WebAuthn/FIDO2: {}",
+        if result.capabilities.has_webauthn() {
+            "YES"
+        } else {
+            "NO"
+        }
+    );
+    let _ = writeln!(
+        output,
+        "// ║ Cross-Device Auth: {}",
+        if result.capabilities.has_cross_device() {
+            "YES"
+        } else {
+            "NO"
+        }
+    );
+    let _ = writeln!(
+        output,
+        "// ║ Risk Scoring (DRS): {}",
+        if result.capabilities.risk_session_detected() {
+            "YES"
+        } else {
+            "NO"
+        }
+    );
 
-    if result.has_debug_token {
+    if result.capabilities.has_debug_token() {
         output.push_str("// ║ ⚠️  DEBUG TOKEN ENDPOINT DETECTED IN PRODUCTION!\n");
     }
 
     if !result.api_calls.is_empty() {
         output.push_str("// ║\n// ║ AUTH ENDPOINTS:\n");
         for call in &result.api_calls {
-            output.push_str(&format!("// ║   {} — {}\n", call.endpoint, call.purpose));
+            let _ = writeln!(output, "// ║   {} — {}", call.endpoint, call.purpose);
             if let Some(ref note) = call.security_note {
-                output.push_str(&format!("// ║     ⚠️  {note}\n"));
+                let _ = writeln!(output, "// ║     ⚠️  {note}");
             }
         }
     }
@@ -238,7 +287,7 @@ pub fn format_transmit_analysis(result: &TransmitAnalysisResult) -> String {
     if !result.fingerprint_fields.is_empty() {
         output.push_str("// ║\n// ║ DEVICE FINGERPRINT FIELDS:\n");
         for fp in &result.fingerprint_fields {
-            output.push_str(&format!("// ║   {} ({})\n", fp.field_name, fp.category));
+            let _ = writeln!(output, "// ║   {} ({})", fp.field_name, fp.category);
         }
     }
 
@@ -260,8 +309,8 @@ mod tests {
 
         let result = analyze_transmit_sdk(source);
         assert!(result.api_calls.iter().any(|c| c.endpoint == "auth/login"));
-        assert!(result.has_webauthn);
-        assert!(result.has_debug_token);
+        assert!(result.capabilities.has_webauthn());
+        assert!(result.capabilities.has_debug_token());
     }
 
     #[test]
@@ -280,6 +329,6 @@ mod tests {
     fn test_risk_session() {
         let source = r#"headers["DRS-Session-Token"] = riskToken; headers["DRS-Action-Type"] = "login";"#;
         let result = analyze_transmit_sdk(source);
-        assert!(result.risk_session_detected);
+        assert!(result.capabilities.risk_session_detected());
     }
 }

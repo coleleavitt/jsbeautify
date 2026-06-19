@@ -1,6 +1,6 @@
 //! Zustand recon analyzer. Fingerprints Zustand v5 stores + middleware in minified bundles.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Literal signatures confirmed against the cloned upstream source
 //! (`/home/cole/RustProjects/forks/frameworks/zustand`):
@@ -17,51 +17,46 @@
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
+
+static STORE_API_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{\s*setState\s*[:,][^{}]*?getState\s*[:,][^{}]*?getInitialState\s*[:,][^{}]*?subscribe\s*[:,}]")
+        .unwrap()
+});
+static PERSIST_NAME_A_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"name\s*:\s*["']([^"'\\]{1,128})["']\s*,\s*(?:storage|getStorage|partialize|version|merge|migrate|onRehydrateStorage|skipHydration|serialize|deserialize)\b"#,
+    )
+    .unwrap()
+});
+static PERSIST_NAME_B_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:storage|getStorage|partialize|version|merge|migrate|onRehydrateStorage|skipHydration|serialize|deserialize)\s*:[^{}]{0,200}?name\s*:\s*["']([^"'\\]{1,128})["']"#,
+    )
+    .unwrap()
+});
+static IMMER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:typeof\s+[\w$.]+\s*===?\s*["']function["']|["']function["']\s*===?\s*typeof\s+[\w$.]+)\s*\?[^?{};]{0,48}produce\b"#,
+    )
+    .unwrap()
+});
+
+const USE_SYNC_EXTERNAL_STORE: &str = "useSyncExternalStore";
+const SSR_ERROR: &str = "Cannot set state of Zustand store in SSR";
+const DEVTOOLS_ERROR: &str = "[zustand devtools middleware] Unsupported action format";
 
 /// Scan source for Zustand (v5) store + middleware signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
 
-    lazy_static::lazy_static! {
-        // Core StoreApi object literal: the canonical v5 4-key shape, in source order.
-        // Matches both shorthand `{ setState, getState, getInitialState, subscribe }` and
-        // minified `{setState:a,getState:b,getInitialState:c,subscribe:d}`. The keys are
-        // public API property names and survive minification; `getInitialState` is v5-specific.
-        static ref STORE_API_RE: Regex = Regex::new(
-            r#"\{\s*setState\s*[:,][^{}]*?getState\s*[:,][^{}]*?getInitialState\s*[:,][^{}]*?subscribe\s*[:,}]"#
-        ).unwrap();
-        // React subscription hook (covers `useSyncExternalStore` and `useSyncExternalStoreWithSelector`).
-        static ref USE_SYNC_RE: Regex = Regex::new(r#"useSyncExternalStore"#).unwrap();
-
-        // Persist middleware runtime beacon (gate; the import path is erased).
-        static ref PERSIST_BEACON_RE: Regex =
-            Regex::new(r#"\[zustand persist middleware\]"#).unwrap();
-        // persist options: localStorage/sessionStorage key. `name:"..."` immediately followed by
-        // a persist-specific sibling option (the canonical/default serialized order).
-        static ref PERSIST_NAME_A_RE: Regex = Regex::new(
-            r#"name\s*:\s*["']([^"'\\]{1,128})["']\s*,\s*(?:storage|getStorage|partialize|version|merge|migrate|onRehydrateStorage|skipHydration|serialize|deserialize)\b"#
-        ).unwrap();
-        // ...or a persist-specific option followed (within a small, brace-free span) by `name:"..."`.
-        static ref PERSIST_NAME_B_RE: Regex = Regex::new(
-            r#"(?:storage|getStorage|partialize|version|merge|migrate|onRehydrateStorage|skipHydration|serialize|deserialize)\s*:[^{}]{0,200}?name\s*:\s*["']([^"'\\]{1,128})["']"#
-        ).unwrap();
-
-        // ssrSafe middleware throw string.
-        static ref SSR_RE: Regex =
-            Regex::new(r#"Cannot set state of Zustand store in SSR"#).unwrap();
-        // devtools middleware console.error fingerprint.
-        static ref DEVTOOLS_RE: Regex =
-            Regex::new(r#"\[zustand devtools middleware\] Unsupported action format"#).unwrap();
-        // immer middleware: `typeof x === 'function' ? produce(x) : x` in either operand order,
-        // tolerating the bundler interop wrapper `(0,ns.produce)(...)`.
-        static ref IMMER_RE: Regex = Regex::new(
-            r#"(?:typeof\s+[\w$.]+\s*===?\s*["']function["']|["']function["']\s*===?\s*typeof\s+[\w$.]+)\s*\?[^?{};]{0,48}produce\b"#
-        ).unwrap();
-    }
-
     // --- zustand_store: 4-key StoreApi shape co-occurring with useSyncExternalStore ---
-    if USE_SYNC_RE.is_match(source) {
+    if source.contains(USE_SYNC_EXTERNAL_STORE) {
         for whole in STORE_API_RE.find_iter(source) {
             out.push(
                 AnalyzerMatch::new(
@@ -79,7 +74,7 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 
     // --- zustand_persist_key: localStorage key (secrets live here) ---
     // Only mine the persist options object once the runtime beacon confirms persist is bundled.
-    if PERSIST_BEACON_RE.is_match(source) {
+    if source.contains("[zustand persist middleware]") {
         let mut seen_keys = std::collections::HashSet::new();
         for re in [&*PERSIST_NAME_A_RE, &*PERSIST_NAME_B_RE] {
             for caps in re.captures_iter(source) {
@@ -109,12 +104,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // --- zustand_ssr: ssrSafe middleware throw string ---
-    for whole in SSR_RE.find_iter(source) {
+    for (start, value) in source.match_indices(SSR_ERROR) {
         out.push(
             AnalyzerMatch::new(
                 "zustand_ssr",
-                whole.as_str().to_string(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                value.to_string(),
+                PositionRange::from_byte_range(source, start, start + value.len()),
                 file_type,
                 file_path.map(str::to_string),
             )
@@ -124,12 +119,12 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // --- zustand_devtools: redux-devtools middleware error fingerprint ---
-    for whole in DEVTOOLS_RE.find_iter(source) {
+    for (start, value) in source.match_indices(DEVTOOLS_ERROR) {
         out.push(
             AnalyzerMatch::new(
                 "zustand_devtools",
-                whole.as_str().to_string(),
-                PositionRange::from_byte_range(source, whole.start(), whole.end()),
+                value.to_string(),
+                PositionRange::from_byte_range(source, start, start + value.len()),
                 file_type,
                 file_path.map(str::to_string),
             )
@@ -163,7 +158,7 @@ mod tests {
     #[test]
     fn detects_core_signature() {
         // Minified shape of src/vanilla.ts:94 + the React subscription hook (src/react.ts:30).
-        let src = r#"const o={setState:s,getState:t,getInitialState:n,subscribe:c};const u=e.useSyncExternalStore(o.subscribe,o.getState,o.getInitialState);"#;
+        let src = r"const o={setState:s,getState:t,getInitialState:n,subscribe:c};const u=e.useSyncExternalStore(o.subscribe,o.getState,o.getInitialState);";
         let m = analyze(src, Some("t.js"), FileType::Js);
         assert!(m.iter().any(|x| x.match_kind == "zustand_store"));
     }
@@ -171,7 +166,7 @@ mod tests {
     #[test]
     fn store_shape_requires_use_sync_external_store() {
         // The 4-key object alone (no useSyncExternalStore) must not fire zustand_store.
-        let src = r#"const o={setState:s,getState:t,getInitialState:n,subscribe:c};"#;
+        let src = r"const o={setState:s,getState:t,getInitialState:n,subscribe:c};";
         let m = analyze(src, None, FileType::Js);
         assert!(!m.iter().any(|x| x.match_kind == "zustand_store"));
     }

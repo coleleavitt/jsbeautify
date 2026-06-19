@@ -1,6 +1,8 @@
-//! SolidJS recon analyzer. Fingerprints Solid / dom-expressions production bundles.
+//! `SolidJS` recon analyzer.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Fingerprints Solid / dom-expressions production bundles.
+//!
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Literals were confirmed against the cloned upstream source at
 //! `/home/cole/RustProjects/forks/frameworks/solid`:
@@ -11,9 +13,9 @@
 //!       - L32 `export const IS_DEV = "_SOLID_DEV_"` (dev-build replacement flag)
 //!       - L1236 `createMemo(..., undefined, { name: "children" })` (dev-only memo name)
 //!   * `packages/solid/src/server/rendering.ts`
-//!       - L96  `mapped += \`<!--!$-->\``                       (SSR sibling marker)
-//!       - L363 `\`<!--!$e${id}-->...<!--!$/e${id}-->\``        (SSR error boundary markers)
-//!       - L704 `\`<template id="pl-${id}"></template>...<!--pl-${id}-->\`` (Suspense placeholder)
+//!       - L96 SSR sibling marker `<!--!$-->`
+//!       - L363 SSR error boundary markers `<!--!$e...-->` / `<!--!$/e...-->`
+//!       - L704 Suspense placeholder `<template id="pl-..."></template>`
 //!
 //! The `dom-expressions` runtime helpers (`_$template`/`_$insert`/`_$createComponent`/
 //! `_$delegateEvents`/`_$HY`) and the `data-hk` hydration attribute are produced by the
@@ -28,40 +30,30 @@
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
 
-/// Scan source for SolidJS / dom-expressions signatures.
+static SOLID_SYMBOL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Symbol\(\s*["'`](solid-[a-z][a-z0-9-]*)["'`]\s*\)"#).unwrap());
+static SOLID_DOM_HELPER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"_\$(template|insert|createComponent|delegateEvents|effect|memo|spread|mergeProps|setAttribute|addEventListener|className|style|use|HY)\b",
+    )
+    .unwrap()
+});
+static SOLID_TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_\$template\(\s*`([^`]*)`").unwrap());
+static SOLID_HYDRATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<!--!\$/?e?[0-9a-zA-Z]*-->|<!--pl-[0-9a-zA-Z]+-->|data-hk="[0-9a-z-]+""#).unwrap());
+static SOLID_DEV_NAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"_SOLID_DEV_|\{\s*name:\s*"children"\s*\}"#).unwrap());
+
+/// Scan source for `SolidJS` / dom-expressions signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
-    lazy_static::lazy_static! {
-        // Solid internal symbols: the `"solid-*"` string literal survives ANY minifier
-        // because it is the argument to `Symbol(...)`. Strongest single fingerprint.
-        // Confirmed: signal.ts L35/L37/L38 ("solid-proxy"/"solid-track"/"solid-dev-component").
-        static ref SOLID_SYMBOL_RE: Regex =
-            Regex::new(r#"Symbol\(\s*["'`](solid-[a-z][a-z0-9-]*)["'`]\s*\)"#).unwrap();
-
-        // dom-expressions runtime helpers emitted by babel-plugin-jsx-dom-expressions.
-        // Canonical aliases from `solid-js/web` compiled output.
-        static ref SOLID_DOM_HELPER_RE: Regex = Regex::new(
-            r#"_\$(template|insert|createComponent|delegateEvents|effect|memo|spread|mergeProps|setAttribute|addEventListener|className|style|use|HY)\b"#
-        ).unwrap();
-
-        // Hoisted DOM template string: `_$template(`<div>...`)`. Capture the raw HTML.
-        // Canonical dom-expressions output (always a backtick template literal).
-        static ref SOLID_TEMPLATE_RE: Regex =
-            Regex::new(r#"_\$template\(\s*`([^`]*)`"#).unwrap();
-
-        // SSR / hydration boundary markers. Confirmed: rendering.ts L96/L363/L704.
-        // Also matches the canonical `data-hk` hydration attribute from solid-js/web.
-        static ref SOLID_HYDRATION_RE: Regex = Regex::new(
-            r#"<!--!\$/?e?[0-9a-zA-Z]*-->|<!--pl-[0-9a-zA-Z]+-->|data-hk="[0-9a-z-]+""#
-        ).unwrap();
-
-        // Dev-only markers: the `_SOLID_DEV_` build flag and the named `{name:"children"}`
-        // memo (only present when IS_DEV). Confirmed: signal.ts L32 and L1236.
-        static ref SOLID_DEV_NAME_RE: Regex =
-            Regex::new(r#"_SOLID_DEV_|\{\s*name:\s*"children"\s*\}"#).unwrap();
-    }
 
     // solid_symbol -- captures the internal symbol name (e.g. "solid-proxy").
     for caps in SOLID_SYMBOL_RE.captures_iter(source) {
@@ -214,7 +206,7 @@ mod tests {
     #[test]
     fn detects_single_quoted_symbol() {
         // Some minifiers emit single quotes; the `solid-*` token is unchanged.
-        let m = analyze(r#"var e=Symbol('solid-proxy');"#, Some("t.js"), FileType::Js);
+        let m = analyze(r"var e=Symbol('solid-proxy');", Some("t.js"), FileType::Js);
         assert!(
             m.iter()
                 .any(|x| x.match_kind == "solid_symbol" && x.match_value == "solid-proxy"),

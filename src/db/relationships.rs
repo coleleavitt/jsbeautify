@@ -1,6 +1,6 @@
-//! js_loader / iframe_loader / inline_js / lazy chunk relationship persistence.
+//! `js_loader` / `iframe_loader` / `inline_js` / lazy chunk relationship persistence.
 //!
-//! Mirrors the four edge tables in REPORT_06 §7.
+//! Mirrors the four edge tables in `REPORT_06` §7.
 
 use rusqlite::{Result, params};
 

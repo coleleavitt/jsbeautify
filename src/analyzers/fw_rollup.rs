@@ -1,7 +1,7 @@
 //! Rollup recon analyzer. Fingerprints Rollup-generated bundles by their
 //! finaliser preambles (UMD / System.register) and interop helper bodies.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Confirmed against the cloned Rollup source at
 //! `/home/cole/RustProjects/forks/frameworks/rollup`:
@@ -21,64 +21,49 @@
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
+
+static INTEROP_HELPERS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    vec![
+        ("interop_default", Regex::new(r"\be\s*&&\s*e\.__esModule\s*\?").unwrap()),
+        (
+            "merge_namespaces",
+            Regex::new(r"function\s+_mergeNamespaces\s*\(").unwrap(),
+        ),
+        (
+            "document_current_script",
+            Regex::new(r#"typeof\s+document\s*!==\s*['"]undefined['"]\s*\?\s*document\.currentScript\s*:\s*null"#)
+                .unwrap(),
+        ),
+        (
+            "get_default_export_from_cjs",
+            Regex::new(r"\bfunction\s+getDefaultExportFromCjs\b").unwrap(),
+        ),
+        (
+            "commonjs_global",
+            Regex::new(r"\bcommonjsGlobal\s*=\s*typeof\s+globalThis").unwrap(),
+        ),
+    ]
+});
+static UMD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?s)typeof\s+exports\s*===\s*['"]object['"]\s*&&\s*typeof\s+module\s*!==\s*['"]undefined['"].{0,200}?typeof\s+define\s*===\s*['"]function['"]\s*&&\s*define\.amd"#,
+    )
+    .unwrap()
+});
+static SYSTEM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"System\.register\(\s*[^\[]*\[([^\]]*)\]").unwrap());
+static CHUNK_FACADE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"["'`(/]([A-Za-z0-9_$.\-]+-[0-9A-Za-z_$]{8}\.m?js)["'`)]"#).unwrap());
+static FACADE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"-[0-9A-Za-z_$]{8}\.m?js$").unwrap());
 
 /// Scan source for Rollup bundle signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
-    lazy_static::lazy_static! {
-        // Interop helper bodies / names. Each entry shares the
-        // `rollup_interop_helper` kind; the label is surfaced via metadata.
-        static ref INTEROP_HELPERS: Vec<(&'static str, Regex)> = vec![
-            // `getDefaultStatic`: `e&&e.__esModule?e.default:e` (also the
-            // `_interopNamespace` short form `e&&e.__esModule?e:...`).
-            (
-                "interop_default",
-                Regex::new(r#"\be\s*&&\s*e\.__esModule\s*\?"#).unwrap(),
-            ),
-            // `_mergeNamespaces(n, m) {`
-            (
-                "merge_namespaces",
-                Regex::new(r#"function\s+_mergeNamespaces\s*\("#).unwrap(),
-            ),
-            // `_documentCurrentScript = typeof document !== 'undefined' ? document.currentScript : null`
-            (
-                "document_current_script",
-                Regex::new(
-                    r#"typeof\s+document\s*!==\s*['"]undefined['"]\s*\?\s*document\.currentScript\s*:\s*null"#,
-                )
-                .unwrap(),
-            ),
-            // @rollup/plugin-commonjs helper definition.
-            (
-                "get_default_export_from_cjs",
-                Regex::new(r#"\bfunction\s+getDefaultExportFromCjs\b"#).unwrap(),
-            ),
-            // @rollup/plugin-commonjs global shim definition.
-            (
-                "commonjs_global",
-                Regex::new(r#"\bcommonjsGlobal\s*=\s*typeof\s+globalThis"#).unwrap(),
-            ),
-        ];
-        // UMD finaliser preamble: requires BOTH the CJS guard and the AMD
-        // (`define.amd`) branch to avoid matching a bare CommonJS check.
-        static ref UMD_RE: Regex = Regex::new(
-            r#"(?s)typeof\s+exports\s*===\s*['"]object['"]\s*&&\s*typeof\s+module\s*!==\s*['"]undefined['"].{0,200}?typeof\s+define\s*===\s*['"]function['"]\s*&&\s*define\.amd"#,
-        )
-        .unwrap();
-        // System.register(<optional name>,[<deps>],(function(exports[,module]){...
-        static ref SYSTEM_RE: Regex =
-            Regex::new(r#"System\.register\(\s*[^\[]*\[([^\]]*)\]"#).unwrap();
-        // ESM chunk facade reference: `<name>-<8 hash chars>.js` inside an
-        // import/require string. Default `chunkFileNames: '[name]-[hash].js'`.
-        static ref CHUNK_FACADE_RE: Regex = Regex::new(
-            r#"["'`(/]([A-Za-z0-9_$.\-]+-[0-9A-Za-z_$]{8}\.m?js)["'`)]"#,
-        )
-        .unwrap();
-        // Same shape, applied to the file path itself.
-        static ref FACADE_PATH_RE: Regex =
-            Regex::new(r#"-[0-9A-Za-z_$]{8}\.m?js$"#).unwrap();
-    }
 
     // --- Interop helpers (kind: rollup_interop_helper) ---
     for (label, re) in INTEROP_HELPERS.iter() {
@@ -164,27 +149,27 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
     }
 
     // The file path itself may be a Rollup chunk facade.
-    if let Some(path) = file_path {
-        if FACADE_PATH_RE.is_match(path) {
-            out.push(
-                AnalyzerMatch::new(
-                    "rollup_chunk_facade",
-                    path.to_string(),
-                    PositionRange::from_byte_range(source, 0, 0),
-                    file_type,
-                    Some(path.to_string()),
-                )
-                .with_provenance(Provenance::Other)
-                .with_severity(Severity::Info)
-                .with_metadata(serde_json::json!({
-                    "detected_from": "file_path",
-                    // The `-<8hex>.js` filename shape is shared by webpack/Vite/
-                    // Rollup output, so a filename alone (no in-source Rollup
-                    // signal) is only weak evidence of Rollup specifically.
-                    "confidence": "low",
-                })),
-            );
-        }
+    if let Some(path) = file_path
+        && FACADE_PATH_RE.is_match(path)
+    {
+        out.push(
+            AnalyzerMatch::new(
+                "rollup_chunk_facade",
+                path.to_string(),
+                PositionRange::from_byte_range(source, 0, 0),
+                file_type,
+                Some(path.to_string()),
+            )
+            .with_provenance(Provenance::Other)
+            .with_severity(Severity::Info)
+            .with_metadata(serde_json::json!({
+                "detected_from": "file_path",
+                // The `-<8hex>.js` filename shape is shared by webpack/Vite/
+                // Rollup output, so a filename alone (no in-source Rollup
+                // signal) is only weak evidence of Rollup specifically.
+                "confidence": "low",
+            })),
+        );
     }
 
     out
@@ -197,7 +182,7 @@ mod tests {
     #[test]
     fn detects_interop_helper() {
         // Minified Rollup core interop block (see src/utils/interopHelpers.ts).
-        let src = r#"var _documentCurrentScript=typeof document!=='undefined'?document.currentScript:null;function _interopDefault(e){return e&&e.__esModule?e.default:e}function _mergeNamespaces(n,m){return n}"#;
+        let src = r"var _documentCurrentScript=typeof document!=='undefined'?document.currentScript:null;function _interopDefault(e){return e&&e.__esModule?e.default:e}function _mergeNamespaces(n,m){return n}";
         let m = analyze(src, Some("bundle.js"), FileType::Js);
         assert!(m.iter().any(|x| x.match_kind == "rollup_interop_helper"));
         // all three sub-signatures should be present
@@ -218,11 +203,11 @@ mod tests {
     #[test]
     fn detects_umd_finaliser() {
         // Real Rollup UMD preamble shape (see src/finalisers/umd.ts).
-        let src = r#"(function (global, factory) {
+        let src = r"(function (global, factory) {
 typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
 typeof define === 'function' && define.amd ? define(['exports'], factory) :
 (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.MyLib = {}));
-})(this, (function (exports) { 'use strict'; }));"#;
+})(this, (function (exports) { 'use strict'; }));";
         let m = analyze(src, Some("my-lib.umd.js"), FileType::Js);
         assert!(m.iter().any(|x| x.match_kind == "rollup_umd"));
     }
@@ -230,10 +215,10 @@ typeof define === 'function' && define.amd ? define(['exports'], factory) :
     #[test]
     fn detects_system_register_and_chunk_facade() {
         // Real Rollup System finaliser shape (see src/finalisers/system.ts).
-        let src = r#"System.register('main', ['./vendor-a1b2c3d4.js', './polyfills.js'], (function (exports, module) {
+        let src = r"System.register('main', ['./vendor-a1b2c3d4.js', './polyfills.js'], (function (exports, module) {
 'use strict';
 return { setters: [], execute: function () {} };
-}));"#;
+}));";
         let m = analyze(src, Some("app.system.js"), FileType::Js);
 
         let sys = m.iter().find(|x| x.match_kind == "rollup_system_register").unwrap();

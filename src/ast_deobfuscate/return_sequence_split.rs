@@ -29,6 +29,7 @@ use oxc_ast::ast::{Expression, FunctionBody, Statement};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -37,23 +38,7 @@ pub struct ReturnSequenceSplitter {
     split_count: usize,
 }
 
-impl ReturnSequenceSplitter {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { split_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn split_count(&self) -> usize {
-        self.split_count
-    }
-}
-
-impl Default for ReturnSequenceSplitter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(ReturnSequenceSplitter, split_count, split_count);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ReturnSequenceSplitter {
     fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
@@ -68,10 +53,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for ReturnSequenceSplitter {
 impl ReturnSequenceSplitter {
     fn split_in_stmts<'a>(&mut self, stmts: &mut oxc_allocator::Vec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
         let has_return_seq = stmts.iter().any(|s| {
-            if let Statement::ReturnStatement(ret) = s {
-                if let Some(Expression::SequenceExpression(seq)) = &ret.argument {
-                    return seq.expressions.len() >= 2;
-                }
+            if let Statement::ReturnStatement(ret) = s
+                && let Some(Expression::SequenceExpression(seq)) = &ret.argument
+            {
+                return seq.expressions.len() >= 2;
             }
             false
         });
@@ -82,27 +67,26 @@ impl ReturnSequenceSplitter {
 
         let mut new_stmts = ctx.ast.vec();
         for stmt in stmts.iter() {
-            if let Statement::ReturnStatement(ret) = stmt {
-                if let Some(Expression::SequenceExpression(seq)) = &ret.argument {
-                    if seq.expressions.len() >= 2 {
-                        // Emit all but the last expression as expression-statements.
-                        let len = seq.expressions.len();
-                        for expr in &seq.expressions[..len - 1] {
-                            new_stmts.push(
-                                ctx.ast
-                                    .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
-                            );
-                        }
-                        // Emit `return <last>;`
-                        let last = &seq.expressions[len - 1];
-                        let ret_stmt = ctx
-                            .ast
-                            .statement_return(SPAN, Some(last.clone_in_with_semantic_ids(ctx.ast.allocator)));
-                        new_stmts.push(ret_stmt);
-                        self.split_count += 1;
-                        continue;
-                    }
+            if let Statement::ReturnStatement(ret) = stmt
+                && let Some(Expression::SequenceExpression(seq)) = &ret.argument
+                && seq.expressions.len() >= 2
+            {
+                // Emit all but the last expression as expression-statements.
+                let len = seq.expressions.len();
+                for expr in &seq.expressions[..len - 1] {
+                    new_stmts.push(
+                        ctx.ast
+                            .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
+                    );
                 }
+                // Emit `return <last>;`
+                let last = &seq.expressions[len - 1];
+                let ret_stmt = ctx
+                    .ast
+                    .statement_return(SPAN, Some(last.clone_in_with_semantic_ids(ctx.ast.allocator)));
+                new_stmts.push(ret_stmt);
+                self.split_count += 1;
+                continue;
             }
             new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
         }

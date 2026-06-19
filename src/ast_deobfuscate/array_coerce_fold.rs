@@ -11,6 +11,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -27,23 +28,7 @@ pub struct ArrayCoerceFold {
     folded: usize,
 }
 
-impl ArrayCoerceFold {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { folded: 0 }
-    }
-
-    #[must_use]
-    pub const fn folded(&self) -> usize {
-        self.folded
-    }
-}
-
-impl Default for ArrayCoerceFold {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(ArrayCoerceFold, folded, folded);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ArrayCoerceFold {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
@@ -56,16 +41,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for ArrayCoerceFold {
 
         let replacement = if is_empty_array(&bin.left) && is_empty_array(&bin.right) {
             ""
-        } else if is_empty_array(&bin.left) && is_undefined(&bin.right) {
-            "undefined"
-        } else if is_undefined(&bin.left) && is_empty_array(&bin.right) {
+        } else if (is_empty_array(&bin.left) && is_undefined(&bin.right))
+            || (is_undefined(&bin.left) && is_empty_array(&bin.right))
+        {
             "undefined"
         } else {
             return;
         };
 
         if self.folded < 10 {
-            eprintln!("[AST/array-coerce] folding [] + [] -> {:?}", replacement);
+            eprintln!("[AST/array-coerce] folding [] + [] -> {replacement:?}");
         }
         self.folded += 1;
 

@@ -4,6 +4,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -21,16 +22,6 @@ pub struct UnicodeNormalizer {
 }
 
 impl UnicodeNormalizer {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { changed: false }
-    }
-
-    #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
-    }
-
     fn contains_problematic_unicode(text: &str) -> bool {
         for ch in text.chars() {
             if ZERO_WIDTH_CHARS.contains(&ch) || Self::is_confusable(ch) {
@@ -83,11 +74,7 @@ impl UnicodeNormalizer {
     }
 }
 
-impl Default for UnicodeNormalizer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+flag_pass!(UnicodeNormalizer, changed, has_changed);
 
 impl<'a> Traverse<'a, DeobfuscateState> for UnicodeNormalizer {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

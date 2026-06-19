@@ -35,7 +35,7 @@ impl NullishCoalescingSimplifier {
     }
 
     /// Check if a logical expression is a nullish coalescing operator
-    fn is_nullish_coalescing(expr: &LogicalExpression<'_>) -> bool {
+    const fn is_nullish_coalescing(expr: &LogicalExpression<'_>) -> bool {
         matches!(expr.operator, LogicalOperator::Coalesce)
     }
 

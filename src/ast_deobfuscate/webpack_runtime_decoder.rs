@@ -28,6 +28,7 @@
 
 use regex::Regex;
 use rustc_hash::FxHashMap;
+use std::sync::LazyLock;
 
 /// Mapping from minified webpack runtime property to readable name.
 fn build_webpack_runtime_map() -> FxHashMap<&'static str, &'static str> {
@@ -57,18 +58,14 @@ fn build_webpack_runtime_map() -> FxHashMap<&'static str, &'static str> {
 /// Detect the webpack require variable name from a runtime chunk.
 /// Looks for the pattern: `function X(e) { var d = v[e]; ... } X.m = m;`
 /// or property assignments like `X.m = m;...X.O = ...`
+#[must_use]
 pub fn detect_require_var(source: &str) -> Option<String> {
-    lazy_static::lazy_static! {
-        // Pattern: single-char function with .exports somewhere after it
-        static ref REQUIRE_FUNC_RE: Regex = Regex::new(
-            r"function\s+(\w)\([^)]*\)\s*\{.{0,200}\.exports"
-        ).unwrap();
+    // Pattern: single-char function with .exports somewhere after it
+    static REQUIRE_FUNC_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"function\s+(\w)\([^)]*\)\s*\{.{0,200}\.exports").unwrap());
 
-        // Pattern: X.m = ...followed by X.O or X.d nearby
-        static ref PROP_ASSIGN_RE: Regex = Regex::new(
-            r"(\w)\.m\s*=\s*\w+"
-        ).unwrap();
-    }
+    // Pattern: X.m = ...followed by X.O or X.d nearby
+    static PROP_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\w)\.m\s*=\s*\w+").unwrap());
 
     // Strategy: find a single-char function that has .exports in its body,
     // then verify it has .m assigned to it
@@ -95,7 +92,7 @@ pub fn detect_require_var(source: &str) -> Option<String> {
 }
 
 /// Decode the webpack runtime: replace minified property accesses with readable names.
-/// Returns (decoded_source, replacement_count).
+/// Returns (`decoded_source`, `replacement_count`).
 #[must_use]
 pub fn decode_webpack_runtime(source: &str) -> (String, usize) {
     let Some(require_var) = detect_require_var(source) else {
@@ -108,7 +105,7 @@ pub fn decode_webpack_runtime(source: &str) -> (String, usize) {
 
     // Replace longer patterns first to avoid partial matches
     let mut patterns: Vec<(&str, &str)> = map.iter().map(|(k, v)| (*k, *v)).collect();
-    patterns.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    patterns.sort_by_key(|(minified, _)| std::cmp::Reverse(minified.len()));
 
     for (minified, readable) in &patterns {
         let from = format!("{require_var}{minified}");
@@ -152,7 +149,7 @@ pub fn annotate_webpack_runtime(source: &str) -> (String, usize) {
     for line in source.lines() {
         let trimmed = line.trim();
 
-        if trimmed.contains("__webpack_require__.modules") && trimmed.contains("=") {
+        if trimmed.contains("__webpack_require__.modules") && trimmed.contains('=') {
             result.push_str("// webpack: module registry (all loaded modules stored here)\n");
             annotations += 1;
         } else if trimmed.contains("__webpack_require__.onChunksLoaded") && !trimmed.contains(".isReady") {
@@ -191,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_detect_require_var() {
-        let source = r#"function t(e){var d=v[e];if(void 0!==d)return d.exports;var a=v[e]={exports:{}};return m[e].call(a.exports,a,a.exports,t),a.exports}t.m=m;"#;
+        let source = r"function t(e){var d=v[e];if(void 0!==d)return d.exports;var a=v[e]={exports:{}};return m[e].call(a.exports,a,a.exports,t),a.exports}t.m=m;";
         assert_eq!(detect_require_var(source), Some("t".to_string()));
     }
 
@@ -210,10 +207,8 @@ mod tests {
     #[test]
     fn test_jsonp_rename() {
         let source = "var a = self.lmsJsonp = self.lmsJsonp || [];";
-        let (decoded, _) = decode_webpack_runtime(&format!(
-            "function t(e){{var d=v[e];return d.exports}}t.m=m;\n{}",
-            source
-        ));
+        let (decoded, _) =
+            decode_webpack_runtime(&format!("function t(e){{var d=v[e];return d.exports}}t.m=m;\n{source}"));
         assert!(decoded.contains("__webpack_chunk_callback__"));
     }
 }

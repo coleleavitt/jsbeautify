@@ -4,6 +4,7 @@
 //! seen/uninteresting state for triage.
 
 use rusqlite::{Result, params};
+use std::fmt::Write as _;
 
 use super::ProjectDb;
 use crate::analyzers::AnalyzerMatch;
@@ -55,9 +56,8 @@ pub fn insert_matches(db: &ProjectDb, run_id: i64, matches: &[AnalyzerMatch]) ->
             for m in matches {
                 let provenance = serde_json::to_string(&m.provenance)
                     .ok()
-                    .map(|s| s.trim_matches('"').to_string())
-                    .unwrap_or_else(|| "ast".to_string());
-                let metadata_str = m.metadata.as_ref().map(|v| v.to_string());
+                    .map_or_else(|| "ast".to_string(), |s| s.trim_matches('"').to_string());
+                let metadata_str = m.metadata.as_ref().map(std::string::ToString::to_string);
                 stmt.execute(params![
                     run_id,
                     m.match_kind,
@@ -141,10 +141,10 @@ pub fn get_matches(db: &ProjectDb, filter: &MatchFilter) -> Result<Vec<StoredMat
     }
     sql.push_str(" ORDER BY m.id DESC");
     if let Some(l) = filter.limit {
-        sql.push_str(&format!(" LIMIT {l}"));
+        write!(sql, " LIMIT {l}").ok();
     }
     if let Some(o) = filter.offset {
-        sql.push_str(&format!(" OFFSET {o}"));
+        write!(sql, " OFFSET {o}").ok();
     }
 
     db.with_conn(|c| {
@@ -217,7 +217,7 @@ pub fn mark_seen(db: &ProjectDb, ids: &[i64]) -> Result<usize> {
 /// # Errors
 /// Underlying rusqlite errors.
 pub fn mark_seen_by_kind(db: &ProjectDb, kind: &str) -> Result<usize> {
-    db.with_conn(|c| Ok(c.execute("UPDATE matches SET seen = 1 WHERE match_kind = ?1", params![kind])?))
+    db.with_conn(|c| c.execute("UPDATE matches SET seen = 1 WHERE match_kind = ?1", params![kind]))
 }
 
 /// Bulk-update `is_uninteresting`.
@@ -232,7 +232,7 @@ pub fn mark_uninteresting(db: &ProjectDb, ids: &[i64]) -> Result<usize> {
     let sql = format!("UPDATE matches SET is_uninteresting = 1 WHERE id IN ({placeholders})");
     db.with_conn(|c| {
         let p: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-        Ok(c.execute(&sql, rusqlite::params_from_iter(p.iter().copied()))?)
+        c.execute(&sql, rusqlite::params_from_iter(p.iter().copied()))
     })
 }
 

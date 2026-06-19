@@ -21,6 +21,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -29,23 +30,7 @@ pub struct ConcatCanonicaliser {
     rewrites: usize,
 }
 
-impl ConcatCanonicaliser {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { rewrites: 0 }
-    }
-
-    #[must_use]
-    pub const fn rewrites(&self) -> usize {
-        self.rewrites
-    }
-}
-
-impl Default for ConcatCanonicaliser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(ConcatCanonicaliser, rewrites, rewrites);
 
 fn receiver_is_string_like(expr: &Expression<'_>) -> bool {
     match expr {
@@ -147,7 +132,7 @@ mod tests {
         let out = run("var x = \"prefix\".concat(y);");
         assert!(!out.contains(".concat"), "got: {out}");
         assert!(out.contains("\"prefix\""));
-        assert!(out.contains("y"));
+        assert!(out.contains('y'));
     }
 
     #[test]

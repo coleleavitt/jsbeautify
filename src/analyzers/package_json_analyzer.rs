@@ -1,7 +1,7 @@
 //! `package.json` block detection.
 //!
 //! Ports `crates/core/analyzers/src/js_ast_package_json_analyzer.rs` from
-//! jxscout-pro-v2 (REPORT_03 row 10).
+//! jxscout-pro-v2 (`REPORT_03` row 10).
 //!
 //! Emits `package_json` matches whenever an object literal contains at least
 //! one of the four dependency-block keys:
@@ -22,7 +22,7 @@
 //! into the browser bundle).
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::*;
+use oxc_ast::ast::{Expression, ObjectExpression, ObjectPropertyKind, PropertyKey};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
@@ -57,47 +57,47 @@ pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Ve
 
     // Also try to parse the input as raw JSON in case caller passed a literal
     // package.json file. We don't fail if it's not JSON.
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(source) {
-        if let serde_json::Value::Object(map) = json {
-            for &key in DEP_KEYS {
-                if let Some(serde_json::Value::Object(deps)) = map.get(key) {
-                    let names: Vec<String> = deps.keys().cloned().collect();
-                    if names.is_empty() {
-                        continue;
-                    }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(source)
+        && let serde_json::Value::Object(map) = json
+    {
+        for &key in DEP_KEYS {
+            if let Some(serde_json::Value::Object(deps)) = map.get(key) {
+                let names: Vec<String> = deps.keys().cloned().collect();
+                if names.is_empty() {
+                    continue;
+                }
+                visitor.out.push(AnalyzerMatch {
+                    match_kind: KIND_BLOCK.to_string(),
+                    match_value: key.to_string(),
+                    position: span_to_pos(source, 0, source.len() as u32),
+                    file_type,
+                    file_path: file_path.map(str::to_string),
+                    severity: Severity::Medium,
+                    provenance: Provenance::Ast,
+                    metadata: Some(serde_json::json!({
+                        "block": key,
+                        "packages": names,
+                    })),
+                });
+                for (name, ver) in deps {
+                    let version = match ver {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
                     visitor.out.push(AnalyzerMatch {
-                        match_kind: KIND_BLOCK.to_string(),
-                        match_value: key.to_string(),
+                        match_kind: KIND_ENTRY.to_string(),
+                        match_value: format!("{name}@{version}"),
                         position: span_to_pos(source, 0, source.len() as u32),
                         file_type,
                         file_path: file_path.map(str::to_string),
-                        severity: Severity::Medium,
+                        severity: Severity::Info,
                         provenance: Provenance::Ast,
                         metadata: Some(serde_json::json!({
+                            "name": name,
+                            "version": version,
                             "block": key,
-                            "packages": names,
                         })),
                     });
-                    for (name, ver) in deps {
-                        let version = match ver {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        visitor.out.push(AnalyzerMatch {
-                            match_kind: KIND_ENTRY.to_string(),
-                            match_value: format!("{name}@{version}"),
-                            position: span_to_pos(source, 0, source.len() as u32),
-                            file_type,
-                            file_path: file_path.map(str::to_string),
-                            severity: Severity::Info,
-                            provenance: Provenance::Ast,
-                            metadata: Some(serde_json::json!({
-                                "name": name,
-                                "version": version,
-                                "block": key,
-                            })),
-                        });
-                    }
                 }
             }
         }
@@ -113,7 +113,7 @@ struct PkgVisitor<'s> {
     out: Vec<AnalyzerMatch>,
 }
 
-impl<'s> PkgVisitor<'s> {
+impl PkgVisitor<'_> {
     fn handle_object(&mut self, obj: &ObjectExpression<'_>) {
         for prop in &obj.properties {
             let ObjectPropertyKind::ObjectProperty(op) = prop else {
@@ -189,7 +189,7 @@ impl<'s> PkgVisitor<'s> {
     }
 }
 
-impl<'a, 's> Visit<'a> for PkgVisitor<'s> {
+impl<'a> Visit<'a> for PkgVisitor<'_> {
     fn visit_object_expression(&mut self, obj: &ObjectExpression<'a>) {
         self.handle_object(obj);
         walk::walk_object_expression(self, obj);
@@ -219,8 +219,8 @@ mod tests {
         assert!(kinds.contains(&"package_json"));
         assert!(kinds.contains(&"package_json_dep"));
 
-        let blocks: Vec<_> = m.iter().filter(|x| x.match_kind == "package_json").collect();
-        assert_eq!(blocks.len(), 2, "should find two dep blocks");
+        let block_count = m.iter().filter(|x| x.match_kind == "package_json").count();
+        assert_eq!(block_count, 2, "should find two dep blocks");
 
         let entries: Vec<_> = m
             .iter()

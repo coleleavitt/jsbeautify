@@ -1,6 +1,6 @@
 //! Preact recon analyzer. Fingerprints Preact core/hooks/compat in bundles.
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Literals confirmed against the cloned current source at
 //! `/home/cole/RustProjects/forks/frameworks/preact`:
@@ -20,40 +20,25 @@
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
 use regex::Regex;
+use std::sync::LazyLock;
+
+static OPTIONS_HOOK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.(diffed|unmount|__[brce])\s*=\s*(?:function|[^=;]{0,40}?=>)").unwrap());
+static HOOKS_CONTAINER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\s*__\s*:\s*\[\s*\]\s*,\s*__h\s*:\s*\[\s*\]\s*\}").unwrap());
+static VNODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"constructor\s*(?::|===?)\s*(void 0|undefined)").unwrap());
+static COMPAT_SHIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["'](ForwardRef|Memo)\("#).unwrap());
+static VNODE_CLUSTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"__k\s*:[^}]{0,200}__v\s*:").unwrap());
 
 /// Scan source for Preact framework signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
-    lazy_static::lazy_static! {
-        // Minified renderer option-hook installs. `_diff`->`__b`, `_render`->`__r`,
-        // `_commit`->`__c`, `_catchError`->`__e` (mangle.json); `diffed`/`unmount`
-        // are public, non-mangled option keys (hooks/src/index.js). Requiring a
-        // function/arrow RHS disambiguates `__c`/`__e` from the overloaded
-        // `_component`/`_dom` data fields.
-        static ref OPTIONS_HOOK_RE: Regex =
-            Regex::new(r#"\.(diffed|unmount|__[brce])\s*=\s*(?:function|[^=;]{0,40}?=>)"#).unwrap();
-        // Hook-state container created in getHookState:
-        // `__hooks = { _list: [], _pendingEffects: [] }` -> `{__:[],__h:[]}`.
-        static ref HOOKS_CONTAINER_RE: Regex =
-            Regex::new(r#"\{\s*__\s*:\s*\[\s*\]\s*,\s*__h\s*:\s*\[\s*\]\s*\}"#).unwrap();
-        // VNode marker: createVNode sets `constructor: undefined` and isValidElement
-        // tests `vnode.constructor === undefined` (src/create-element.js).
-        // Minified -> `constructor:void 0` / `.constructor===void 0`.
-        static ref VNODE_RE: Regex =
-            Regex::new(r#"constructor\s*(?::|===?)\s*(void 0|undefined)"#).unwrap();
-        // preact/compat forwardRef/memo shims set a `displayName` of the form
-        // `'ForwardRef(' + ...` / `'Memo(' + ...` (compat/src/forwardRef.js,
-        // compat/src/memo.js). React strips displayName in prod, so these literals
-        // are Preact-compat specific.
-        static ref COMPAT_SHIM_RE: Regex =
-            Regex::new(r#"["'](ForwardRef|Memo)\("#).unwrap();
-        // Preact's minified VNode object literal carries the `__k`…`__v` mangled
-        // field cluster (create-element.js); React uses none of these names, so
-        // this is a strong, Preact-exclusive presence signal.
-        static ref VNODE_CLUSTER_RE: Regex =
-            Regex::new(r#"__k\s*:[^}]{0,200}__v\s*:"#).unwrap();
-    }
 
     for caps in OPTIONS_HOOK_RE.captures_iter(source) {
         let whole = caps.get(0).unwrap();
@@ -154,7 +139,7 @@ mod tests {
     #[test]
     fn detects_core_signature() {
         // Minified-shape preact/hooks options install + getHookState container.
-        let src = r#"var i,t,r,o=0,u=[],c=l;c.__b=function(n){c.__b&&c.__b(n)},c.__r=function(n){f=n.__c},c.diffed=function(n){},c.__c=function(n,t){};function p(e){return e.__H||(e.__H={__:[],__h:[]})}"#;
+        let src = r"var i,t,r,o=0,u=[],c=l;c.__b=function(n){c.__b&&c.__b(n)},c.__r=function(n){f=n.__c},c.diffed=function(n){},c.__c=function(n,t){};function p(e){return e.__H||(e.__H={__:[],__h:[]})}";
         let m = analyze(src, Some("t.js"), FileType::Js);
         assert!(m.iter().any(|x| x.match_kind == "preact_options_hook"));
         assert!(m.iter().any(|x| x.match_kind == "preact_hooks"));
@@ -179,7 +164,7 @@ mod tests {
 
     #[test]
     fn no_false_positives_on_unrelated_code() {
-        let src = r#"const obj={foo:1,bar:[],baz:function(){return 42}};function render(){return obj.foo}"#;
+        let src = r"const obj={foo:1,bar:[],baz:function(){return 42}};function render(){return obj.foo}";
         let m = analyze(src, None, FileType::Js);
         assert!(m.is_empty());
     }

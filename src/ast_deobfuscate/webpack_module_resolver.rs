@@ -4,13 +4,15 @@
 //! - Import patterns (`f.d(Ee, {Z: () => jn})` = re-export from module)
 //! - Known Angular core module IDs (stable across builds due to deterministic hashing)
 //! - String constants that reveal package identity (e.g. "ɵɵdefineComponent" = @angular/core)
-//! - Library-specific patterns (RxJS Observable, NgRx Store, etc.)
+//! - Library-specific patterns (`RxJS` Observable, `NgRx` Store, etc.)
 //!
 //! For the Schwab SWS Gateway (webpack 5.94, moduleIds: 'deterministic'):
 //! Module IDs are stable across builds of the same code — same source = same ID.
 
 use regex::Regex;
 use rustc_hash::FxHashMap;
+use std::hash::BuildHasher;
+use std::sync::LazyLock;
 
 /// A resolved webpack module.
 #[derive(Debug, Clone)]
@@ -41,18 +43,6 @@ pub struct ModuleResolutionResult {
 /// Resolve webpack module IDs to package names from the bundled source.
 #[must_use]
 pub fn resolve_module_ids(source: &str) -> ModuleResolutionResult {
-    lazy_static::lazy_static! {
-        // Module definition: NNNN: (exports, module, require) => { ... }
-        static ref MODULE_DEF_RE: Regex = Regex::new(
-            r"(\d{1,5}):\s*\([^)]*\)\s*=>\s*\{"
-        ).unwrap();
-
-        // Webpack require call: f(NNNN) or t(NNNN) or __webpack_require__(NNNN)
-        static ref REQUIRE_CALL_RE: Regex = Regex::new(
-            r"\b\w\((\d{1,5})\)"
-        ).unwrap();
-    }
-
     let mut resolved: FxHashMap<u32, ResolvedModule> = FxHashMap::default();
     // Split source into module regions and analyze each
     let module_regions = extract_module_regions(source);
@@ -82,12 +72,9 @@ pub fn resolve_module_ids(source: &str) -> ModuleResolutionResult {
 
 /// Extract module ID → source region map from webpack bundle.
 fn extract_module_regions(source: &str) -> Vec<(u32, String)> {
-    lazy_static::lazy_static! {
-        // Match module definitions at the start of object properties
-        static ref MODULE_START_RE: Regex = Regex::new(
-            r"(?m)^\s*(\d{1,5}):\s*\([^)]*\)\s*=>\s*\{"
-        ).unwrap();
-    }
+    // Match module definitions at the start of object properties
+    static MODULE_START_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*(\d{1,5}):\s*\([^)]*\)\s*=>\s*\{").unwrap());
 
     let mut regions = Vec::new();
 
@@ -208,7 +195,10 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
 
 /// Annotate webpack require calls with package names.
 #[must_use]
-pub fn annotate_require_calls(source: &str, resolved: &FxHashMap<u32, ResolvedModule>) -> (String, usize) {
+pub fn annotate_require_calls<S: BuildHasher>(
+    source: &str,
+    resolved: &std::collections::HashMap<u32, ResolvedModule, S>,
+) -> (String, usize) {
     if resolved.is_empty() {
         return (source.to_string(), 0);
     }

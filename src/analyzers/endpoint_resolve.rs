@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn ignores_non_endpoint_strings() {
-        let src = r#"var msg = `hello ${name}`;"#;
+        let src = r"var msg = `hello ${name}`;";
         assert!(resolved(src).is_empty());
     }
 }

@@ -26,6 +26,7 @@ use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use std::cell::Cell;
 
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -34,23 +35,7 @@ pub struct MultiVarSplitter {
     split_count: usize,
 }
 
-impl MultiVarSplitter {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { split_count: 0 }
-    }
-
-    #[must_use]
-    pub const fn split_count(&self) -> usize {
-        self.split_count
-    }
-}
-
-impl Default for MultiVarSplitter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+counter_pass!(MultiVarSplitter, split_count, split_count);
 
 impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {

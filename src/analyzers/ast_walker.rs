@@ -48,21 +48,21 @@ pub fn span_to_pos(source: &str, start: u32, end: u32) -> PositionRange {
 pub fn template_static_parts<'a>(lit: &oxc_ast::ast::TemplateLiteral<'a>) -> Vec<&'a str> {
     lit.quasis
         .iter()
-        .filter_map(|q| q.value.cooked.as_ref().map(|s| s.as_str()))
+        .filter_map(|q| q.value.cooked.as_ref().map(oxc_ast::ast::Str::as_str))
         .collect()
 }
 
 /// Try to read the static-string value out of an [`Expression`], if it is
 /// a literal string or a fully-static template literal.
 #[must_use]
-pub fn expression_as_static_string<'a>(expr: &oxc_ast::ast::Expression<'a>) -> Option<String> {
+pub fn expression_as_static_string(expr: &oxc_ast::ast::Expression<'_>) -> Option<String> {
     use oxc_ast::ast::Expression;
     match expr {
         Expression::StringLiteral(s) => Some(s.value.to_string()),
         Expression::TemplateLiteral(t) if t.expressions.is_empty() => Some(
             t.quasis
                 .iter()
-                .filter_map(|q| q.value.cooked.as_ref().map(|s| s.as_str()))
+                .filter_map(|q| q.value.cooked.as_ref().map(oxc_ast::ast::Str::as_str))
                 .collect::<Vec<_>>()
                 .join(""),
         ),

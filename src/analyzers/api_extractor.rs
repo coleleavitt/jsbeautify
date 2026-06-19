@@ -7,7 +7,7 @@
 //!   - `localStorage.setItem/getItem()` and `sessionStorage.*`
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::*;
+use oxc_ast::ast::{Argument, CallExpression, Expression};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -69,10 +69,10 @@ impl<'a> Visit<'a> for ApiVisitor<'a> {
         match &call.callee {
             // fetch("url")
             Expression::Identifier(id) if id.name == "fetch" => {
-                if let Some(arg) = call.arguments.first() {
-                    if let Some(val) = self.extract_string_arg(arg) {
-                        self.push(KIND_API_CALL, val, call.span.start, call.span.end);
-                    }
+                if let Some(arg) = call.arguments.first()
+                    && let Some(val) = self.extract_string_arg(arg)
+                {
+                    self.push(KIND_API_CALL, val, call.span.start, call.span.end);
                 }
             }
             Expression::StaticMemberExpression(sm) => {
@@ -86,54 +86,47 @@ impl<'a> Visit<'a> for ApiVisitor<'a> {
                             prop,
                             "get" | "post" | "put" | "delete" | "patch" | "request" | "head" | "options"
                         )
+                        && let Some(arg) = call.arguments.first()
+                        && let Some(val) = self.extract_string_arg(arg)
                     {
-                        if let Some(arg) = call.arguments.first() {
-                            if let Some(val) = self.extract_string_arg(arg) {
-                                self.push(KIND_API_CALL, val, call.span.start, call.span.end);
-                            }
-                        }
+                        self.push(KIND_API_CALL, val, call.span.start, call.span.end);
                     }
 
                     // $.ajax, $.get, $.post
-                    if (obj_name == "$" || obj_name == "jQuery") && matches!(prop, "ajax" | "get" | "post" | "getJSON")
+                    if (obj_name == "$" || obj_name == "jQuery")
+                        && matches!(prop, "ajax" | "get" | "post" | "getJSON")
+                        && let Some(arg) = call.arguments.first()
+                        && let Some(val) = self.extract_string_arg(arg)
                     {
-                        if let Some(arg) = call.arguments.first() {
-                            if let Some(val) = self.extract_string_arg(arg) {
-                                self.push(KIND_API_CALL, val, call.span.start, call.span.end);
-                            }
-                        }
+                        self.push(KIND_API_CALL, val, call.span.start, call.span.end);
                     }
 
                     // localStorage/sessionStorage.setItem/getItem/removeItem
                     if (obj_name == "localStorage" || obj_name == "sessionStorage")
                         && matches!(prop, "setItem" | "getItem" | "removeItem")
+                        && let Some(arg) = call.arguments.first()
+                        && let Some(val) = self.extract_string_arg(arg)
                     {
-                        if let Some(arg) = call.arguments.first() {
-                            if let Some(val) = self.extract_string_arg(arg) {
-                                self.push(
-                                    KIND_STORAGE_ACCESS,
-                                    format!("{}.{}(\"{}\")", obj_name, prop, val),
-                                    call.span.start,
-                                    call.span.end,
-                                );
-                            }
-                        }
+                        self.push(
+                            KIND_STORAGE_ACCESS,
+                            format!("{obj_name}.{prop}(\"{val}\")"),
+                            call.span.start,
+                            call.span.end,
+                        );
                     }
 
                     // *.open("GET", "/api/...")  — XMLHttpRequest pattern
-                    if prop == "open" && call.arguments.len() >= 2 {
-                        if let Some(Argument::StringLiteral(method)) = call.arguments.first() {
-                            if matches!(
-                                method.value.as_str(),
-                                "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
-                            ) {
-                                if let Some(arg) = call.arguments.get(1) {
-                                    if let Some(val) = self.extract_string_arg(arg) {
-                                        self.push(KIND_API_CALL, val, call.span.start, call.span.end);
-                                    }
-                                }
-                            }
-                        }
+                    if prop == "open"
+                        && call.arguments.len() >= 2
+                        && let Some(Argument::StringLiteral(method)) = call.arguments.first()
+                        && matches!(
+                            method.value.as_str(),
+                            "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
+                        )
+                        && let Some(arg) = call.arguments.get(1)
+                        && let Some(val) = self.extract_string_arg(arg)
+                    {
+                        self.push(KIND_API_CALL, val, call.span.start, call.span.end);
                     }
                 }
             }
@@ -169,8 +162,8 @@ mod tests {
     fn finds_storage_access() {
         let src = r#"localStorage.setItem("token", val); sessionStorage.getItem("session_id");"#;
         let m = analyze(src, None, FileType::Js);
-        let storage: Vec<_> = m.iter().filter(|x| x.match_kind == "storage_access").collect();
-        assert_eq!(storage.len(), 2);
+        let storage_count = m.iter().filter(|x| x.match_kind == "storage_access").count();
+        assert_eq!(storage_count, 2);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Bun-specific name extraction and module splitting.
 //!
 //! Extracts original names from Bun bundle patterns:
-//! - MR() export mappings: `MR(target, { exportName: () => minifiedVar })`
+//! - `MR()` export mappings: `MR(target, { exportName: () => minifiedVar })`
 //! - this.name patterns: `this.name = "ClassName"` in class constructors
 //! - displayName patterns: `X.displayName = "ComponentName"`
 //! - Module wrappers: `y((exports, module) => { ... })` and `h(() => { ... })`
@@ -10,7 +10,7 @@ use regex::Regex;
 use rustc_hash::FxHashMap;
 use std::sync::LazyLock;
 
-/// Extracted name mapping from MR() export calls
+/// Extracted name mapping from `MR()` export calls
 #[derive(Debug, Clone)]
 pub struct ExportMapping {
     pub minified_name: String,
@@ -66,8 +66,12 @@ const GENERIC_NAMES: &[&str] = &[
     "call", "default", "get", "set", "init", "run", "exec", "then", "next", "done",
 ];
 
-/// Extract all MR() export mappings from code.
+/// Extract all `MR()` export mappings from code.
 /// Returns mappings from minified variable name to original export name.
+///
+/// # Panics
+/// Panics only if a hard-coded regex capture group is missing after a successful
+/// match, which would indicate an internal regex definition bug.
 #[must_use]
 pub fn extract_mr_exports(code: &str) -> Vec<ExportMapping> {
     let mut results = Vec::new();
@@ -125,6 +129,10 @@ pub fn extract_mr_exports(code: &str) -> Vec<ExportMapping> {
 }
 
 /// Extract class names from `this.name = "ClassName"` patterns.
+///
+/// # Panics
+/// Panics only if a hard-coded regex capture group is missing after a successful
+/// match, which would indicate an internal regex definition bug.
 #[must_use]
 pub fn extract_this_name_patterns(code: &str) -> Vec<ExportMapping> {
     let mut results = Vec::new();
@@ -180,6 +188,10 @@ pub fn extract_this_name_patterns(code: &str) -> Vec<ExportMapping> {
 }
 
 /// Extract displayName assignments: `X.displayName = "ComponentName"`
+///
+/// # Panics
+/// Panics only if a hard-coded regex capture group is missing after a successful
+/// match, which would indicate an internal regex definition bug.
 #[must_use]
 pub fn extract_display_name_patterns(code: &str) -> Vec<ExportMapping> {
     let mut results = Vec::new();
@@ -233,6 +245,8 @@ pub fn extract_all_names(code: &str) -> FxHashMap<String, String> {
     result
 }
 
+/// # Panics
+/// Panics only if one of the hard-coded wrapper-detection regexes is invalid.
 #[must_use]
 pub fn detect_wrapper_functions(code: &str) -> (String, String) {
     let preamble = &code[..5000.min(code.len())];
@@ -243,15 +257,15 @@ pub fn detect_wrapper_functions(code: &str) -> (String, String) {
         r"(?:,|var\s+)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\([A-Za-z_$][A-Za-z0-9_$]*,\s*[A-Za-z_$][A-Za-z0-9_$]*\)\s*=>\s*\(\)\s*=>\s*\([^)]*\{\s*exports\s*:\s*\{\s*\}\s*\}"
     ).expect("valid regex pattern");
 
-    let factory_fn = factory_re
-        .captures(preamble)
-        .map(|c| {
+    let factory_fn = factory_re.captures(preamble).map_or_else(
+        || "y".to_string(),
+        |c| {
             c.get(1)
                 .expect("capture group 1 guaranteed by regex")
                 .as_str()
                 .to_string()
-        })
-        .unwrap_or_else(|| "y".to_string());
+        },
+    );
 
     // __esm: (a,b)=>()=>(a&&(b=a(a=0)),b)
     // Match structure - look for the (a=0) pattern
@@ -259,21 +273,25 @@ pub fn detect_wrapper_functions(code: &str) -> (String, String) {
         r"(?:,|var\s+)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\([A-Za-z_$][A-Za-z0-9_$]*,\s*[A-Za-z_$][A-Za-z0-9_$]*\)\s*=>\s*\(\)\s*=>\s*\([^)]*=\s*0\s*\)"
     ).expect("valid regex pattern");
 
-    let lazy_fn = lazy_re
-        .captures(preamble)
-        .map(|c| {
+    let lazy_fn = lazy_re.captures(preamble).map_or_else(
+        || "h".to_string(),
+        |c| {
             c.get(1)
                 .expect("capture group 1 guaranteed by regex")
                 .as_str()
                 .to_string()
-        })
-        .unwrap_or_else(|| "h".to_string());
+        },
+    );
 
     (factory_fn, lazy_fn)
 }
 
 /// Find all module wrappers in code.
 /// Returns list of modules with their positions.
+///
+/// # Panics
+/// Panics only if a generated regex from an escaped wrapper function name is
+/// invalid, which would indicate an internal regex construction bug.
 #[must_use]
 pub fn find_module_wrappers(code: &str) -> Vec<ModuleInfo> {
     let (mod_fn, laz_fn) = detect_wrapper_functions(code);
@@ -339,7 +357,7 @@ pub fn find_module_wrappers(code: &str) -> Vec<ModuleInfo> {
     modules
 }
 
-fn find_matching_paren(code: &str, start: usize) -> Option<usize> {
+const fn find_matching_paren(code: &str, start: usize) -> Option<usize> {
     let bytes = code.as_bytes();
     if start >= bytes.len() || bytes[start] != b'(' {
         return None;
@@ -405,7 +423,7 @@ pub fn split_bundle(code: &str) -> BundleSplit {
     }
 
     // Main is everything after last module
-    let last_end = modules.last().map(|m| m.end).unwrap_or(0);
+    let last_end = modules.last().map_or(0, |m| m.end);
     let main = code[last_end..].to_string();
 
     BundleSplit {
@@ -421,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_extract_mr_exports() {
-        let code = r#"MR(target, { createClient: () => abc, fetchData: () => xyz });"#;
+        let code = r"MR(target, { createClient: () => abc, fetchData: () => xyz });";
         let exports = extract_mr_exports(code);
         assert_eq!(exports.len(), 2);
         assert!(
@@ -456,12 +474,12 @@ mod tests {
 
     #[test]
     fn test_find_module_wrappers() {
-        let code = r#"
+        let code = r"
 var y = (a, b) => () => (b || a((b = {exports: {}}).exports, b), b.exports);
 var h = (a, b) => () => (a && (b = a(a = 0)), b);
 var abc = y((exports) => { exports.foo = 1; });
 var xyz = h(() => { return 42; });
-"#;
+";
         let modules = find_module_wrappers(code);
         assert_eq!(modules.len(), 2);
         assert_eq!(modules[0].name, "abc");

@@ -13,6 +13,8 @@
 //! - Shared cookie/token scope between all MFEs
 
 use regex::Regex;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
 
 /// A detected micro-frontend registration.
 #[derive(Debug, Clone)]
@@ -54,52 +56,28 @@ pub struct MfeAnalysisResult {
 /// Extract MFE registry patterns from source.
 #[must_use]
 pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
-    lazy_static::lazy_static! {
-        // single-spa registerApplication
-        static ref REGISTER_APP_RE: Regex = Regex::new(
-            r#"registerApplication\(\s*["']([^"']+)["']"#
-        ).unwrap();
+    // single-spa registerApplication
+    static REGISTER_APP_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"registerApplication\(\s*["']([^"']+)["']"#).unwrap());
 
-        // MFE name patterns (sac-*-ui, as-*-ui)
-        static ref MFE_NAME_RE: Regex = Regex::new(
-            r#"["']((?:sac|as|money-movement|import-transactions|acd|managed-accounts)-[\w-]+-ui)["']"#
-        ).unwrap();
+    // MFE name patterns (sac-*-ui, as-*-ui)
+    static MFE_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"["']((?:sac|as|money-movement|import-transactions|acd|managed-accounts)-[\w-]+-ui)["']"#).unwrap()
+    });
 
-        // Dynamic script creation
-        static ref SCRIPT_CREATE_RE: Regex = Regex::new(
-            r#"createElement\(\s*["']script["']\)"#
-        ).unwrap();
+    // Dynamic script creation
+    static SCRIPT_CREATE_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"createElement\(\s*["']script["']\)"#).unwrap());
 
-        // Script src assignment
-        static ref SCRIPT_SRC_RE: Regex = Regex::new(
-            r#"\.src\s*=\s*([^;]+)"#
-        ).unwrap();
+    // Config endpoint
+    static CONFIG_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"["'](/config|/mfe-config|/mfes/[^"']+)["']"#).unwrap());
 
-        // XHR/fetch to load HTML
-        static ref XHR_HTML_RE: Regex = Regex::new(
-            r#"(?:XMLHttpRequest|fetch)\([^)]*?\.html"#
-        ).unwrap();
+    // Integrity attribute
+    static INTEGRITY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"integrity|crossorigin|sri").unwrap());
 
-        // Config endpoint
-        static ref CONFIG_RE: Regex = Regex::new(
-            r#"["'](/config|/mfe-config|/mfes/[^"']+)["']"#
-        ).unwrap();
-
-        // Integrity attribute
-        static ref INTEGRITY_RE: Regex = Regex::new(
-            r#"integrity|crossorigin|sri"#
-        ).unwrap();
-
-        // CSP nonce
-        static ref NONCE_RE: Regex = Regex::new(
-            r#"nonce|\.nc\b"#
-        ).unwrap();
-
-        // Gateway/BFF URLs
-        static ref GATEWAY_RE: Regex = Regex::new(
-            r#"["'](https?://[^"']*(?:gateway|bff)[^"']*)["']"#
-        ).unwrap();
-    }
+    // CSP nonce
+    static NONCE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"nonce|\.nc\b").unwrap());
 
     let mut registrations = Vec::new();
     let mut script_injections = Vec::new();
@@ -171,32 +149,36 @@ pub fn format_mfe_analysis(result: &MfeAnalysisResult) -> String {
     output.push_str("// ╔══════════════════════════════════════════════════════════╗\n");
     output.push_str("// ║      MICRO-FRONTEND (MFE) REGISTRY ANALYSIS            ║\n");
     output.push_str("// ╠══════════════════════════════════════════════════════════╣\n");
-    output.push_str(&format!("// ║ MFEs detected: {}\n", result.registrations.len()));
-    output.push_str(&format!(
+    let _ = writeln!(output, "// ║ MFEs detected: {}", result.registrations.len());
+    let _ = writeln!(
+        output,
         "// ║ Dynamic script injections: {}\n",
         result.script_injections.len()
-    ));
-    output.push_str(&format!(
+    );
+    let _ = writeln!(
+        output,
         "// ║ SRI/Integrity checks: {}\n",
         if result.has_sri { "YES" } else { "⚠️  NO" }
-    ));
-    output.push_str(&format!(
+    );
+    let _ = writeln!(
+        output,
         "// ║ CSP Nonce: {}\n",
         if result.has_csp_nonce { "YES" } else { "NO" }
-    ));
-    output.push_str(&format!(
+    );
+    let _ = writeln!(
+        output,
         "// ║ Shared auth scope: {}\n",
         if result.shared_auth_scope {
             "⚠️  YES (all MFEs share tokens)"
         } else {
             "NO"
         }
-    ));
+    );
 
     if !result.registrations.is_empty() {
         output.push_str("// ║\n// ║ REGISTERED MFEs:\n");
         for mfe in &result.registrations {
-            output.push_str(&format!("// ║   {}\n", mfe.name));
+            let _ = writeln!(output, "// ║   {}", mfe.name);
         }
     }
 

@@ -2,55 +2,42 @@
 //! minification in production bundles (preload helpers, dep maps, env vars,
 //! and leaked dev-server markers).
 //!
-//! Signatures that survive minification in production bundles; emits AnalyzerMatch.
+//! Signatures that survive minification in production bundles; emits `AnalyzerMatch`.
 //!
 //! Signatures confirmed against the cloned Vite source:
-//!   - `__vitePreload` / `vite:preloadError` / `__vite__mapDeps`:
-//!     packages/vite/src/node/plugins/importAnalysisBuild.ts
-//!       (preloadMethod L30, `vite:preloadError` Event L146,
-//!        `__vite__mapDeps([...])` L475, mapDeps codegen L490)
-//!   - `import.meta.env` / `VITE_` prefix: packages/vite/src/node/env.ts (L36, L96, L110)
-//!   - dev markers `/@vite/client`, `/@vite/env`, `/@fs/`, `vite-hmr`:
-//!     packages/vite/src/node/constants.ts (FS_PREFIX L119, CLIENT_PUBLIC_PATH L121,
-//!     ENV_PUBLIC_PATH L122), packages/vite/src/node/server/ws.ts (HMR_HEADER L34),
-//!     packages/vite/src/client/client.ts (L58, L74)
+//! - `__vitePreload` / `vite:preloadError` / `__vite__mapDeps` -> importAnalysisBuild.ts
+//! - `import.meta.env` / `VITE_` prefix -> packages/vite/src/node/env.ts
+//! - dev markers `/@vite/client`, `/@vite/env`, `/@fs/`, `vite-hmr` -> Vite dev server
 
 use super::match_kind::{AnalyzerMatch, FileType, PositionRange, Provenance};
 use super::regex_bank::Severity;
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// `new Event('vite:preloadError', ...)` — emitted by the runtime preload
-    /// helper. The literal string survives minification verbatim.
-    /// importAnalysisBuild.ts L146.
-    static ref PRELOAD_ERROR_RE: Regex = Regex::new(r#"vite:preloadError"#).unwrap();
+const PRELOAD_ERROR_EVENT: &str = "vite:preloadError";
 
-    /// `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[...])))=>i.map(...)`
-    /// Older bundles emit `(i,m,d=(...))`. Capture group 1 is the chunk+CSS table.
-    /// importAnalysisBuild.ts L490 (codegen) / L484 (fileDepsCode).
-    static ref DEP_MAP_RE: Regex = Regex::new(
-        r#"__vite__mapDeps=\(i,m(?:=__vite__mapDeps)?,d=\(m\.f\|\|\(m\.f=(\[[^\]]*\])\)\)\)"#,
-    )
-    .unwrap();
+/// `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[...])))=>i.map(...)`
+/// Older bundles emit `(i,m,d=(...))`. Capture group 1 is the chunk+CSS table.
+/// importAnalysisBuild.ts L490 (codegen) / L484 (fileDepsCode).
+static DEP_MAP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"__vite__mapDeps=\(i,m(?:=__vite__mapDeps)?,d=\(m\.f\|\|\(m\.f=(\[[^\]]*\])\)\)\)").unwrap()
+});
 
-    /// `__vitePreload(()=>import(X), __vite__mapDeps([i,j]))` lazy-import graph.
-    /// Capture group 1 is the dynamic import target. importAnalysisBuild.ts L179.
-    static ref PRELOAD_RE: Regex =
-        Regex::new(r#"__vitePreload\(\s*\(\)\s*=>\s*import\(([^)]+)\)"#).unwrap();
+/// `__vitePreload(()=>import(X), __vite__mapDeps([i,j]))` lazy-import graph.
+/// Capture group 1 is the dynamic import target. importAnalysisBuild.ts L179.
+static PRELOAD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"__vitePreload\(\s*\(\)\s*=>\s*import\(([^)]+)\)").unwrap());
 
-    /// `import.meta.env.VITE_FOO` or `import.meta.env["VITE_FOO"]`. Only the
-    /// public `VITE_`-prefixed keys are client-exposed. env.ts L36/L96/L110.
-    static ref ENV_VAR_RE: Regex = Regex::new(
-        r#"import\.meta\.env(?:\.(VITE_[A-Za-z0-9_]+)|\[\s*["'](VITE_[A-Za-z0-9_]+)["']\s*\])"#,
-    )
-    .unwrap();
+/// `import.meta.env.VITE_FOO` or `import.meta.env["VITE_FOO"]`. Only the
+/// public `VITE_`-prefixed keys are client-exposed. env.ts L36/L96/L110.
+static ENV_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"import\.meta\.env(?:\.(VITE_[A-Za-z0-9_]+)|\[\s*["'](VITE_[A-Za-z0-9_]+)["']\s*\])"#).unwrap()
+});
 
-    /// Dev-server internal paths / HMR header. Their presence in a production
-    /// bundle indicates a leaked dev build. constants.ts L119/L121/L122, ws.ts L34.
-    static ref DEV_MARKER_RE: Regex =
-        Regex::new(r#"(/@vite/client|/@vite/env|/@fs/|vite-hmr)"#).unwrap();
-}
+/// Dev-server internal paths / HMR header. Their presence in a production
+/// bundle indicates a leaked dev build. constants.ts L119/L121/L122, ws.ts L34.
+static DEV_MARKER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(/@vite/client|/@vite/env|/@fs/|vite-hmr)").unwrap());
 
 /// Extract the entries of a flat JS string-array literal (`["a.js","b.css"]`).
 ///
@@ -79,18 +66,22 @@ fn parse_dep_array(arr: &str) -> Vec<String> {
 }
 
 /// Scan source for Vite signatures.
+///
+/// # Panics
+///
+/// Panics only if a compile-time regex pattern is invalid.
 #[must_use]
 pub fn analyze(source: &str, file_path: Option<&str>, file_type: FileType) -> Vec<AnalyzerMatch> {
     let mut out = Vec::new();
     let fp = || file_path.map(str::to_string);
 
     // vite_fingerprint — runtime preload error event name.
-    for m in PRELOAD_ERROR_RE.find_iter(source) {
+    for (start, value) in source.match_indices(PRELOAD_ERROR_EVENT) {
         out.push(
             AnalyzerMatch::new(
                 "vite_fingerprint",
-                m.as_str(),
-                PositionRange::from_byte_range(source, m.start(), m.end()),
+                value,
+                PositionRange::from_byte_range(source, start, start + value.len()),
                 file_type,
                 fp(),
             )
