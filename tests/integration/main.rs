@@ -9,6 +9,7 @@
 //! it in the `mod` block below.
 
 mod beautify;
+mod cli;
 mod deobfuscate;
 mod fixtures;
 mod pipeline;

@@ -90,13 +90,6 @@ pub fn classify(match_kind: &str) -> Option<Classification> {
             owasp: "A04:2021",
             owasp_name: "Insecure Design",
         },
-        // ── Known CVE in a dependency (A06) ──────────────────────────────────
-        "known_cve" => Classification {
-            cwe: "CWE-1035",
-            cwe_name: "Using Components with Known Vulnerabilities",
-            owasp: "A06:2021",
-            owasp_name: "Vulnerable and Outdated Components",
-        },
         _ => return None,
     })
 }
@@ -144,7 +137,7 @@ mod tests {
         assert_eq!(classify("open_redirect").unwrap().cwe, "CWE-601");
         assert_eq!(classify("idor_candidate").unwrap().cwe, "CWE-639");
         assert_eq!(classify("high_entropy_secret").unwrap().owasp, "A07:2021");
-        assert_eq!(classify("known_cve").unwrap().owasp, "A06:2021");
+        assert!(classify("known_cve").is_none());
         assert_eq!(classify("sensitive_property_name:passwd").unwrap().cwe, "CWE-200");
     }
 

@@ -12,17 +12,14 @@
 //! let beautified = beautify(code, &options).expect("beautification failed");
 //! ```
 
-pub mod agent;
 pub mod analyzers;
 pub mod ast_deobfuscate;
 pub mod beautifier;
 pub mod bun_extract;
-pub mod chains;
 pub mod cross_version;
 pub mod db;
 pub mod diff;
 pub mod domain_recon;
-pub mod fuzz;
 pub mod hooks;
 pub mod llm;
 pub mod monitoring;
@@ -32,15 +29,11 @@ pub mod pipeline;
 pub mod proxy;
 pub mod recon_engine;
 pub mod relationships;
-pub mod repeater;
-pub mod report;
 pub mod scope;
 pub mod server;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
-pub mod validate;
-pub mod vuln_db;
 pub mod webpack_module_extractor;
 pub mod websocket;
 pub mod wordlist;

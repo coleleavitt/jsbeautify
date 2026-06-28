@@ -3,7 +3,33 @@ use js_beautify_rs::analyzers::match_kind::FileType;
 use js_beautify_rs::analyzers::{AnalyzerConfig, run_all};
 use std::fs;
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub(super) fn run_split_sources(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(out_dir) = cli.split_sources.clone() else {
+        return Ok(());
+    };
+    let bundle = if cli.input == "-" {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        fs::read_to_string(&cli.input)?
+    };
+    let bundle_path = (cli.input != "-").then(|| Path::new(&cli.input));
+    let dir = Path::new(&out_dir);
+    let written = js_beautify_rs::sourcemap::reconstruct_bundle_tree(&bundle, bundle_path, dir)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    eprintln!(
+        "Split {} source file(s) into {}/reversed/",
+        written.len(),
+        dir.display()
+    );
+    for w in &written {
+        println!("{w}");
+    }
+    Ok(())
+}
 
 pub(super) fn run_reconstruct_sourcemap(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let Some(out_dir) = cli.reconstruct_sourcemap.clone() else {
@@ -16,7 +42,7 @@ pub(super) fn run_reconstruct_sourcemap(cli: &Cli) -> Result<(), Box<dyn std::er
     } else {
         fs::read_to_string(&cli.input)?
     };
-    let dir = std::path::Path::new(&out_dir);
+    let dir = Path::new(&out_dir);
     let written = js_beautify_rs::sourcemap::reconstruct_tree(&map_json, dir)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     eprintln!(

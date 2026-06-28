@@ -55,6 +55,9 @@ cat bundle.js | jsbeautify - > output.js
 # Extract webpack modules to separate files
 jsbeautify bundle.js --extract-modules --module-dir ./modules
 
+# Rebuild the original source tree from a bundle sourceMappingURL
+jsbeautify bundle.js --split-sources ./out
+
 # Generate dependency graph (DOT format)
 jsbeautify bundle.js --extract-modules --dependency-graph deps.dot
 
@@ -82,6 +85,7 @@ Options:
       --extract-modules          Extract webpack modules to separate files
       --module-dir <DIR>         Directory for module output [default: ./modules]
       --dependency-graph <FILE>  Generate a dependency graph in DOT format
+      --split-sources <DIR>      Reconstruct source tree from bundle sourceMappingURL
       --source-maps              Generate source maps
       --sourcemap <FILE>         Sourcemap for extracting original variable names
       --names-json <FILE>        Name mappings from extract-names.ts

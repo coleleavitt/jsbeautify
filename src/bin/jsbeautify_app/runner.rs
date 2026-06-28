@@ -1,4 +1,4 @@
-use super::{Cli, align, analysis, directory, http, recon, scan, sources, wordlist};
+use super::{Cli, align, analysis, directory, recon, scan, sources, wordlist};
 use clap::Parser;
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
@@ -26,6 +26,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(domain) = cli.recon.clone() {
         return recon::run_recon(&cli, &domain);
+    }
+    if cli.split_sources.is_some() {
+        return sources::run_split_sources(&cli);
     }
     if cli.reconstruct_sourcemap.is_some() {
         return sources::run_reconstruct_sourcemap(&cli);
@@ -82,12 +85,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if cli.discover_nextjs {
         return scan::run_nextjs_discovery(&cli, &code);
-    }
-    if cli.repeat {
-        return http::run_repeater(&cli, &code);
-    }
-    if cli.fuzz {
-        return http::run_fuzz(&cli, &code);
     }
     if let Some(ref old_path) = cli.diff_with {
         return scan::run_diff(&cli, &code, old_path);

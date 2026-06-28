@@ -1,5 +1,4 @@
 use super::Cli;
-use super::security::{run_agent, run_validation, run_vuln_scan};
 use js_beautify_rs::analyzers::match_kind::FileType;
 use js_beautify_rs::analyzers::{AnalyzerConfig, run_all};
 use std::fs;
@@ -41,9 +40,6 @@ pub(super) fn run_analysis(cli: &Cli, code: &str) -> Result<(), Box<dyn std::err
     let file_path = (cli.input != "-").then_some(cli.input.as_str());
     let mut matches = run_all(code, file_path, FileType::Js, &cfg);
 
-    if cli.vuln_scan {
-        matches.extend(run_vuln_scan(&matches, file_path));
-    }
     if cli.extract_hostnames && !cli.extract_paths && !cli.analyze && !cli.analyze_all {
         matches.retain(|m| matches!(m.match_kind.as_str(), "hostname" | "comment_hostname"));
     }
@@ -61,51 +57,12 @@ pub(super) fn run_analysis(cli: &Cli, code: &str) -> Result<(), Box<dyn std::err
         return output_sarif(cli, &matches);
     }
 
-    let attack_chains = if cli.chains || cli.agent {
-        js_beautify_rs::chains::correlate(&matches)
-    } else {
-        Vec::new()
-    };
-    let agent_report = if cli.agent { run_agent(&matches, code) } else { None };
-    let validations = if cli.validate {
-        run_validation(cli.validate_scope.as_deref(), &matches)
-    } else {
-        Vec::new()
-    };
-
-    if let Some(report_path) = &cli.report {
-        let computed_report_chains;
-        let report_chains = if attack_chains.is_empty() {
-            computed_report_chains = js_beautify_rs::chains::correlate(&matches);
-            &computed_report_chains
-        } else {
-            &attack_chains
-        };
-        let evidence: Vec<js_beautify_rs::report::ProbeEvidence> = validations
-            .iter()
-            .map(|v| js_beautify_rs::report::ProbeEvidence {
-                finding_kind: v.finding_kind.clone(),
-                target: v.target.clone(),
-                verdict: v.verdict_str.clone(),
-                evidence: v.evidence.clone(),
-                repro: None,
-            })
-            .collect();
-        let label = file_path.unwrap_or("target");
-        let md = js_beautify_rs::report::render_markdown(label, &matches, report_chains, &evidence);
-        fs::write(report_path, md)?;
-        eprintln!("PoC report written to {report_path}");
-    }
-
     let output_text = if cli.json {
         serde_json::to_string_pretty(&serde_json::json!({
             "findings": matches,
-            "chains": &attack_chains,
-            "agent": agent_report,
-            "validations": validations,
         }))?
     } else {
-        text_report(&matches, &attack_chains, agent_report.as_ref(), &validations)
+        text_report(&matches)
     };
 
     if let Some(out_path) = &cli.analysis_out {
@@ -213,12 +170,7 @@ fn output_sarif(
     Ok(())
 }
 
-fn text_report(
-    matches: &[js_beautify_rs::analyzers::AnalyzerMatch],
-    attack_chains: &[js_beautify_rs::chains::AttackChain],
-    agent_report: Option<&js_beautify_rs::agent::AgentReport>,
-    validations: &[super::security::ValidationRow],
-) -> String {
+fn text_report(matches: &[js_beautify_rs::analyzers::AnalyzerMatch]) -> String {
     let mut lines = Vec::with_capacity(matches.len());
     for m in matches {
         lines.push(format!(
@@ -228,21 +180,6 @@ fn text_report(
     }
     if lines.is_empty() {
         lines.push("No findings.".to_string());
-    }
-    if !attack_chains.is_empty() {
-        lines.push(format!("\n=== Attack chains ({}) ===", attack_chains.len()));
-        for c in attack_chains {
-            lines.push(format!("  [{}/score {}] {} — {}", c.kind, c.score, c.cwe, c.title));
-        }
-    }
-    if let Some(rep) = agent_report {
-        lines.push(format!("\n=== Agent report ({} turns) ===\n{}", rep.turns, rep.report));
-    }
-    if !validations.is_empty() {
-        lines.push(format!("\n=== Live validation ({}) ===", validations.len()));
-        for v in validations {
-            lines.push(format!("  [{}] {} → {}", v.verdict_str, v.target, v.evidence));
-        }
     }
     lines.join("\n")
 }

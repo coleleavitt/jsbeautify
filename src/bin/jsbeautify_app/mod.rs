@@ -10,11 +10,9 @@ use std::path::PathBuf;
 mod align;
 mod analysis;
 mod directory;
-mod http;
 mod recon;
 mod runner;
 mod scan;
-mod security;
 mod sources;
 mod wordlist;
 
@@ -137,8 +135,13 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     reconstruct_sourcemap: Option<String>,
 
-    // ── Security analysis ────────────────────────────────────────────────────
-    /// Run all security analyzers (secrets, sinks, paths, GraphQL, npm packages)
+    /// Reconstruct the original source tree from this JS bundle's sourceMappingURL
+    /// into <dir>/reversed/. Supports inline and local external source maps.
+    #[arg(long, value_name = "DIR")]
+    split_sources: Option<String>,
+
+    // ── Bundle analysis ──────────────────────────────────────────────────────
+    /// Run all passive bundle analyzers (secrets, sinks, paths, GraphQL, npm packages)
     #[arg(long)]
     analyze: bool,
 
@@ -166,43 +169,11 @@ struct Cli {
     #[arg(long)]
     extract_packages: bool,
 
-    /// With --analyze: look up detected npm packages against the OSV + CISA KEV
-    /// vulnerability catalogs and emit `known_cve` findings (needs network).
-    #[arg(long)]
-    vuln_scan: bool,
-
-    /// With --analyze: correlate findings into multi-step attack chains and
-    /// include them in the report.
-    #[arg(long)]
-    chains: bool,
-
-    /// With --analyze: run the agentic LLM investigation loop over the findings
-    /// (chains them into attack paths). Needs an LLM endpoint (see --llm-url /
-    /// `OPENAI_API_KEY`).
-    #[arg(long)]
-    agent: bool,
-
-    /// With --analyze: actively confirm findings against the live target by
-    /// probing (open-redirect, reflection, IDOR, known-CVE). ONLY hosts matching
-    /// --validate-scope are ever contacted. Requires authorization for the target.
-    #[arg(long)]
-    validate: bool,
-
-    /// Comma-separated in-scope host patterns for --validate (e.g.
-    /// "*.target.com,target.com"). Nothing outside this allowlist is requested.
-    #[arg(long, value_name = "PATTERNS")]
-    validate_scope: Option<String>,
-
-    /// With --analyze: write a triager-ready Markdown `PoC` report (findings +
-    /// chains + any validations, with copyable repro commands) to this file.
-    #[arg(long, value_name = "FILE")]
-    report: Option<String>,
-
     /// Detect sensitive property names (secret, authorization, `aws_secret_key`, …)
     #[arg(long)]
     find_sensitive_props: bool,
 
-    /// Generate a fuzzing wordlist from JS identifiers and string literals
+    /// Generate a source-derived wordlist from JS identifiers and string literals
     #[arg(long)]
     wordlist: bool,
 
@@ -290,62 +261,8 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     analysis_out: Option<PathBuf>,
 
-    // ── Repeater ─────────────────────────────────────────────────────────────
-    /// Replay a raw .req file (Burp export format) and print the response
-    #[arg(long)]
-    repeat: bool,
-
-    /// Override target URL for repeater (e.g. "<https://host:443>")
-    #[arg(long, value_name = "URL")]
-    repeat_url: Option<String>,
-
-    /// Proxy host for repeater/fuzz requests
-    #[arg(long, value_name = "HOST")]
-    proxy_host: Option<String>,
-
-    /// Proxy port for repeater/fuzz requests
-    #[arg(long, value_name = "PORT")]
-    proxy_port: Option<u16>,
-
-    // ── Fuzz ─────────────────────────────────────────────────────────────────
-    /// Fuzz a .req template file with wordlists/payloads
-    #[arg(long)]
-    fuzz: bool,
-
-    /// Wordlist file(s) for fuzzing (repeatable, paired with markers)
-    #[arg(long, value_name = "FILE")]
-    fuzz_wordlist: Vec<PathBuf>,
-
-    /// Marker strings to replace (default: FUZZ, FUZZ2, ...). Repeatable.
-    #[arg(long, value_name = "MARKER")]
-    marker: Vec<String>,
-
-    /// Inline payloads (comma-separated) for quick fuzz
-    #[arg(long, value_name = "a,b,c")]
-    payloads: Option<String>,
-
-    /// Attack mode: sniper, battering-ram, pitchfork, clusterbomb [default: sniper]
-    #[arg(long, value_name = "MODE")]
-    attack_mode: Option<String>,
-
-    /// Only show responses with these status codes (comma-separated)
-    #[arg(long, value_name = "200,302")]
-    match_status: Option<String>,
-
-    /// Hide responses whose body contains this string
-    #[arg(long, value_name = "STRING")]
-    filter_body: Option<String>,
-
-    /// Number of concurrent fuzz requests [default: 10]
-    #[arg(long, value_name = "N")]
-    concurrency: Option<usize>,
-
-    /// Delay between fuzz requests in milliseconds
-    #[arg(long, value_name = "MS")]
-    delay_ms: Option<u64>,
-
     // ── Diff ─────────────────────────────────────────────────────────────────
-    /// Diff two JS/HTML files — show added/removed findings
+    /// Diff two JS/HTML files and show added/removed analyzer findings
     #[arg(long, value_name = "OLD_FILE")]
     diff_with: Option<PathBuf>,
 
@@ -383,7 +300,7 @@ struct Cli {
     #[arg(long)]
     unique: bool,
 
-    /// Run all security analyzers (alias of --analyze, jxscout-compatible name).
+    /// Run all passive bundle analyzers (alias of --analyze).
     #[arg(long)]
     analyze_all: bool,
 

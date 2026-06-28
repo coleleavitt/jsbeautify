@@ -2,7 +2,7 @@
 //!
 //! One place to talk to any `/v1/chat/completions` endpoint — OpenAI,
 //! OpenRouter, Ollama, llama.cpp, vLLM, Azure OpenAI, … — used by the LLM
-//! renaming tier and the vuln-triage pass.
+//! renaming tier.
 //!
 //! ## Configuration precedence
 //! Explicit CLI flags > project env > standard OpenAI env > defaults:

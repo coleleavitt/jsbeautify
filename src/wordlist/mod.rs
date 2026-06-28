@@ -3,8 +3,7 @@
 //! Ports `crates/core/wordlist/` from jxscout-pro-v2.
 //!
 //! Given JS source, HTML, and/or collected URLs, produces a de-duplicated,
-//! noise-filtered word list suitable for use in fuzzing dictionaries,
-//! content-discovery, or brute-force attack wordlists.
+//! noise-filtered word list suitable for source review and content discovery.
 //!
 //! ## Quick start
 //!
