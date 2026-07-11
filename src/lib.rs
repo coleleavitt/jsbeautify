@@ -12,31 +12,16 @@
 //! let beautified = beautify(code, &options).expect("beautification failed");
 //! ```
 
-pub mod analyzers;
 pub mod ast_deobfuscate;
 pub mod beautifier;
 pub mod bun_extract;
 pub mod cross_version;
-pub mod db;
-pub mod diff;
-pub mod domain_recon;
-pub mod hooks;
 pub mod llm;
-pub mod monitoring;
-pub mod nextjs_discovery;
 pub mod oxc_opts;
-pub mod pipeline;
-pub mod proxy;
-pub mod recon_engine;
-pub mod relationships;
-pub mod scope;
-pub mod server;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
 pub mod webpack_module_extractor;
-pub mod websocket;
-pub mod wordlist;
 
 mod chunk_detector;
 mod chunk_splitter;
@@ -53,7 +38,6 @@ pub use chunk_splitter::{ChunkManifest, ChunkSplitter};
 pub use cross_version::{AlignConfig, AlignmentStats, CrossVersionAligner, StatementMatcher};
 pub use options::Options;
 pub use oxc_opts::OxcOptimizer;
-pub use pipeline::{AssetKind, IngestRequest, IngestResult, Pipeline, PipelineConfig, PipelineIngestor};
 pub use token::{Token, TokenType};
 
 #[derive(Debug, thiserror::Error)]

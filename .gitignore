@@ -10,3 +10,9 @@ core.[0-9]*
 
 # Sisyphus: exclude regenerable pipeline logs (rebuild via jsbeautify --deobfuscate)
 .sisyphus/evidence/*-pipeline.log
+
+# Agent / tooling runtime state (not part of the project)
+/.codex/
+/.gjc/
+/.jfc/
+/.mcp.json

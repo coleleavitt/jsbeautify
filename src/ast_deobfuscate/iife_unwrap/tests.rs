@@ -74,6 +74,17 @@ fn test_preserve_iife_with_early_return() {
 }
 
 #[test]
+fn test_preserve_standalone_iife_with_return_guard() {
+    let (output, count) = run_unwrap("(() => { if (!ready()) { return; } start(); })();");
+    assert_eq!(
+        count, 0,
+        "Should NOT unwrap standalone IIFE containing return, got: {count}; output: {output}"
+    );
+    assert!(output.contains("return"), "Should preserve guarded return: {output}");
+    assert!(output.contains("=>"), "Should still contain IIFE arrow, got: {output}");
+}
+
+#[test]
 fn test_preserve_non_iife_arrow() {
     let (output, count) = run_unwrap("const f = () => { return 1; };");
     assert_eq!(count, 0, "Should NOT unwrap non-IIFE arrow, got: {count}");

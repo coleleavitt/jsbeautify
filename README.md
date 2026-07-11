@@ -8,22 +8,12 @@ A fast JavaScript beautifier and deobfuscator written in Rust, powered by [oxc](
 Takes minified, obfuscated webpack/esbuild/Bun bundles and produces readable JavaScript.
 Handles real-world production bundles — tested against 11MB+ builds.
 
-## Repository layout
+## What it does
 
-This is a monorepo with a Rust **backend** and a browser-extension **frontend**:
-
-```
-js-beautify-rs/
-├── src/            # Rust crate: beautifier, deobfuscator, analyzers, daemon
-├── Cargo.toml      # `jsbeautify` CLI + `jsbeautify --serve` ingestion daemon
-└── frontend/       # Mindemon — Firefox DevTools extension (browser capture)
-    ├── manifest.json, panel/, lib/, test/
-    └── README.md   # extension-specific docs
-```
-
-The backend ingests assets the frontend captures (HTTP `:3333`) and streams
-results back over WebSocket (`:9222`). See `INTEGRATION.md` for the full data
-flow and `frontend/README.md` for the extension.
+Takes a minified/obfuscated webpack, esbuild, or Bun bundle and produces
+readable JavaScript. AST deobfuscation, webpack module/chunk extraction,
+source-tree reconstruction from source maps, and cross-version alignment are
+exposed as subcommands (see the CLI reference below).
 
 ## Installation
 
@@ -46,57 +36,55 @@ cargo build --release
 # Beautify minified JavaScript
 jsbeautify input.js -o output.js
 
-# Beautify + deobfuscate (20-phase AST pipeline)
-jsbeautify input.js --deobfuscate -o output.js
+# Beautify + deobfuscate (multi-phase AST pipeline)
+jsbeautify input.js -d -o output.js
 
 # Pipe from stdin
 cat bundle.js | jsbeautify - > output.js
 
 # Extract webpack modules to separate files
-jsbeautify bundle.js --extract-modules --module-dir ./modules
+jsbeautify extract-modules bundle.js -o ./modules
 
 # Rebuild the original source tree from a bundle sourceMappingURL
-jsbeautify bundle.js --split-sources ./out
+jsbeautify split-sources bundle.js -o ./out
 
-# Generate dependency graph (DOT format)
-jsbeautify bundle.js --extract-modules --dependency-graph deps.dot
+# Generate a dependency graph (DOT format)
+jsbeautify extract-modules bundle.js --graph deps.dot
 
 # Cross-version alignment with sourcemap name recovery
-jsbeautify v1.js --sourcemap v1.js.map --align-with v2.js --align-output v2.aligned.js -o v1.aligned.js
+jsbeautify align v1.js v2.js --sourcemap v1.js.map --align-output v2.aligned.js -o v1.aligned.js
 
-# Extract names from Bun bundles (MR exports, this.name, displayName)
+# Recover names from Bun bundles (MR exports, this.name, displayName)
 jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
 ```
 
 ## CLI Reference
 
 ```
-Usage: jsbeautify [OPTIONS] <FILE>
+Usage: jsbeautify [OPTIONS] [FILE] [COMMAND]
+
+Commands:
+  extract-modules  Extract webpack modules into separate files
+  split-chunks     Split webpack chunks into separate files
+  split-sources    Reconstruct the original source tree from a bundle
+  reconstruct      Rebuild original sources from a standalone .js.map file
+  align            Align two bundle versions for a stable diff
 
 Arguments:
-  <FILE>  Input JavaScript file (use "-" for stdin)
+  [FILE]  Input JavaScript file, or "-" for stdin [default: -]
 
 Options:
-  -o, --output <FILE>            Write output to a file instead of stdout
-  -d, --deobfuscate              Enable AST-based deobfuscation (20-phase pipeline)
-      --split-chunks             Split webpack chunks into separate files
-      --chunk-dir <DIR>          Directory for chunk output [default: ./chunks]
-      --chunk-map <FILE>         Write chunk metadata to a JSON file
-      --extract-modules          Extract webpack modules to separate files
-      --module-dir <DIR>         Directory for module output [default: ./modules]
-      --dependency-graph <FILE>  Generate a dependency graph in DOT format
-      --split-sources <DIR>      Reconstruct source tree from bundle sourceMappingURL
-      --source-maps              Generate source maps
-      --sourcemap <FILE>         Sourcemap for extracting original variable names
-      --names-json <FILE>        Name mappings from extract-names.ts
-      --align-with <FILE>        Second bundle to align with (produces stable diffs)
-      --align-output <FILE>      Output path for the aligned second bundle
-      --raw                      Skip beautification, output raw aligned code
-      --bun-extract              Extract names from Bun bundle patterns
-      --indent-size <N>          Indentation size in spaces [default: 4]
-      --indent-with-tabs         Use tabs for indentation instead of spaces
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -o, --output <FILE>      Write output to a file instead of stdout
+  -d, --deobfuscate        Enable AST-based deobfuscation (multi-phase pipeline)
+      --rename-vars        Infer readable names for minified locals. Implies --deobfuscate
+      --rename-llm         LLM-assisted naming of residual locals (env-configured). Implies --rename-vars
+  -i, --indent <N>         Indentation size in spaces [default: 4]
+      --tabs               Use tabs for indentation instead of spaces
+      --sourcemap <FILE>   Apply original variable names from a sourcemap (.map) file
+      --names-json <FILE>  Apply full name mappings from a names.json file
+      --bun-extract        Recover names from Bun bundle patterns
+  -h, --help               Print help
+  -V, --version            Print version
 ```
 
 ## Library Usage
@@ -179,9 +167,8 @@ Produces stable diffs between versions of minified bundles by recovering origina
 
 ```bash
 # Align two bundle versions using sourcemap name recovery
-jsbeautify v2.1.88.js \
+jsbeautify align v2.1.88.js v2.1.96.js \
   --sourcemap v2.1.88.js.map \
-  --align-with v2.1.96.js \
   --align-output v2.1.96.aligned.js \
   -o v2.1.88.aligned.js
 ```
@@ -205,66 +192,6 @@ Patterns detected:
 - `MR(target, { exportName: () => minifiedVar })` export mappings
 - `this.name = "ClassName"` in class constructors
 - `Component.displayName = "ComponentName"` assignments
-
-## Serve daemon (browser ingestion backend)
-
-`jsbeautify` is not only a CLI — `--serve` boots a long-running daemon that wires
-together the proxy, WebSocket server, project DB, hooks, and monitoring into one
-process and exposes an HTTP ingestion API. This is the analysis backend for the
-[Mindemon](https://github.com/coleleavitt/mindemon) Firefox DevTools extension,
-which captures every JS/CSS/source-map asset a page loads and POSTs them here.
-
-```bash
-# Boot the daemon (HTTP :3333, WebSocket :9222, MITM proxy :8080)
-jsbeautify --serve --project-name acme
-
-# With TLS interception + a monitoring loop every 5 min
-jsbeautify --serve --project-name acme --intercept-tls --monitor-interval 300
-```
-
-Every ingested asset flows through one shared pipeline:
-
-```
-POST /ingest ─▶ classify ─▶ beautify (+deobfuscate if minified) ─▶ analyzers
-            ─▶ reverse source maps (sourcesContent → originals, re-analyzed)
-            ─▶ persist file + matches to SQLite ─▶ broadcast over WebSocket
-```
-
-Files + DB live under `~/.jsbeautify/projects/<name>/` (`raw/`, `beautified/`,
-`reversed/`, `project.db`).
-
-### Ports
-
-| Port  | Service       | Purpose |
-|-------|---------------|---------|
-| 3333  | HTTP API      | Ingestion (`/ingest`, `/ingest/batch`), `/matches`, `/health`, `/ca.crt`. |
-| 9222  | WebSocket     | Live `js_files_update` / `matches_update` events to editor clients. |
-| 8080  | MITM proxy    | Passive capture; in-scope JS/CSS/HTML feeds the same pipeline. |
-
-### HTTP ingestion contract
-
-`POST /ingest` — one asset:
-
-```json
-{
-  "url": "https://site/app.js",
-  "content_type": "application/javascript",
-  "content": "…source or base64…",
-  "encoding": "utf8",                 // or "base64" for binary
-  "source_map_content": "{…}",        // optional inline source map JSON
-  "source": "fs_ingest"               // fs_ingest | proxy | cli
-}
-```
-
-`POST /ingest/batch` — a full browser dump: `{ "target": "https://site/", "files": [ <asset>, … ] }`.
-
-Response (per asset): `{ url, kind, file_id, stored, findings, reversed_sources, relationships, error }`.
-
-`GET /matches` returns recent stored findings as JSON. `GET /ca.crt` serves the
-MITM CA PEM (when `--intercept-tls` is on) so a browser can trust the proxy.
-
-All responses carry permissive CORS headers so the `moz-extension://` panel can
-call the API cross-origin.
 
 ## Testing
 

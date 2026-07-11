@@ -105,6 +105,13 @@ pub fn normalize_source_path(raw: &str) -> String {
 /// I/O errors creating directories / writing files, or a malformed map.
 pub fn reconstruct_tree(map_json: &str, output_dir: &std::path::Path) -> Result<Vec<String>, String> {
     let sources = reverse(map_json).map_err(|e| format!("parse sourcemap: {e}"))?;
+    write_reversed_sources(sources, output_dir)
+}
+
+pub(super) fn write_reversed_sources(
+    sources: impl IntoIterator<Item = ReversedSource>,
+    output_dir: &std::path::Path,
+) -> Result<Vec<String>, String> {
     let root = output_dir.join("reversed");
     let mut written = Vec::new();
     for src in sources {

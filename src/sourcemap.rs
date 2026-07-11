@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 mod bundle;
+mod fallback;
 mod tree;
 
 pub use bundle::reconstruct_bundle_tree;

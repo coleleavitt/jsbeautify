@@ -1,8 +1,14 @@
+[workspace]
+resolver = "3"
+
 [package]
 name = "js-beautify-rs"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.87"
 autobins = false
+autotests = false
+autobenches = false
 description = "A fast JavaScript beautifier and deobfuscator powered by oxc"
 license = "MIT"
 repository = "https://github.com/coleleavitt/js-beautify-rs"
@@ -35,11 +41,23 @@ name = "integration"
 path = "tests/integration/main.rs"
 
 [lints.rust]
-rust_2018_idioms = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+non_ascii_idents = "deny"
+
+[lints.rustdoc]
+private_intra_doc_links = "allow"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "deny"
+unimplemented = "deny"
+mem_forget = "deny"
+as_underscore = "deny"
+fn_to_numeric_cast_any = "deny"
 needless_pass_by_ref_mut = "allow"
 needless_lifetimes = "allow"
 unused_self = "allow"
@@ -55,9 +73,7 @@ significant_drop_tightening = "allow"
 regex = "1"
 lazy_static = "1.5"
 thiserror = "2.0.18"
-url = "2"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net", "process", "signal", "sync"] }
 base64 = "0.22"
 rc4 = "0.1.0"
 serde = { version = "1", features = ["derive"] }
@@ -82,24 +98,6 @@ oxc_cfg = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6
 oxc_diagnostics = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
 clap = { version = "4.6.1", features = ["derive"] }
 md5 = "0.7"
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
-chrono = { version = "0.4", features = ["serde"] }
-sha2 = "0.10"
-hex = "0.4"
-dirs = "5"
-hyper = { version = "1", features = ["server", "client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "server", "client", "client-legacy", "http1"] }
-http-body-util = "0.1"
-bytes = "1"
-rustls = "0.23"
-tokio-rustls = "0.26"
-rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
-tungstenite = "0.24"
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-webpki-roots = "0.26"
-futures-util = "0.3"
-async-trait = "0.1"
-cron = "0.12"
 dhat = { version = "0.3", optional = true }
 
 [features]
@@ -107,6 +105,24 @@ dhat = { version = "0.3", optional = true }
 # dhat's allocator + profiler; produces `dhat-heap.json` (view at
 # https://nnethercote.github.io/dh_view/dh_view.html) with per-call-site bytes.
 dhat-heap = ["dep:dhat"]
+
+[profile.dev]
+debug = true
+incremental = true
+codegen-units = 256
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = "line-tables-only"
+
+[profile.miri]
+inherits = "test"
+opt-level = 1
+overflow-checks = true
 
 # Dedicated profiling profile — full debug symbols, same optimizations as release.
 # Use: cargo build --profile profiling --features dhat-heap

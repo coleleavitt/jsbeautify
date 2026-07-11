@@ -12,5 +12,4 @@ mod beautify;
 mod cli;
 mod deobfuscate;
 mod fixtures;
-mod pipeline;
 mod webpack_modules;

@@ -1,7 +1,11 @@
 use super::{Allocator, AstDeobfuscator, BunHelperMap, Codegen, Parser, SourceType, mem_ck};
 
 impl AstDeobfuscator {
-    pub(super) fn run_structural_half(&mut self, code: &str, source_type: SourceType) -> (String, BunHelperMap) {
+    pub(super) fn run_structural_half(
+        &mut self,
+        code: &str,
+        source_type: SourceType,
+    ) -> (String, BunHelperMap, SourceType) {
         // ── Structural half (Phases 0–12.5) runs in its own arena that is freed
         // before the cosmetic half re-parses. The transform passes accumulate a
         // large volume of dead intermediate AST in oxc's bump arena (which never
@@ -10,7 +14,8 @@ impl AstDeobfuscator {
         // halves peak RSS. `bun_helper_map` is the only state that must cross.
         let allocator = Allocator::default();
 
-        let parse_result = Parser::new(&allocator, code, source_type).parse();
+        let mut source_type = source_type;
+        let mut parse_result = Parser::new(&allocator, code, source_type).parse();
 
         // oxc recovers from syntax errors and still yields a usable partial
         // AST. Rather than abort the whole deobfuscation (which left odd or
@@ -19,11 +24,21 @@ impl AstDeobfuscator {
         // The final codegen + re-parse checkpoints below validate the
         // result, and the CLI/pipeline fall back to raw on empty output.
         if !parse_result.errors.is_empty() {
-            eprintln!(
-                "[DEOBFUSCATE] {} parse diagnostic(s); continuing on recovered AST (first: {:?})",
-                parse_result.errors.len(),
-                parse_result.errors.first().map(ToString::to_string),
-            );
+            let diagnostic_count = parse_result.errors.len();
+            let first_diagnostic = parse_result.errors.first().map(ToString::to_string);
+            if let Some((fallback_source_type, fallback_parse_result)) =
+                Self::parse_with_source_type_fallback(&allocator, code, source_type)
+            {
+                eprintln!(
+                    "[DEOBFUSCATE] {diagnostic_count} parse diagnostic(s) with {source_type:?}; retrying as {fallback_source_type:?} (first: {first_diagnostic:?})",
+                );
+                source_type = fallback_source_type;
+                parse_result = fallback_parse_result;
+            } else {
+                eprintln!(
+                    "[DEOBFUSCATE] {diagnostic_count} parse diagnostic(s); continuing on recovered AST (first: {first_diagnostic:?})",
+                );
+            }
         }
 
         let mut program = parse_result.program;
@@ -38,6 +53,27 @@ impl AstDeobfuscator {
         // dead intermediate AST accumulated by Phases 0–12.5.
         mem_ck("Phase 12.6: structural checkpoint codegen");
         eprintln!("[DEOBFUSCATE] Phase 12.6: structural checkpoint (codegen + arena reset)");
-        (Codegen::new().build(&program).code, bun_helper_map)
+        (Codegen::new().build(&program).code, bun_helper_map, source_type)
+    }
+
+    fn parse_with_source_type_fallback<'a>(
+        allocator: &'a Allocator,
+        code: &'a str,
+        source_type: SourceType,
+    ) -> Option<(SourceType, oxc_parser::ParserReturn<'a>)> {
+        for candidate in [
+            source_type.with_typescript(true),
+            source_type.with_jsx(true),
+            source_type.with_typescript(true).with_jsx(true),
+        ] {
+            if candidate == source_type {
+                continue;
+            }
+            let parse_result = Parser::new(allocator, code, candidate).parse();
+            if parse_result.errors.is_empty() && !parse_result.panicked {
+                return Some((candidate, parse_result));
+            }
+        }
+        None
     }
 }

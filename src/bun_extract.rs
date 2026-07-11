@@ -304,26 +304,7 @@ pub fn find_module_wrappers(code: &str) -> Vec<ModuleInfo> {
     ))
     .expect("valid regex pattern");
 
-    for cap in mod_re.captures_iter(code) {
-        let name = cap
-            .get(1)
-            .expect("capture group 1 guaranteed by regex")
-            .as_str()
-            .to_string();
-        let decl_start = cap.get(0).expect("capture group 0 guaranteed by regex").start();
-        let factory_start = cap.get(0).expect("capture group 0 guaranteed by regex").end();
-
-        // Find matching closing paren
-        if let Some(end) = find_matching_paren(code, factory_start - 1) {
-            modules.push(ModuleInfo {
-                name,
-                module_type: ModuleType::CommonJs,
-                start: decl_start,
-                end,
-                body_start: factory_start,
-            });
-        }
-    }
+    modules.extend(module_candidates(code, &mod_re, ModuleType::CommonJs));
 
     // ESM modules: var X = h(...)
     let laz_re = Regex::new(&format!(
@@ -332,32 +313,53 @@ pub fn find_module_wrappers(code: &str) -> Vec<ModuleInfo> {
     ))
     .expect("valid regex pattern");
 
-    for cap in laz_re.captures_iter(code) {
-        let name = cap
-            .get(1)
-            .expect("capture group 1 guaranteed by regex")
-            .as_str()
-            .to_string();
-        let decl_start = cap.get(0).expect("capture group 0 guaranteed by regex").start();
-        let factory_start = cap.get(0).expect("capture group 0 guaranteed by regex").end();
-
-        if let Some(end) = find_matching_paren(code, factory_start - 1) {
-            modules.push(ModuleInfo {
-                name,
-                module_type: ModuleType::Esm,
-                start: decl_start,
-                end,
-                body_start: factory_start,
-            });
-        }
-    }
+    modules.extend(module_candidates(code, &laz_re, ModuleType::Esm));
 
     // Sort by position
     modules.sort_by_key(|m| m.start);
     modules
 }
 
-const fn find_matching_paren(code: &str, start: usize) -> Option<usize> {
+struct ModuleCandidate {
+    name: String,
+    decl_start: usize,
+    factory_start: usize,
+}
+
+fn module_candidates(code: &str, re: &Regex, module_type: ModuleType) -> Vec<ModuleInfo> {
+    let candidates: Vec<ModuleCandidate> = re
+        .captures_iter(code)
+        .map(|cap| {
+            let full = cap.get(0).expect("capture group 0 guaranteed by regex");
+            ModuleCandidate {
+                name: cap
+                    .get(1)
+                    .expect("capture group 1 guaranteed by regex")
+                    .as_str()
+                    .to_string(),
+                decl_start: full.start(),
+                factory_start: full.end(),
+            }
+        })
+        .collect();
+
+    let mut modules = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let limit = candidates.get(index + 1).map_or(code.len(), |next| next.decl_start);
+        if let Some(end) = find_matching_paren_before(code, candidate.factory_start - 1, limit) {
+            modules.push(ModuleInfo {
+                name: candidate.name.clone(),
+                module_type,
+                start: candidate.decl_start,
+                end,
+                body_start: candidate.factory_start,
+            });
+        }
+    }
+    modules
+}
+
+const fn find_matching_paren_before(code: &str, start: usize, limit: usize) -> Option<usize> {
     let bytes = code.as_bytes();
     if start >= bytes.len() || bytes[start] != b'(' {
         return None;
@@ -367,8 +369,9 @@ const fn find_matching_paren(code: &str, start: usize) -> Option<usize> {
     let mut i = start + 1;
     let mut in_string = false;
     let mut string_char = 0u8;
+    let limit = if limit < bytes.len() { limit } else { bytes.len() };
 
-    while i < bytes.len() && depth > 0 {
+    while i < limit && depth > 0 {
         let ch = bytes[i];
 
         if in_string {
@@ -486,5 +489,24 @@ var xyz = h(() => { return 42; });
         assert_eq!(modules[0].module_type, ModuleType::CommonJs);
         assert_eq!(modules[1].name, "xyz");
         assert_eq!(modules[1].module_type, ModuleType::Esm);
+    }
+
+    #[test]
+    fn unterminated_module_wrapper_candidates_do_not_rescan_suffixes() {
+        use std::fmt::Write as _;
+
+        let mut code = String::new();
+        for i in 0..8192 {
+            writeln!(&mut code, "var fake{i}=y(").unwrap();
+        }
+
+        let start = std::time::Instant::now();
+        let modules = find_module_wrappers(&code);
+
+        assert!(modules.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "unterminated wrapper candidates should be rejected cheaply"
+        );
     }
 }

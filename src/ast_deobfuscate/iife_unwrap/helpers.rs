@@ -58,6 +58,9 @@ pub(super) fn try_unwrap_standalone<'a>(
     let Some(arrow) = extract_zero_arg_arrow_iife(&expr_stmt.expression) else {
         return false;
     };
+    if arrow.body.statements.iter().any(|s| contains_return(s)) {
+        return false;
+    }
     for inner_stmt in &arrow.body.statements {
         new_body.push(inner_stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
     }
