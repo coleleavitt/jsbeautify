@@ -1,5 +1,5 @@
 use super::{
-    AlgebraicSimplifier, ArrayCoerceFold, ArrayUnpacker, AstDeobfuscator, BooleanLiteralConverter,
+    AlgebraicSimplifier, ArrayCoerceFold, ArrayUnpacker, AstDeobfuscator, BeautifyError, BooleanLiteralConverter,
     CommaReturnSimplifier, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DecoderInliner,
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
     JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
@@ -7,6 +7,37 @@ use super::{
     SourceType, StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
     TernaryToIfElse, TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval,
 };
+
+const MAX_BRACKET_DEPTH: usize = 100_000;
+const MIN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
+}
+
+fn run_worker<T, F>(stack_bytes: usize, work: F) -> Result<T>
+where
+    T: Send,
+    F: FnOnce() -> Result<T> + Send,
+{
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("ast-deobfuscator".into())
+            .stack_size(stack_bytes)
+            .spawn_scoped(scope, work)
+            .map_err(|error| BeautifyError::DeobfuscationWorkerSpawnFailed(error.to_string()))?;
+
+        worker.join().map_err(|payload| {
+            BeautifyError::DeobfuscationWorkerPanicked(panic_message(payload.as_ref()).to_string())
+        })?
+    })
+}
 
 impl AstDeobfuscator {
     #[must_use]
@@ -44,6 +75,7 @@ impl AstDeobfuscator {
             json_parse_evaluator: JsonParseEvaluator::new(),
             optional_chaining_normalizer: OptionalChainingNormalizer::new(),
             nullish_coalescing_simplifier: NullishCoalescingSimplifier::new(),
+            worker_stack_bytes: DEFAULT_WORKER_STACK_BYTES,
             skip_annotations: false,
             readable_names: false,
         }
@@ -62,48 +94,34 @@ impl AstDeobfuscator {
         self
     }
 
+    /// Set the deobfuscation worker stack size in bytes.
+    ///
+    /// Values are clamped to a safe range so one call cannot reserve an
+    /// unbounded amount of virtual address space.
+    #[must_use]
+    pub fn with_worker_stack_bytes(mut self, bytes: usize) -> Self {
+        self.worker_stack_bytes = bytes.clamp(MIN_WORKER_STACK_BYTES, MAX_WORKER_STACK_BYTES);
+        self
+    }
+
     /// Deobfuscate `code`, returning the transformed source.
     ///
-    /// CWE-674 hardening: parse + transform recurse in input nesting depth, and
-    /// a Rust stack overflow *aborts the process* (it is not a catchable panic).
-    /// So we run the work on a worker thread with a large stack — raising the
-    /// overflow threshold ~20x for every deep-recursion shape (bracket nesting,
-    /// `a+a+...` operator chains, `a.b.b...` member chains) so hostile-but-
-    /// bounded input is processed instead of crashing — and reject input whose
-    /// raw bracket nesting is pathological up front as a final backstop.
+    /// Parse and transform work runs on a bounded-stack worker because some
+    /// parser paths recurse in proportion to input nesting depth.
     ///
     /// # Errors
-    /// Returns an error if the operation fails.
-    ///
-    /// # Panics
-    /// Panics only if the OS refuses to spawn the worker thread (an environment
-    /// failure, not an input condition).
+    /// Returns an error for pathological nesting, worker-spawn failure, worker
+    /// panic, parse/checkpoint failure, or transform failure.
     pub fn deobfuscate(&mut self, code: &str) -> Result<String> {
-        // Backstop for the extreme bracket-nesting case (which overflows the
-        // parser itself, before any pass runs). Far above any real or normally-
-        // obfuscated source, so it never rejects legitimate input.
-        const MAX_BRACKET_DEPTH: usize = 100_000;
-        const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
-
         let depth = Self::max_bracket_depth(code);
         if depth > MAX_BRACKET_DEPTH {
-            eprintln!(
-                "[DEOBFUSCATE] input bracket-nesting depth {depth} exceeds cap {MAX_BRACKET_DEPTH}; returning input unchanged (suspected DoS)"
-            );
-            return Ok(code.to_string());
+            return Err(BeautifyError::InvalidInput(format!(
+                "input bracket-nesting depth {depth} exceeds cap {MAX_BRACKET_DEPTH}"
+            )));
         }
 
-        std::thread::scope(|scope| {
-            std::thread::Builder::new()
-                .stack_size(WORKER_STACK_BYTES)
-                .spawn_scoped(scope, || self.deobfuscate_inner(code))
-                .expect("spawn deobfuscate worker thread")
-                .join()
-                .unwrap_or_else(|_| {
-                    eprintln!("[DEOBFUSCATE] worker thread aborted; returning input unchanged");
-                    Ok(code.to_string())
-                })
-        })
+        let stack_bytes = self.worker_stack_bytes;
+        run_worker(stack_bytes, || self.deobfuscate_inner(code))
     }
 
     /// Maximum bracket-nesting depth of the raw source — a cheap `O(n)` scan used
@@ -146,5 +164,89 @@ impl AstDeobfuscator {
 impl Default for AstDeobfuscator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_panic_is_a_distinct_error() {
+        let error = run_worker(DEFAULT_WORKER_STACK_BYTES, || -> Result<()> {
+            panic!("worker panic sentinel")
+        })
+        .expect_err("worker panic must not become successful unchanged input");
+
+        assert!(matches!(
+            error,
+            BeautifyError::DeobfuscationWorkerPanicked(message)
+                if message == "worker panic sentinel"
+        ));
+    }
+
+    #[test]
+    fn worker_spawn_failure_is_a_distinct_error() {
+        let error = run_worker(usize::MAX, || Ok(())).expect_err("an impossible stack reservation must fail to spawn");
+
+        assert!(matches!(error, BeautifyError::DeobfuscationWorkerSpawnFailed(_)));
+    }
+
+    #[test]
+    fn worker_preserves_inner_errors() {
+        let error = run_worker(DEFAULT_WORKER_STACK_BYTES, || -> Result<()> {
+            Err(BeautifyError::InvalidInput("parse sentinel".into()))
+        })
+        .expect_err("inner errors must remain errors");
+
+        assert!(matches!(
+            error,
+            BeautifyError::InvalidInput(message) if message == "parse sentinel"
+        ));
+    }
+
+    #[test]
+    fn configured_worker_stack_is_bounded() {
+        assert_eq!(
+            AstDeobfuscator::new().with_worker_stack_bytes(0).worker_stack_bytes,
+            MIN_WORKER_STACK_BYTES
+        );
+        assert_eq!(
+            AstDeobfuscator::new()
+                .with_worker_stack_bytes(usize::MAX)
+                .worker_stack_bytes,
+            MAX_WORKER_STACK_BYTES
+        );
+        assert_eq!(AstDeobfuscator::new().worker_stack_bytes, DEFAULT_WORKER_STACK_BYTES);
+    }
+
+    #[test]
+    fn pathological_nesting_returns_an_error() {
+        let code = "(".repeat(MAX_BRACKET_DEPTH + 1);
+        let error = AstDeobfuscator::new()
+            .deobfuscate(&code)
+            .expect_err("nesting cap must fail closed");
+
+        assert!(matches!(error, BeautifyError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn bounded_workers_can_run_concurrently() {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let output = AstDeobfuscator::new()
+                            .deobfuscate("globalThis.answer = 6 * 7;")
+                            .expect("concurrent deobfuscation should succeed");
+                        assert!(output.contains("answer"));
+                    })
+                })
+                .collect();
+
+            for worker in workers {
+                worker.join().expect("caller thread should not panic");
+            }
+        });
     }
 }

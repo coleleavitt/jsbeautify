@@ -20,7 +20,7 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
 
-use crate::Result;
+use crate::{BeautifyError, Result};
 
 use super::{
     AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker,
@@ -82,6 +82,7 @@ pub struct AstDeobfuscator {
     json_parse_evaluator: JsonParseEvaluator,
     optional_chaining_normalizer: OptionalChainingNormalizer,
     nullish_coalescing_simplifier: NullishCoalescingSimplifier,
+    worker_stack_bytes: usize,
     skip_annotations: bool,
     /// When set, Phase 12.5 infers readable names for minified locals
     /// (`heuristic_rename`) instead of opaque `v{n}` slots.

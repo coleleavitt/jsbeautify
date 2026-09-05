@@ -12,6 +12,7 @@
 //! let beautified = beautify(code, &options).expect("beautification failed");
 //! ```
 
+pub mod analyzers;
 pub mod ast_deobfuscate;
 pub mod beautifier;
 pub mod bun_extract;
@@ -64,6 +65,12 @@ pub enum BeautifyError {
 
     #[error("JSON parsing failed: {0}")]
     JsonParsingFailed(#[from] serde_json::Error),
+
+    #[error("failed to spawn deobfuscation worker: {0}")]
+    DeobfuscationWorkerSpawnFailed(String),
+
+    #[error("deobfuscation worker panicked: {0}")]
+    DeobfuscationWorkerPanicked(String),
 }
 
 pub type Result<T> = std::result::Result<T, BeautifyError>;
