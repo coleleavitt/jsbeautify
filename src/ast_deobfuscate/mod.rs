@@ -19,47 +19,70 @@
 
 // Private module hubs intentionally re-export selected sibling items for the
 // engine. Once those hubs are crate-private, some compatibility re-exports are
-// not used in every target.
+// not used in every target. Dormant recon and optional pass modules are kept
+// compiled for their unit tests and planned pipeline integration; their module-
+// scoped dead-code allowances do not hide diagnostics elsewhere in the crate.
 #![allow(unused_imports)]
 
 pub(crate) mod akamai;
+#[allow(dead_code)]
 pub(crate) mod algebraic_simplify;
 pub(crate) mod apply_call_simplifier;
 pub(crate) mod array_coerce_fold;
+#[allow(dead_code)]
 pub(crate) mod array_unpack;
+#[allow(dead_code)]
 pub(crate) mod boolean_literals;
+#[allow(dead_code)]
 pub(crate) mod bun_alphabet;
 pub(crate) mod bun_cjs_flatten;
+#[allow(dead_code, clippy::redundant_pub_crate)]
 pub(crate) mod bun_export_renamer;
+#[allow(dead_code)]
 pub(crate) mod bun_local_renamer;
 pub(crate) mod bun_module_annotator;
 pub(crate) mod bun_module_handles;
+#[allow(dead_code, clippy::trivially_copy_pass_by_ref)]
 pub(crate) mod bun_runtime;
 pub(crate) mod bun_syntax_normalizer;
+#[allow(dead_code)]
 pub(crate) mod call_proxy;
 pub(crate) mod call_this_simplifier;
 pub(crate) mod cff_unflattener;
+#[allow(dead_code)]
 pub(crate) mod class_name_renamer;
 pub(crate) mod comma_return_simplifier;
 pub(crate) mod concat_canonicaliser;
+#[allow(dead_code)]
 pub(crate) mod constant_folding;
+#[allow(dead_code)]
 pub(crate) mod control_flow_unflatten;
+#[allow(dead_code)]
 pub(crate) mod dead_code;
+#[allow(dead_code)]
 pub(crate) mod dead_var_elimination;
+#[allow(dead_code)]
 pub(crate) mod decoder_inline;
+#[allow(dead_code)]
 pub(crate) mod deterministic_rename;
 pub(crate) mod dispatch_inliner;
+#[allow(dead_code)]
 pub(crate) mod dispatcher_detector;
+#[allow(dead_code)]
 pub(crate) mod dispatcher_inline;
 pub(crate) mod dowhile_switch_cleaner;
 pub(crate) mod dowhile_switch_detector;
 pub(crate) mod dyn_concat_resolver;
+#[allow(dead_code)]
 pub(crate) mod dynamic_property;
 pub(crate) mod empty_statement_cleanup;
 pub(crate) mod encrypted_eval;
+#[allow(dead_code, clippy::enum_variant_names)]
 pub(crate) mod esbuild_helper;
+#[allow(dead_code)]
 pub(crate) mod expression_simplify;
 pub(crate) mod fromcharcode_fold;
+#[allow(dead_code)]
 pub(crate) mod function_inline;
 pub(crate) mod heuristic_rename;
 pub(crate) mod if_body_comma_split;
@@ -70,7 +93,9 @@ pub(crate) mod lookup_forwarder;
 pub(crate) mod method_call_forwarder;
 pub(crate) mod multi_var_split;
 pub(crate) mod nullish_coalescing_simplifier;
+#[allow(dead_code)]
 pub(crate) mod object_sparsing;
+#[allow(dead_code)]
 pub(crate) mod operator_proxy;
 pub(crate) mod optional_chaining_normalizer;
 pub(crate) mod param_heuristic;
@@ -83,35 +108,54 @@ pub(crate) mod sequence_expression_split;
 pub(crate) mod short_circuit_to_if;
 pub mod sourcemap_rename;
 pub(crate) mod state;
+#[allow(dead_code)]
 pub(crate) mod strength_reduction;
+#[allow(dead_code)]
 pub(crate) mod string_array_inline;
 pub(crate) mod string_array_rotation;
 pub(crate) mod string_array_self_defending;
 pub(crate) mod switch_true_converter;
+#[allow(dead_code)]
 pub(crate) mod ternary;
 pub(crate) mod ternary_to_if_else;
 pub(crate) mod trampoline;
+#[allow(dead_code)]
 pub(crate) mod try_catch;
 pub(crate) mod unary_proxy;
+#[allow(dead_code)]
 pub(crate) mod unicode_mangling;
+#[allow(dead_code)]
 pub(crate) mod variable_rename;
+#[allow(dead_code)]
 pub(crate) mod void_replacer;
 pub(crate) mod window_alias_propagator;
 
 // Framework / build-tool recon extractors. Previously authored but never
 // declared (compile-dead); wired here so they compile and can be driven by
 // the `analyzers::framework_recon` dispatcher (recon, not deobfuscation).
+#[allow(dead_code)]
 pub(crate) mod angular_decompiler;
+#[allow(dead_code)]
 pub(crate) mod angular_metadata;
+#[allow(dead_code)]
 pub(crate) mod angular_route_extractor;
+#[allow(dead_code)]
 pub(crate) mod bundle_diff;
+#[allow(dead_code)]
 pub(crate) mod http_interceptor_extractor;
+#[allow(dead_code)]
 pub(crate) mod launchdarkly_extractor;
+#[allow(dead_code)]
 pub(crate) mod mfe_registry_extractor;
+#[allow(dead_code)]
 pub(crate) mod ngrx_extractor;
+#[allow(dead_code)]
 pub(crate) mod rxjs_annotator;
+#[allow(dead_code)]
 pub(crate) mod transmit_sdk_decoder;
+#[allow(dead_code)]
 pub(crate) mod webpack_module_resolver;
+#[allow(dead_code)]
 pub(crate) mod webpack_runtime_decoder;
 
 pub(crate) use self::bun_runtime::{BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer};
