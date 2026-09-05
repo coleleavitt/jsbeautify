@@ -420,7 +420,7 @@ mod tests {
             const C = ɵɵdefineComponent({selectors:[["app-root"]]});
             const action = createAction("[Auth] Login");
             client.variation("checkout-enabled", false);
-            pipe(map(x => x), filter(Boolean));
+            stream.pipe((0, rx.map)(x => x), (0, rx.filter)(Boolean));
         "#;
         let report = analyze(source);
         let json = serde_json::to_value(&report).expect("serialize report");
