@@ -454,7 +454,7 @@ fn source_policy_rejection_is_typed_not_analyzed() {
             },
         }
     );
-    assert!(artifact.extracted_wasm.is_empty());
+    assert_eq!(artifact.extracted_wasm, []);
 }
 
 #[test]

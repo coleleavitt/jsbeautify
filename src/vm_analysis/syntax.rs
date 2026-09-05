@@ -309,16 +309,12 @@ fn is_manual_decoder(source: &str, scoping: &Scoping, function: &Function<'_>, b
         returned_symbols: BTreeSet::new(),
         member_write_symbols: BTreeMap::new(),
         allowed_calls: 0,
-        has_forbidden_call: false,
-        has_update_expression: false,
-        has_unresolved_member_write: false,
+        rejection: None,
     };
     shape.visit_function_body(body);
     if !shape.canonical_alphabet
         || shape.operator_mask != REQUIRED_MANUAL_OPERATORS
-        || shape.has_forbidden_call
-        || shape.has_update_expression
-        || shape.has_unresolved_member_write
+        || shape.rejection.is_some()
         || !matches!(shape.allowed_calls, 4 | 5)
         || shape.member_write_symbols.len() != 1
     {
@@ -440,9 +436,14 @@ struct ManualDecoderShape<'a> {
     returned_symbols: BTreeSet<SymbolId>,
     member_write_symbols: BTreeMap<SymbolId, usize>,
     allowed_calls: usize,
-    has_forbidden_call: bool,
-    has_update_expression: bool,
-    has_unresolved_member_write: bool,
+    rejection: Option<ManualDecoderRejection>,
+}
+
+#[derive(Clone, Copy)]
+enum ManualDecoderRejection {
+    ForbiddenCall,
+    UpdateExpression,
+    UnresolvedWrite,
 }
 
 impl<'a> Visit<'a> for ManualDecoderShape<'_> {
@@ -486,13 +487,13 @@ impl<'a> Visit<'a> for ManualDecoderShape<'_> {
         if allowed {
             self.allowed_calls += 1;
         } else {
-            self.has_forbidden_call = true;
+            self.rejection = Some(ManualDecoderRejection::ForbiddenCall);
         }
         walk::walk_call_expression(self, call);
     }
 
     fn visit_update_expression(&mut self, expression: &oxc_ast::ast::UpdateExpression<'a>) {
-        self.has_update_expression = true;
+        self.rejection = Some(ManualDecoderRejection::UpdateExpression);
         walk::walk_update_expression(self, expression);
     }
 
@@ -502,7 +503,7 @@ impl<'a> Visit<'a> for ManualDecoderShape<'_> {
             AssignmentTarget::StaticMemberExpression(member) => Some(&member.object),
             AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
                 if reference_symbol(self.scoping, identifier).is_none() {
-                    self.has_unresolved_member_write = true;
+                    self.rejection = Some(ManualDecoderRejection::UnresolvedWrite);
                 }
                 None
             }
@@ -512,7 +513,7 @@ impl<'a> Visit<'a> for ManualDecoderShape<'_> {
             if let Some(symbol) = reference_symbol(self.scoping, identifier) {
                 *self.member_write_symbols.entry(symbol).or_default() += 1;
             } else {
-                self.has_unresolved_member_write = true;
+                self.rejection = Some(ManualDecoderRejection::UnresolvedWrite);
             }
         }
         walk::walk_assignment_expression(self, expression);

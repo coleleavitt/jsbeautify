@@ -23,7 +23,7 @@ fn manual_decoder(body: &str, literal: &str) -> String {
 }
 
 fn canonical_body() -> &'static str {
-    r#"
+    r"
         for (let i = 0, o = 0; i < input.length; i += 4, o += 3) {
             const a = alphabet.indexOf(input[i]);
             const b = alphabet.indexOf(input[i + 1]);
@@ -34,7 +34,7 @@ fn canonical_body() -> &'static str {
             output[o + 2] = ((c & 3) << 6) | d;
         }
         return output;
-    "#
+    "
 }
 
 fn assert_not_recognized(label: &str, source: &str) {
@@ -78,13 +78,13 @@ fn manual_decoder_rejects_wrong_arithmetic_even_when_all_operator_tokens_are_pre
         ("wrong join operator", canonical_body().replace("(c >> 2)", "(c << 2)")),
         (
             "unrelated operator inventory",
-            r#"
+            r"
                 const decoy = (1 << 2) | (2 >> 4) | (3 & 15);
                 output[0] = 0;
                 output[1] = decoy;
                 output[2] = 0;
                 return output;
-            "#
+            "
             .to_string(),
         ),
     ];
@@ -312,5 +312,5 @@ fn analysis_is_static_and_does_not_execute_hostile_javascript() {
     let report = analyze(source);
     assert_eq!(report.literal_folds.len(), 1);
     assert_eq!(report.literal_folds[0].utf8_preview.as_deref(), Some("hi"));
-    assert!(extract_wasm(source).is_empty());
+    assert_eq!(extract_wasm(source), []);
 }
