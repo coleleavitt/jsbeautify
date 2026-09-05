@@ -122,6 +122,17 @@ fn manual_decoder_rejects_permuted_alphabets_wrong_indices_and_wrong_input() {
 }
 
 #[test]
+fn manual_decoder_rejects_mixed_return_targets() {
+    let encoded = STANDARD.encode(MINIMAL_WASM);
+    let body = canonical_body().replace("return output;", "if (input.length > 8) return output; return input;");
+
+    assert_not_recognized(
+        "conditional output return followed by input return",
+        &manual_decoder(&body, &encoded),
+    );
+}
+
+#[test]
 fn manual_decoder_rejects_aliasing_side_effects_and_a_different_returned_buffer() {
     let encoded = STANDARD.encode(MINIMAL_WASM);
     let cases = [

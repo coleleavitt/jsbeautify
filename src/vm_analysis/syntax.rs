@@ -307,6 +307,8 @@ fn is_manual_decoder(source: &str, scoping: &Scoping, function: &Function<'_>, b
         canonical_alphabet: false,
         operator_mask: 0,
         returned_symbols: BTreeSet::new(),
+        return_count: 0,
+        invalid_return: false,
         member_write_symbols: BTreeMap::new(),
         allowed_calls: 0,
         rejection: None,
@@ -320,11 +322,15 @@ fn is_manual_decoder(source: &str, scoping: &Scoping, function: &Function<'_>, b
     {
         return false;
     }
-    shape.returned_symbols.iter().any(|symbol| {
-        *symbol != parameter_symbol
-            && shape.member_write_symbols.get(symbol).copied() == Some(3)
-            && body_source.contains(&format!("return {};", wiring.output_name))
-    })
+    let Some((&output_symbol, &write_count)) = shape.member_write_symbols.iter().next() else {
+        return false;
+    };
+    write_count == 3
+        && output_symbol != parameter_symbol
+        && shape.return_count > 0
+        && !shape.invalid_return
+        && shape.returned_symbols == BTreeSet::from([output_symbol])
+        && body_source.contains(&format!("return {};", wiring.output_name))
 }
 
 struct CanonicalManualWiring {
@@ -434,6 +440,8 @@ struct ManualDecoderShape<'a> {
     canonical_alphabet: bool,
     operator_mask: u8,
     returned_symbols: BTreeSet<SymbolId>,
+    return_count: usize,
+    invalid_return: bool,
     member_write_symbols: BTreeMap<SymbolId, usize>,
     allowed_calls: usize,
     rejection: Option<ManualDecoderRejection>,
@@ -467,10 +475,13 @@ impl<'a> Visit<'a> for ManualDecoderShape<'_> {
     }
 
     fn visit_return_statement(&mut self, statement: &ReturnStatement<'a>) {
+        self.return_count += 1;
         if let Some(Expression::Identifier(identifier)) = &statement.argument
             && let Some(symbol) = reference_symbol(self.scoping, identifier)
         {
             self.returned_symbols.insert(symbol);
+        } else {
+            self.invalid_return = true;
         }
         walk::walk_return_statement(self, statement);
     }
