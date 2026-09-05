@@ -226,7 +226,7 @@ fn extract_case_bodies<'a>(
         if !info.cases.contains_key(label) {
             continue;
         }
-        let mut stmts: OxcVec<'a, Statement<'a>> = OxcVec::new_in(alloc);
+        let mut stmts: OxcVec<'a, Statement<'a>> = OxcVec::new_in(&alloc);
         for s in &case.consequent {
             if matches!(s, Statement::BreakStatement(_)) {
                 continue;

@@ -158,8 +158,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
         }
 
         // Third pass: drain the body and build new_body by moving statements
-        let old_body = std::mem::replace(&mut program.body, OxcVec::new_in(ctx.ast.allocator));
-        let mut new_body = ctx.ast.vec();
+        let old_body = std::mem::replace(&mut program.body, OxcVec::new_in(ctx));
+        let mut new_body = OxcVec::new_in(ctx);
 
         for (idx, stmt) in old_body.into_iter().enumerate() {
             if idx >= unflatten_plan.len() {

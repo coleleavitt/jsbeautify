@@ -1,6 +1,6 @@
 //! Bun printer/minifier idiom normalizers.
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{BinaryExpression, BinaryOperator, Expression, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -60,7 +60,7 @@ fn normalize_typeof_undefined<'a>(binary: &BinaryExpression<'a>, ctx: &Ctx<'a>) 
         };
         return Some(Expression::new_binary_expression(
             SPAN,
-            binary.left.clone_in_with_semantic_ids(ctx),
+            binary.left.clone_in_with_semantic_ids(ctx.allocator()),
             op,
             undefined_string(ctx),
             ctx,
@@ -75,7 +75,7 @@ fn normalize_typeof_undefined<'a>(binary: &BinaryExpression<'a>, ctx: &Ctx<'a>) 
         };
         return Some(Expression::new_binary_expression(
             SPAN,
-            binary.right.clone_in_with_semantic_ids(ctx),
+            binary.right.clone_in_with_semantic_ids(ctx.allocator()),
             op,
             undefined_string(ctx),
             ctx,
@@ -117,7 +117,12 @@ fn is_positive_zero_literal(expr: &Expression<'_>) -> bool {
 }
 
 fn undefined_string<'a>(ctx: &Ctx<'a>) -> Expression<'a> {
-    Expression::new_string_literal(SPAN, "undefined", Some("\"undefined\""), ctx)
+    Expression::new_string_literal(
+        SPAN,
+        "undefined",
+        Some(oxc_ast::ast::Str::from_str_in("\"undefined\"", ctx)),
+        ctx,
+    )
 }
 
 fn is_typeof_expr(expr: &Expression<'_>) -> bool {

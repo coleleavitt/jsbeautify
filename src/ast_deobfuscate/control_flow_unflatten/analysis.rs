@@ -1,4 +1,4 @@
-use oxc_allocator::{CloneIn, Vec as OxcVec};
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
     Argument, BindingPattern, Expression, ForStatement, SimpleAssignmentTarget, Statement, SwitchCase, SwitchStatement,
     VariableDeclaration, WhileStatement,
@@ -238,12 +238,12 @@ impl ControlFlowUnflattener {
             }
         }
 
-        let mut result = ctx.ast.vec();
+        let mut result = OxcVec::new_in(ctx);
         for step in sequence {
             if let Some(case) = case_map.get(step) {
                 for stmt in &case.consequent {
                     if self.should_keep_statement(stmt) {
-                        result.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+                        result.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
                     }
                 }
             }

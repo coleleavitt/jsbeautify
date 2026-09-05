@@ -1,12 +1,9 @@
-use oxc_allocator::{CloneIn, Vec as OxcVec};
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPattern, BlockStatement, CallExpression, Expression, FormalParameterKind,
-    FormalParameters, Function, FunctionBody, FunctionType, Statement, VariableDeclaration, VariableDeclarationKind,
-    VariableDeclarator,
+    BindingPattern, Expression, FormalParameterKind, FormalParameters, FunctionBody, FunctionType, Statement,
+    VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use std::cell::Cell;
 
 use super::super::case_bodies::body_references_param;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -19,85 +16,33 @@ pub(super) fn make_iife<'a>(
     call_site_arg: &Expression<'a>,
     ctx: &Ctx<'a>,
 ) -> Expression<'a> {
-    let alloc = ctx.ast.allocator;
-    let uses_args = body_references_param(body_stmts.as_slice(), args_param_name);
-
-    let mut stmts: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
-
-    if uses_args {
-        let binding_id = BindingIdentifier {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident(args_param_name),
-            symbol_id: Cell::default(),
-        };
-        let declarator = VariableDeclarator {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            kind: VariableDeclarationKind::Var,
-            id: BindingPattern::BindingIdentifier(ctx.ast.alloc(binding_id)),
-            type_annotation: None,
-            init: Some(call_site_arg.clone_in_with_semantic_ids(alloc)),
-            definite: false,
-        };
-        let mut declarations = ctx.ast.vec();
-        declarations.push(declarator);
-        stmts.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            kind: VariableDeclarationKind::Var,
-            declarations,
-            declare: false,
-        })));
+    let mut stmts = OxcVec::new_in(ctx);
+    if body_references_param(body_stmts.as_slice(), args_param_name) {
+        stmts.push(make_args_declaration(args_param_name, call_site_arg, ctx));
     }
+    stmts.extend(
+        body_stmts
+            .iter()
+            .map(|stmt| stmt.clone_in_with_semantic_ids(ctx.allocator())),
+    );
 
-    for s in body_stmts {
-        stmts.push(s.clone_in_with_semantic_ids(alloc));
-    }
-
-    let fn_body = FunctionBody {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        directives: ctx.ast.vec(),
-        statements: stmts,
-    };
-
-    let params = FormalParameters {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        kind: FormalParameterKind::FormalParameter,
-        items: ctx.ast.vec(),
-        rest: None,
-    };
-
-    let func = Function {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        r#type: FunctionType::FunctionExpression,
-        id: None,
-        generator: false,
-        r#async: false,
-        declare: false,
-        type_parameters: None,
-        this_param: None,
-        params: ctx.ast.alloc(params),
-        return_type: None,
-        body: Some(ctx.ast.alloc(fn_body)),
-        scope_id: Cell::new(None),
-        pure: false,
-        pife: false,
-    };
-    let callee = Expression::FunctionExpression(ctx.ast.alloc(func));
-
-    Expression::CallExpression(ctx.ast.alloc(CallExpression {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        callee,
-        arguments: ctx.ast.vec(),
-        optional: false,
-        type_arguments: None,
-        pure: false,
-    }))
+    let params = FormalParameters::boxed(SPAN, FormalParameterKind::FormalParameter, [], None, ctx);
+    let body = FunctionBody::boxed(SPAN, [], stmts, ctx);
+    let callee = Expression::new_function_expression(
+        SPAN,
+        FunctionType::FunctionExpression,
+        None,
+        false,
+        false,
+        false,
+        None,
+        None,
+        params,
+        None,
+        Some(body),
+        ctx,
+    );
+    Expression::new_call_expression(SPAN, callee, None, [], false, ctx)
 }
 
 pub(super) fn make_inline_stmts<'a>(
@@ -106,56 +51,32 @@ pub(super) fn make_inline_stmts<'a>(
     call_site_arg: &Expression<'a>,
     ctx: &Ctx<'a>,
 ) -> OxcVec<'a, Statement<'a>> {
-    let alloc = ctx.ast.allocator;
     let uses_args = body_references_param(body_stmts.as_slice(), args_param_name);
-
+    let mut body = OxcVec::new_in(ctx);
+    if uses_args {
+        body.push(make_args_declaration(args_param_name, call_site_arg, ctx));
+    }
+    body.extend(
+        body_stmts
+            .iter()
+            .map(|stmt| stmt.clone_in_with_semantic_ids(ctx.allocator())),
+    );
     if !uses_args {
-        let mut stmts: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
-        for s in body_stmts {
-            stmts.push(s.clone_in_with_semantic_ids(alloc));
-        }
-        return stmts;
+        return body;
     }
+    OxcVec::from_array_in([Statement::new_block_statement(SPAN, body, ctx)], ctx)
+}
 
-    let mut block_body: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
-
-    let binding_id = BindingIdentifier {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        name: ctx.ast.ident(args_param_name),
-        symbol_id: Cell::default(),
-    };
-    let declarator = VariableDeclarator {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        kind: VariableDeclarationKind::Var,
-        id: BindingPattern::BindingIdentifier(ctx.ast.alloc(binding_id)),
-        type_annotation: None,
-        init: Some(call_site_arg.clone_in_with_semantic_ids(alloc)),
-        definite: false,
-    };
-    let mut declarations = ctx.ast.vec();
-    declarations.push(declarator);
-    block_body.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        kind: VariableDeclarationKind::Var,
-        declarations,
-        declare: false,
-    })));
-
-    for s in body_stmts {
-        block_body.push(s.clone_in_with_semantic_ids(alloc));
-    }
-
-    let block = Statement::BlockStatement(ctx.ast.alloc(BlockStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        body: block_body,
-        scope_id: Cell::new(None),
-    }));
-
-    let mut result: OxcVec<'a, Statement<'a>> = ctx.ast.vec();
-    result.push(block);
-    result
+fn make_args_declaration<'a>(name: &str, value: &Expression<'a>, ctx: &Ctx<'a>) -> Statement<'a> {
+    let name = oxc_ast::ast::Ident::from_str_in(name, ctx);
+    let id = BindingPattern::new_binding_identifier(SPAN, name, ctx);
+    let declarator = VariableDeclarator::new(
+        SPAN,
+        id,
+        None,
+        Some(value.clone_in_with_semantic_ids(ctx.allocator())),
+        false,
+        ctx,
+    );
+    Statement::new_variable_declaration(SPAN, VariableDeclarationKind::Var, [declarator], false, ctx)
 }

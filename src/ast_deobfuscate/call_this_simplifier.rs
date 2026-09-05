@@ -7,7 +7,7 @@
 //! `P6.call(this, NA, [U8.length, ZW])` — the `.call(this, ...)` is redundant
 //! because `P6` is a top-level function that doesn't use `this`.
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{Argument, Expression};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -53,10 +53,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallThisSimplifier {
         }
 
         let callee_name = ident.name.as_str().to_string();
-        let new_callee = sme.object.clone_in_with_semantic_ids(ctx);
-        let mut new_args = ctx.ast.vec();
+        let new_callee = sme.object.clone_in_with_semantic_ids(ctx.allocator());
+        let mut new_args = OxcVec::new_in(ctx);
         for arg in call.arguments.iter().skip(1) {
-            new_args.push(arg.clone_in_with_semantic_ids(ctx));
+            new_args.push(arg.clone_in_with_semantic_ids(ctx.allocator()));
         }
 
         if self.rewrites < 10 {

@@ -1,12 +1,8 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    Argument, BindingPattern, CallExpression, EmptyStatement, Expression, IdentifierReference, Statement,
-};
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
+use oxc_ast::ast::{Argument, BindingPattern, CallExpression, Expression, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -48,31 +44,21 @@ impl CallProxyInliner {
         eprintln!("[AST] Inlining call proxy: {} -> {}", name, proxy.target_name);
         self.changed = true;
 
-        let mut arguments = ctx.ast.vec();
+        let mut arguments = OxcVec::new_in(ctx);
         for arg in &call.arguments {
             if let Some(expr) = arg.as_expression() {
                 arguments.push(Argument::from(Self::clone_expression(expr, ctx)));
             }
         }
-
-        Some(Expression::CallExpression(ctx.ast.alloc(CallExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            callee: Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident(&proxy.target_name),
-                reference_id: Cell::default(),
-            })),
-            arguments,
-            optional: false,
-            type_arguments: None,
-            pure: false,
-        })))
+        let target_name = oxc_ast::ast::Ident::from_str_in(&proxy.target_name, ctx);
+        let callee = Expression::new_identifier(SPAN, target_name, ctx);
+        Some(Expression::new_call_expression(
+            SPAN, callee, None, arguments, false, ctx,
+        ))
     }
 
     fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator)
+        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 }
 
@@ -93,10 +79,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyInliner {
             if self.proxies.contains_key(name) {
                 eprintln!("[AST] Removing call proxy function: {name}");
                 self.changed = true;
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
                 return;
             }
         }
@@ -123,10 +106,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyInliner {
                     .collect();
                 eprintln!("[AST] Removing call proxy var declaration: var {};", names.join(", "));
                 self.changed = true;
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             }
         }
     }

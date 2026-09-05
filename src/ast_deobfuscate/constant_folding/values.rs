@@ -1,8 +1,7 @@
-use oxc_ast::ast::{BooleanLiteral, Expression, NumericLiteral, UnaryOperator};
+use oxc_allocator::GetAllocator;
+use oxc_ast::ast::{Expression, UnaryOperator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::number::NumberBase;
-use std::cell::Cell;
 
 use super::{ConstantFolder, Ctx};
 
@@ -32,22 +31,11 @@ impl ConstantFolder {
     }
 
     pub(super) fn make_number<'a>(val: i64, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        let raw = Some(ctx.ast.str(&val.to_string()));
-
-        Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: val as f64,
-            raw,
-            base: NumberBase::Decimal,
-        }))
+        let raw = Some(oxc_allocator::FromIn::from_in(val.to_string(), ctx.allocator()));
+        Expression::new_numeric_literal(SPAN, val as f64, raw, NumberBase::Decimal, ctx)
     }
 
     pub(super) fn make_boolean<'a>(val: bool, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: val,
-        }))
+        Expression::new_boolean_literal(SPAN, val, ctx)
     }
 }

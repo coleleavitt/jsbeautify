@@ -1,4 +1,4 @@
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{BlockStatement, Expression, Statement};
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
@@ -31,7 +31,7 @@ impl DeadCodeEliminator {
     }
 
     fn clone_statement<'b>(stmt: &Statement<'b>, ctx: &mut TraverseCtx<'b, DeobfuscateState>) -> Statement<'b> {
-        stmt.clone_in_with_semantic_ids(ctx)
+        stmt.clone_in_with_semantic_ids(ctx.allocator())
     }
 }
 
@@ -49,7 +49,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadCodeEliminator {
                     eprintln!("[AST] Eliminating if(true) - keeping consequent");
                     self.changed = true;
                     let scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-                    *stmt = ctx.ast.statement_block_with_scope_id(SPAN, ctx.ast.vec(), scope_id);
+                    *stmt = Statement::new_block_statement_with_scope_id(SPAN, [], scope_id, ctx);
                 }
             }
             Statement::WhileStatement(while_stmt) if Self::is_false(&while_stmt.test) => {
@@ -63,7 +63,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadCodeEliminator {
 
     fn exit_block_statement(&mut self, block: &mut BlockStatement<'a>, ctx: &mut Ctx<'a>) {
         let mut has_terminator = false;
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = OxcVec::new_in(ctx);
 
         for stmt in &block.body {
             if has_terminator {

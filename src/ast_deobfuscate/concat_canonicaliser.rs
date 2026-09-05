@@ -14,7 +14,7 @@
 //! The pass is conservative: it only fires when the receiver is a string literal,
 //! or when the receiver is itself a `.concat` call (nested concat chains collapse).
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{BinaryOperator, Expression};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -78,9 +78,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
             );
         }
         self.rewrites += 1;
-        let mut acc = sme.object.clone_in_with_semantic_ids(ctx);
+        let mut acc = sme.object.clone_in_with_semantic_ids(ctx.allocator());
         for arg in &call.arguments {
-            let rhs = arg.as_expression().unwrap().clone_in_with_semantic_ids(ctx);
+            let rhs = arg.as_expression().unwrap().clone_in_with_semantic_ids(ctx.allocator());
             acc = make_plus(acc, rhs, ctx);
         }
         *expr = acc;

@@ -36,7 +36,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ClassNameRenamer {
         if let Some(original) = self.lookup(symbol_id)
             && ident.name.as_str() != original
         {
-            ident.name = ctx.ast.ident(original);
+            ident.name = oxc_ast::ast::Ident::from_str_in(original, ctx);
             self.renamed += 1;
         }
     }
@@ -48,7 +48,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ClassNameRenamer {
         if let Some(original) = self.lookup(symbol_id)
             && ident.name.as_str() != original
         {
-            ident.name = ctx.ast.ident(original);
+            ident.name = oxc_ast::ast::Ident::from_str_in(original, ctx);
             self.renamed += 1;
         }
     }
