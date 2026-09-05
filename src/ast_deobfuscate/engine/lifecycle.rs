@@ -8,7 +8,11 @@ use super::{
     TernaryToIfElse, TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval,
 };
 
-const MAX_BRACKET_DEPTH: usize = 100_000;
+/// Maximum accepted delimiter nesting.
+///
+/// This is intentionally conservative: the full parse/semantic/codegen pipeline
+/// completes at this boundary on the minimum supported 2 MiB worker stack.
+const MAX_BRACKET_DEPTH: usize = 256;
 const MIN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
@@ -228,6 +232,37 @@ mod tests {
             .expect_err("nesting cap must fail closed");
 
         assert!(matches!(error, BeautifyError::InvalidInput(_)));
+    }
+
+    fn nested_parentheses(depth: usize) -> String {
+        format!("const value = {}0{};", "(".repeat(depth), ")".repeat(depth))
+    }
+
+    #[test]
+    fn nesting_at_cap_runs_on_minimum_worker_stack() {
+        let output = AstDeobfuscator::new()
+            .with_worker_stack_bytes(MIN_WORKER_STACK_BYTES)
+            .deobfuscate(&nested_parentheses(MAX_BRACKET_DEPTH))
+            .expect("the nesting boundary must fit the minimum worker stack");
+
+        assert!(output.contains("value"));
+    }
+
+    #[test]
+    fn nesting_above_cap_returns_typed_error_before_worker_runs() {
+        let depth = MAX_BRACKET_DEPTH + 1;
+        let error = AstDeobfuscator::new()
+            .with_worker_stack_bytes(MIN_WORKER_STACK_BYTES)
+            .deobfuscate(&nested_parentheses(depth))
+            .expect_err("nesting above the tested boundary must fail closed");
+
+        assert!(matches!(
+            error,
+            BeautifyError::InvalidInput(message)
+                if message == format!(
+                    "input bracket-nesting depth {depth} exceeds cap {MAX_BRACKET_DEPTH}"
+                )
+        ));
     }
 
     #[test]
