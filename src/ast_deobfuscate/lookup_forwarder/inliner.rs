@@ -1,13 +1,8 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    BindingPattern, CallExpression, ComputedMemberExpression, EmptyStatement, Expression, IdentifierReference,
-    Statement,
-};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{BindingPattern, CallExpression, Expression, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -49,31 +44,16 @@ impl LookupForwarderInliner {
         }
         self.inlined += 1;
 
-        let accessor_callee = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident(&info.accessor_name),
-            reference_id: Cell::default(),
-        }));
-        let accessor_call = Expression::CallExpression(ctx.ast.alloc(CallExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            callee: accessor_callee,
-            arguments: ctx.ast.vec(),
-            optional: false,
-            type_arguments: None,
-            pure: false,
-        }));
-        let index_expr = arg.clone_in_with_semantic_ids(ctx.ast.allocator);
-        Some(Expression::ComputedMemberExpression(ctx.ast.alloc(
-            ComputedMemberExpression {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                object: accessor_call,
-                expression: index_expr,
-                optional: false,
-            },
-        )))
+        let accessor_callee = Expression::new_identifier(SPAN, ctx.allocator().alloc_str(&info.accessor_name), ctx);
+        let accessor_call = Expression::new_call_expression(SPAN, accessor_callee, None, [], false, ctx);
+        let index_expr = arg.clone_in_with_semantic_ids(ctx.ast.allocator());
+        Some(Expression::new_computed_member_expression(
+            SPAN,
+            accessor_call,
+            index_expr,
+            false,
+            ctx,
+        ))
     }
 }
 
@@ -92,10 +72,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LookupForwarderInliner {
             && self.forwarders.contains_key(id.name.as_str())
         {
             eprintln!("[AST/lookup-fwd] remove function {}", id.name.as_str());
-            *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }));
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
             return;
         }
         if let Statement::VariableDeclaration(decl) = stmt {
@@ -112,10 +89,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LookupForwarderInliner {
                 });
             if all_are_forwarders {
                 eprintln!("[AST/lookup-fwd] remove var declaration");
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             }
         }
     }

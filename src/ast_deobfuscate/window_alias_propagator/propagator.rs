@@ -1,10 +1,8 @@
-use oxc_ast::ast::{Expression, IdentifierReference};
+use oxc_ast::ast::{Expression, Ident};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashSet;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -78,17 +76,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasPropagator {
         // to *that* instead of `window.foo` — a silent miscompile. Skip those.
         if ctx
             .scoping()
-            .find_binding(ctx.current_scope_id(), ctx.ast.ident(prop_name))
+            .find_binding(ctx.current_scope_id(), Ident::from_str_in(prop_name, ctx))
             .is_some()
         {
             return;
         }
         self.rewrites += 1;
-        *expr = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident(prop_name),
-            reference_id: Cell::default(),
-        }));
+        *expr = Expression::new_identifier(SPAN, prop_name, ctx);
     }
 }

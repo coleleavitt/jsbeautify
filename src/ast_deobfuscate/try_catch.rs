@@ -1,10 +1,8 @@
 use oxc_allocator::Vec as OxcVec;
-use oxc_ast::ast::{CatchClause, EmptyStatement, Statement};
+use oxc_ast::ast::{CatchClause, Statement};
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -44,14 +42,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for TryCatchRemover {
             );
             self.changed = true;
 
-            let try_body_statements = std::mem::replace(&mut try_stmt.block.body, OxcVec::new_in(ctx.ast.allocator));
+            let try_body_statements = std::mem::replace(&mut try_stmt.block.body, OxcVec::new_in(ctx));
 
             if try_body_statements.is_empty() {
                 eprintln!("[TRY_CATCH] Empty try body -> EmptyStatement");
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             } else if try_body_statements.len() == 1 {
                 eprintln!("[TRY_CATCH] Single stmt try body -> unwrapping");
                 let mut iter = try_body_statements.into_iter();
@@ -59,17 +54,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for TryCatchRemover {
                     *stmt = first;
                 } else {
                     eprintln!("[TRY_CATCH] ERROR: iterator was empty despite len() == 1");
-                    *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                    }));
+                    *stmt = Statement::new_empty_statement(SPAN, ctx);
                 }
             } else {
                 let scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
                 eprintln!("[TRY_CATCH] Multi-stmt try body -> BlockStatement with scope_id: {scope_id:?}");
-                *stmt = ctx
-                    .ast
-                    .statement_block_with_scope_id(SPAN, try_body_statements, scope_id);
+                *stmt = Statement::new_block_statement_with_scope_id(SPAN, try_body_statements, scope_id, ctx);
             }
         }
     }

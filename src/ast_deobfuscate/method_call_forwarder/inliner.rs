@@ -1,12 +1,8 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    BindingPattern, CallExpression, EmptyStatement, Expression, IdentifierName, Statement, StaticMemberExpression,
-};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{Argument, BindingPattern, CallExpression, Expression, IdentifierName, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -48,30 +44,18 @@ impl MethodCallForwarderInliner {
         }
         self.inlined += 1;
 
-        let recv_cloned = recv.clone_in_with_semantic_ids(ctx.ast.allocator);
-        let arg_cloned = arg.clone_in_with_semantic_ids(ctx.ast.allocator);
-        let member = Expression::StaticMemberExpression(ctx.ast.alloc(StaticMemberExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            object: recv_cloned,
-            property: IdentifierName {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident(&info.method),
-            },
-            optional: false,
-        }));
-        let mut arguments = ctx.ast.vec();
-        arguments.push(oxc_ast::ast::Argument::from(arg_cloned));
-        Some(Expression::CallExpression(ctx.ast.alloc(CallExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            callee: member,
-            arguments,
-            optional: false,
-            type_arguments: None,
-            pure: false,
-        })))
+        let recv_cloned = recv.clone_in_with_semantic_ids(ctx.ast.allocator());
+        let arg_cloned = arg.clone_in_with_semantic_ids(ctx.ast.allocator());
+        let property = IdentifierName::new(SPAN, ctx.allocator().alloc_str(&info.method), ctx);
+        let member = Expression::new_static_member_expression(SPAN, recv_cloned, property, false, ctx);
+        Some(Expression::new_call_expression(
+            SPAN,
+            member,
+            None,
+            [Argument::from(arg_cloned)],
+            false,
+            ctx,
+        ))
     }
 }
 
@@ -90,10 +74,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MethodCallForwarderInliner {
             && self.forwarders.contains_key(id.name.as_str())
         {
             eprintln!("[AST/method-fwd] remove function {}", id.name.as_str());
-            *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }));
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
             return;
         }
         if let Statement::VariableDeclaration(decl) = stmt {
@@ -109,10 +90,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MethodCallForwarderInliner {
                 });
             if all_are_forwarders {
                 eprintln!("[AST/method-fwd] remove var declaration");
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             }
         }
     }

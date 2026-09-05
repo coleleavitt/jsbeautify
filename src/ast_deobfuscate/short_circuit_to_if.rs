@@ -1,13 +1,11 @@
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
-    BlockStatement, Expression, ExpressionStatement, FunctionBody, IfStatement, LogicalExpression, LogicalOperator,
-    Program, Statement, UnaryExpression, UnaryOperator,
+    BlockStatement, Expression, FunctionBody, IfStatement, LogicalExpression, LogicalOperator, Program, Statement,
+    UnaryOperator,
 };
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
-use std::cell::Cell;
+use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -33,37 +31,22 @@ fn is_short_circuit_expr_stmt(stmt: &Statement<'_>) -> bool {
 }
 
 fn build_if_from_logical<'a>(logical: &LogicalExpression<'a>, ctx: &mut Ctx<'a>) -> Statement<'a> {
-    let action_expr = logical.right.clone_in_with_semantic_ids(ctx.ast.allocator);
-    let action_stmt = Statement::ExpressionStatement(ctx.ast.alloc(ExpressionStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        expression: action_expr,
-    }));
-    let mut body_stmts = ctx.ast.vec();
+    let action_expr = logical.right.clone_in_with_semantic_ids(ctx.allocator());
+    let action_stmt = Statement::new_expression_statement(SPAN, action_expr, &ctx.ast);
+    let mut body_stmts = OxcVec::new_in(ctx);
     body_stmts.push(action_stmt);
     let block_scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-    let block = ctx.ast.statement_block_with_scope_id(SPAN, body_stmts, block_scope_id);
+    let block = Statement::new_block_statement_with_scope_id(SPAN, body_stmts, block_scope_id, &ctx.ast);
 
     let test = match logical.operator {
-        LogicalOperator::And | LogicalOperator::Coalesce => logical.left.clone_in_with_semantic_ids(ctx.ast.allocator),
+        LogicalOperator::And | LogicalOperator::Coalesce => logical.left.clone_in_with_semantic_ids(ctx.allocator()),
         LogicalOperator::Or => {
-            let inner = logical.left.clone_in_with_semantic_ids(ctx.ast.allocator);
-            Expression::UnaryExpression(ctx.ast.alloc(UnaryExpression {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                operator: UnaryOperator::LogicalNot,
-                argument: inner,
-            }))
+            let inner = logical.left.clone_in_with_semantic_ids(ctx.allocator());
+            Expression::new_unary_expression(SPAN, UnaryOperator::LogicalNot, inner, &ctx.ast)
         }
     };
 
-    Statement::IfStatement(ctx.ast.alloc(IfStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        test,
-        consequent: block,
-        alternate: None,
-    }))
+    Statement::IfStatement(IfStatement::boxed(SPAN, test, block, None, &ctx.ast))
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
@@ -74,7 +57,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
         }
 
         let before = program.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = OxcVec::new_in(ctx);
         for stmt in &program.body {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::LogicalExpression(logical) = &expr_stmt.expression
@@ -88,7 +71,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
                 self.converted_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
         eprintln!("[SHORT_CIRCUIT_TO_IF] Program body: {before} -> {after} statements");
@@ -102,7 +85,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
         }
 
         let before = block.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = OxcVec::new_in(ctx);
         for stmt in &block.body {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::LogicalExpression(logical) = &expr_stmt.expression
@@ -113,7 +96,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
                 self.converted_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
         eprintln!("[SHORT_CIRCUIT_TO_IF] Block body: {before} -> {after} statements");
@@ -121,21 +104,13 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
     }
 
     fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
-        // Skip arrow expression bodies — converting there would lose the
-        // implicit return value and change semantics.
-        if let Ancestor::ArrowFunctionExpressionBody(arrow) = ctx.parent()
-            && *arrow.expression()
-        {
-            return;
-        }
-
         let has_candidate = body.statements.iter().any(|s| is_short_circuit_expr_stmt(s));
         if !has_candidate {
             return;
         }
 
         let before = body.statements.len();
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = OxcVec::new_in(ctx);
         for stmt in &body.statements {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::LogicalExpression(logical) = &expr_stmt.expression
@@ -149,7 +124,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
                 self.converted_count += 1;
                 continue;
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_stmts.len();
         eprintln!("[SHORT_CIRCUIT_TO_IF] Function body: {before} -> {after} statements");

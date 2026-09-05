@@ -1,14 +1,9 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    Argument, BinaryExpression, BinaryOperator, BooleanLiteral, CallExpression, EmptyStatement, Expression,
-    IdentifierReference, NullLiteral, NumericLiteral, Statement, StringLiteral, UnaryExpression, UnaryOperator,
-};
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression, Ident, Statement, Str, UnaryOperator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::number::NumberBase;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -47,7 +42,7 @@ impl FunctionInliner {
             return None;
         }
 
-        let return_expr = func.return_expression.as_ref()?;
+        let return_expr = func.return_expression.clone()?;
 
         let args: Vec<_> = call.arguments.iter().filter_map(|arg| arg.as_expression()).collect();
 
@@ -58,55 +53,28 @@ impl FunctionInliner {
         eprintln!("[AST] Inlining call to function: {name}");
         self.changed = true;
 
-        Some(Self::build_expression(return_expr, &args, ctx))
+        Some(Self::build_expression(&return_expr, &args, ctx))
     }
 
     fn build_expression<'a>(ret_expr: &ReturnExpr, args: &[&Expression<'a>], ctx: &mut Ctx<'a>) -> Expression<'a> {
         match ret_expr {
             ReturnExpr::ParamRef(idx) => {
-                if *idx < args.len() {
-                    Self::clone_expression(args[*idx], ctx)
+                if let Some(arg) = args.get(*idx) {
+                    Self::clone_expression(arg, ctx)
                 } else {
-                    Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        name: ctx.ast.ident("undefined"),
-                        reference_id: Cell::default(),
-                    }))
+                    Expression::new_identifier(SPAN, "undefined", ctx)
                 }
             }
-            ReturnExpr::Identifier(name) => Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident(name),
-                reference_id: Cell::default(),
-            })),
-            ReturnExpr::Number(val) => Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: *val,
-                raw: Some(ctx.ast.str(&val.to_string())),
-                base: NumberBase::Decimal,
-            })),
-            ReturnExpr::String(s) => Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: ctx.ast.str(s),
-                raw: None,
-                lone_surrogates: false,
-            })),
-            ReturnExpr::Boolean(b) => Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: *b,
-            })),
-            ReturnExpr::Null => Expression::NullLiteral(ctx.ast.alloc(NullLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            })),
+            ReturnExpr::Identifier(name) => Expression::new_identifier(SPAN, ctx.allocator().alloc_str(name), ctx),
+            ReturnExpr::Number(val) => Expression::new_numeric_literal(SPAN, *val, None, NumberBase::Decimal, ctx),
+            ReturnExpr::String(value) => {
+                Expression::new_string_literal(SPAN, ctx.allocator().alloc_str(value), None, ctx)
+            }
+            ReturnExpr::Boolean(value) => Expression::new_boolean_literal(SPAN, *value, ctx),
+            ReturnExpr::Null => Expression::new_null_literal(SPAN, ctx),
             ReturnExpr::Binary { left, op, right } => {
-                let left_expr = Self::build_expression(left, args, ctx);
-                let right_expr = Self::build_expression(right, args, ctx);
+                let left = Self::build_expression(left, args, ctx);
+                let right = Self::build_expression(right, args, ctx);
                 let operator = match op {
                     BinaryOp::Add => BinaryOperator::Addition,
                     BinaryOp::Sub => BinaryOperator::Subtraction,
@@ -125,58 +93,40 @@ impl FunctionInliner {
                     BinaryOp::Gt => BinaryOperator::GreaterThan,
                     BinaryOp::Gte => BinaryOperator::GreaterEqualThan,
                 };
-                Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    left: left_expr,
-                    operator,
-                    right: right_expr,
-                }))
+                Expression::new_binary_expression(SPAN, left, operator, right, ctx)
             }
             ReturnExpr::Unary { op, arg } => {
-                let arg_expr = Self::build_expression(arg, args, ctx);
+                let argument = Self::build_expression(arg, args, ctx);
                 let operator = match op {
                     UnaryOp::Not => UnaryOperator::LogicalNot,
                     UnaryOp::Neg => UnaryOperator::UnaryNegation,
                     UnaryOp::Plus => UnaryOperator::UnaryPlus,
                     UnaryOp::BitNot => UnaryOperator::BitwiseNot,
                 };
-                Expression::UnaryExpression(ctx.ast.alloc(UnaryExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    operator,
-                    argument: arg_expr,
-                }))
+                Expression::new_unary_expression(SPAN, operator, argument, ctx)
             }
             ReturnExpr::Call {
                 callee,
                 args: call_args,
             } => {
-                let mut arguments = ctx.ast.vec();
+                let mut arguments = ArenaVec::new_in(ctx);
                 for arg in call_args {
-                    let expr = Self::build_expression(arg, args, ctx);
-                    arguments.push(Argument::from(expr));
+                    arguments.push(Argument::from(Self::build_expression(arg, args, ctx)));
                 }
-                Expression::CallExpression(ctx.ast.alloc(CallExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    callee: Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        name: ctx.ast.ident(callee),
-                        reference_id: Cell::default(),
-                    })),
+                Expression::new_call_expression(
+                    SPAN,
+                    Expression::new_identifier(SPAN, ctx.allocator().alloc_str(callee), ctx),
+                    None,
                     arguments,
-                    optional: false,
-                    type_arguments: None,
-                    pure: false,
-                }))
+                    false,
+                    ctx,
+                )
             }
         }
     }
 
     fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator)
+        expr.clone_in_with_semantic_ids(ctx.ast.allocator())
     }
 }
 
@@ -197,10 +147,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionInliner {
             if self.functions.contains_key(name) {
                 eprintln!("[AST] Removing inlined function declaration: {name}");
                 self.changed = true;
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             }
         }
     }

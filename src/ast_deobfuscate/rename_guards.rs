@@ -25,7 +25,9 @@
 //! every rename plan must exclude. Excluded symbols keep their original name, so
 //! they still *reserve* that name against collisions in the rename planners.
 
-use oxc_ast::ast::{CallExpression, Declaration, ExportNamedDeclaration, Expression, ModuleExportName};
+use oxc_ast::ast::{
+    CallExpression, Declaration, ExportDeclaration, ExportNamedDeclaration, Expression, ModuleExportName,
+};
 use oxc_semantic::Scoping;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
@@ -88,41 +90,29 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
         }
     }
 
-    fn enter_export_named_declaration(&mut self, export: &mut ExportNamedDeclaration<'a>, ctx: &mut Ctx<'a>) {
-        // `export … from "mod"` re-exports a foreign binding; nothing local is
-        // exposed by name, so the locals here remain renamable.
-        if export.source.is_some() {
-            return;
-        }
-
-        // `export const/let/var/function/class …` — the binding name is the
-        // public export name and must be preserved.
-        if let Some(decl) = &export.declaration {
-            match decl {
-                Declaration::VariableDeclaration(var) => {
-                    for declarator in &var.declarations {
-                        for binding in declarator.id.get_binding_identifiers() {
-                            if let Some(symbol_id) = binding.symbol_id.get() {
-                                self.export_preserved.insert(symbol_id);
-                            }
+    fn enter_export_declaration(&mut self, export: &mut ExportDeclaration<'a>, _ctx: &mut Ctx<'a>) {
+        let decl = &export.declaration;
+        match decl {
+            Declaration::VariableDeclaration(var) => {
+                for declarator in &var.declarations {
+                    for binding in declarator.id.get_binding_identifiers() {
+                        if let Some(symbol_id) = binding.symbol_id.get() {
+                            self.export_preserved.insert(symbol_id);
                         }
                     }
                 }
-                _ => {
-                    if let Some(id) = decl.id()
-                        && let Some(symbol_id) = id.symbol_id.get()
-                    {
-                        self.export_preserved.insert(symbol_id);
-                    }
+            }
+            _ => {
+                if let Some(id) = decl.id()
+                    && let Some(symbol_id) = id.symbol_id.get()
+                {
+                    self.export_preserved.insert(symbol_id);
                 }
             }
         }
+    }
 
-        // `export { local }` / `export { local as exported }` — conservatively
-        // preserve every specifier local. The unaliased form exposes `local`'s
-        // own name; the aliased form is in principle renamable (codegen would
-        // re-emit the alias), but preserving it costs only a cosmetic rename of
-        // a top-level binding and removes any dependence on that behaviour.
+    fn enter_export_named_declaration(&mut self, export: &mut ExportNamedDeclaration<'a>, ctx: &mut Ctx<'a>) {
         for spec in &export.specifiers {
             if let ModuleExportName::IdentifierReference(local) = &spec.local
                 && let Some(symbol_id) = ctx.scoping().get_reference(local.reference_id()).symbol_id()

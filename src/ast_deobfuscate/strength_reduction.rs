@@ -1,10 +1,8 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{BinaryExpression, BinaryOperator, Expression, NumericLiteral};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{BinaryExpression, BinaryOperator, Expression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::number::NumberBase;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -85,47 +83,41 @@ impl StrengthReducer {
     }
 
     fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator)
+        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 
     fn make_number<'a>(val: u32, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: val as f64,
-            raw: Some(ctx.ast.str(&val.to_string())),
-            base: NumberBase::Decimal,
-        }))
+        Expression::new_numeric_literal(SPAN, val as f64, None, NumberBase::Decimal, &ctx.ast)
     }
 
     fn make_shift_left<'a>(left: &Expression<'a>, shift: u32, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            left: Self::clone_expression(left, ctx),
-            operator: BinaryOperator::ShiftLeft,
-            right: Self::make_number(shift, ctx),
-        }))
+        Expression::new_binary_expression(
+            SPAN,
+            Self::clone_expression(left, ctx),
+            BinaryOperator::ShiftLeft,
+            Self::make_number(shift, ctx),
+            &ctx.ast,
+        )
     }
 
     fn make_shift_right<'a>(left: &Expression<'a>, shift: u32, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            left: Self::clone_expression(left, ctx),
-            operator: BinaryOperator::ShiftRight,
-            right: Self::make_number(shift, ctx),
-        }))
+        Expression::new_binary_expression(
+            SPAN,
+            Self::clone_expression(left, ctx),
+            BinaryOperator::ShiftRight,
+            Self::make_number(shift, ctx),
+            &ctx.ast,
+        )
     }
 
     fn make_bitwise_and<'a>(left: &Expression<'a>, mask: u32, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            left: Self::clone_expression(left, ctx),
-            operator: BinaryOperator::BitwiseAnd,
-            right: Self::make_number(mask, ctx),
-        }))
+        Expression::new_binary_expression(
+            SPAN,
+            Self::clone_expression(left, ctx),
+            BinaryOperator::BitwiseAnd,
+            Self::make_number(mask, ctx),
+            &ctx.ast,
+        )
     }
 }
 

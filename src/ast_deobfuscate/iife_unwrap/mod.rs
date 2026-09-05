@@ -1,6 +1,6 @@
-use oxc_allocator::CloneIn;
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{BlockStatement, FunctionBody, Program};
-use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
+use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -23,7 +23,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for IifeUnwrap {
             return;
         }
 
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(ctx);
         for stmt in &program.body {
             if try_unwrap_standalone(stmt, &mut new_body, ctx) {
                 self.unwrapped_count = self.unwrapped_count.wrapping_add(1);
@@ -33,7 +33,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for IifeUnwrap {
                 self.unwrapped_count = self.unwrapped_count.wrapping_add(1);
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         program.body = new_body;
     }
@@ -44,7 +44,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for IifeUnwrap {
             return;
         }
 
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(ctx);
         for stmt in &block.body {
             if try_unwrap_standalone(stmt, &mut new_body, ctx) {
                 self.unwrapped_count = self.unwrapped_count.wrapping_add(1);
@@ -54,24 +54,18 @@ impl<'a> Traverse<'a, DeobfuscateState> for IifeUnwrap {
                 self.unwrapped_count = self.unwrapped_count.wrapping_add(1);
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         block.body = new_body;
     }
 
     fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
-        if let Ancestor::ArrowFunctionExpressionBody(arrow) = ctx.parent()
-            && *arrow.expression()
-        {
-            return;
-        }
-
         let has_candidate = body.statements.iter().any(|s| has_iife_candidate(s));
         if !has_candidate {
             return;
         }
 
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = ArenaVec::new_in(ctx);
         for stmt in &body.statements {
             if try_unwrap_standalone(stmt, &mut new_stmts, ctx) {
                 self.unwrapped_count = self.unwrapped_count.wrapping_add(1);
@@ -81,7 +75,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for IifeUnwrap {
                 self.unwrapped_count = self.unwrapped_count.wrapping_add(1);
                 continue;
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         body.statements = new_stmts;
     }

@@ -24,7 +24,7 @@
 //! Only fires when the `return` is inside a block (function body / if / else / etc.)
 //! where we can insert preceding statements.
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{Expression, FunctionBody, Statement};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -65,7 +65,7 @@ impl ReturnSequenceSplitter {
             return;
         }
 
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = ArenaVec::new_in(&ctx.ast);
         for stmt in stmts.iter() {
             if let Statement::ReturnStatement(ret) = stmt
                 && let Some(Expression::SequenceExpression(seq)) = &ret.argument
@@ -74,21 +74,21 @@ impl ReturnSequenceSplitter {
                 // Emit all but the last expression as expression-statements.
                 let len = seq.expressions.len();
                 for expr in &seq.expressions[..len - 1] {
-                    new_stmts.push(
-                        ctx.ast
-                            .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
-                    );
+                    new_stmts.push(Statement::new_expression_statement(
+                        SPAN,
+                        expr.clone_in_with_semantic_ids(ctx.allocator()),
+                        ctx,
+                    ));
                 }
                 // Emit `return <last>;`
                 let last = &seq.expressions[len - 1];
-                let ret_stmt = ctx
-                    .ast
-                    .statement_return(SPAN, Some(last.clone_in_with_semantic_ids(ctx.ast.allocator)));
+                let ret_stmt =
+                    Statement::new_return_statement(SPAN, Some(last.clone_in_with_semantic_ids(ctx.allocator())), ctx);
                 new_stmts.push(ret_stmt);
                 self.split_count += 1;
                 continue;
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         *stmts = new_stmts;
     }

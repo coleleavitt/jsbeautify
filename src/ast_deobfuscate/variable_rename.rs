@@ -1,4 +1,4 @@
-use oxc_ast::ast::{BindingIdentifier, Function, IdentifierReference};
+use oxc_ast::ast::{BindingIdentifier, Function, Ident, IdentifierReference};
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 
@@ -85,7 +85,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
             if crate::ast_deobfuscate::ast_trace_enabled() {
                 eprintln!("[AST] Renaming binding: {old_name} → {new_name}");
             }
-            ident.name = ctx.ast.ident(&new_name);
+            ident.name = Ident::from_str_in(&new_name, ctx);
             self.changed = true;
         }
     }
@@ -96,7 +96,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
             if crate::ast_deobfuscate::ast_trace_enabled() {
                 eprintln!("[AST] Renaming reference: {old_name} → {new_name}");
             }
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, ctx);
             self.changed = true;
         }
     }
@@ -109,7 +109,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
                 if crate::ast_deobfuscate::ast_trace_enabled() {
                     eprintln!("[AST] Renaming function: {old_name} → {new_name}");
                 }
-                ident.name = ctx.ast.ident(&new_name);
+                ident.name = Ident::from_str_in(&new_name, ctx);
                 self.changed = true;
             }
         }

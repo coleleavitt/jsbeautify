@@ -21,16 +21,11 @@
 //! an `ExpressionStatement`. Ternaries inside return statements, variable
 //! declarations, assignments, or any other context are left untouched.
 
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    BlockStatement, ConditionalExpression, Expression, ExpressionStatement, FunctionBody, IfStatement, Program,
-    Statement,
-};
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_ast::ast::{BlockStatement, ConditionalExpression, Expression, FunctionBody, Program, Statement};
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -56,41 +51,25 @@ fn is_ternary_expr_stmt(stmt: &Statement<'_>) -> bool {
 /// Build an `IfStatement` from a `ConditionalExpression`, wrapping the
 /// consequent and alternate branches in `BlockStatement`s.
 fn build_if_stmt<'a>(cond: &ConditionalExpression<'a>, ctx: &mut Ctx<'a>) -> Statement<'a> {
-    let test = cond.test.clone_in_with_semantic_ids(ctx.ast.allocator);
-    let consequent_expr = cond.consequent.clone_in_with_semantic_ids(ctx.ast.allocator);
-    let alternate_expr = cond.alternate.clone_in_with_semantic_ids(ctx.ast.allocator);
+    let test = cond.test.clone_in_with_semantic_ids(ctx.ast.allocator());
+    let consequent_expr = cond.consequent.clone_in_with_semantic_ids(ctx.ast.allocator());
+    let alternate_expr = cond.alternate.clone_in_with_semantic_ids(ctx.ast.allocator());
 
-    let consequent_stmt = Statement::ExpressionStatement(ctx.ast.alloc(ExpressionStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        expression: consequent_expr,
-    }));
-    let mut consequent_body = ctx.ast.vec();
+    let consequent_stmt = Statement::new_expression_statement(SPAN, consequent_expr, &ctx.ast);
+    let mut consequent_body = ArenaVec::new_in(&ctx.ast);
     consequent_body.push(consequent_stmt);
     let consequent_scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-    let consequent_block = ctx
-        .ast
-        .statement_block_with_scope_id(SPAN, consequent_body, consequent_scope_id);
+    let consequent_block =
+        Statement::new_block_statement_with_scope_id(SPAN, consequent_body, consequent_scope_id, &ctx.ast);
 
-    let alternate_stmt = Statement::ExpressionStatement(ctx.ast.alloc(ExpressionStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        expression: alternate_expr,
-    }));
-    let mut alternate_body = ctx.ast.vec();
+    let alternate_stmt = Statement::new_expression_statement(SPAN, alternate_expr, &ctx.ast);
+    let mut alternate_body = ArenaVec::new_in(&ctx.ast);
     alternate_body.push(alternate_stmt);
     let alternate_scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-    let alternate_block = ctx
-        .ast
-        .statement_block_with_scope_id(SPAN, alternate_body, alternate_scope_id);
+    let alternate_block =
+        Statement::new_block_statement_with_scope_id(SPAN, alternate_body, alternate_scope_id, &ctx.ast);
 
-    Statement::IfStatement(ctx.ast.alloc(IfStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        test,
-        consequent: consequent_block,
-        alternate: Some(alternate_block),
-    }))
+    Statement::new_if_statement(SPAN, test, consequent_block, Some(alternate_block), &ctx.ast)
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
@@ -101,7 +80,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
         }
 
         let before = program.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(&ctx.ast);
         for stmt in &program.body {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::ConditionalExpression(cond) = &expr_stmt.expression
@@ -111,7 +90,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
                 self.converted_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         let after = new_body.len();
         eprintln!("[TERNARY_TO_IF] Program body: {before} -> {after} statements");
@@ -125,7 +104,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
         }
 
         let before = block.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(&ctx.ast);
         for stmt in &block.body {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::ConditionalExpression(cond) = &expr_stmt.expression
@@ -135,7 +114,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
                 self.converted_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         let after = new_body.len();
         eprintln!("[TERNARY_TO_IF] Block body: {before} -> {after} statements");
@@ -146,9 +125,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
         // Skip arrow expression bodies — converting the ternary there would lose the
         // implicit return value. e.g. `(K) => cond ? a : b` must NOT become
         // `(K) => { if (cond) { a; } else { b; } }` because that changes semantics.
-        if let Ancestor::ArrowFunctionExpressionBody(arrow) = ctx.parent()
-            && *arrow.expression()
-        {
+        if let Ancestor::ArrowFunctionExpressionBody(_) = ctx.parent() {
+            // FunctionBody is visited only for block-bodied arrows in Oxc 0.148.
             return;
         }
 
@@ -158,7 +136,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
         }
 
         let before = body.statements.len();
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = ArenaVec::new_in(&ctx.ast);
         for stmt in &body.statements {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::ConditionalExpression(cond) = &expr_stmt.expression
@@ -168,7 +146,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernaryToIfElse {
                 self.converted_count += 1;
                 continue;
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         let after = new_stmts.len();
         eprintln!("[TERNARY_TO_IF] Function body: {before} -> {after} statements");

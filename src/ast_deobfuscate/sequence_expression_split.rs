@@ -19,7 +19,7 @@
 //! `ExpressionStatement`. Sequences inside `for` init, `return`, ternary
 //! conditions, etc. are left untouched.
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{BlockStatement, Expression, FunctionBody, Program, Statement};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -49,7 +49,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
         }
 
         let before = program.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = OxcVec::new_in(ctx);
         for stmt in &program.body {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::SequenceExpression(seq) = &expr_stmt.expression
@@ -59,15 +59,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
                     seq.expressions.len()
                 );
                 for expr in &seq.expressions {
-                    new_body.push(
-                        ctx.ast
-                            .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
-                    );
+                    new_body.push(Statement::new_expression_statement(
+                        SPAN,
+                        expr.clone_in_with_semantic_ids(ctx.allocator()),
+                        &ctx.ast,
+                    ));
                 }
                 self.split_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
         eprintln!("[SEQ_SPLIT] Program body: {before} -> {after} statements");
@@ -87,7 +88,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
         }
 
         let before = block.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = OxcVec::new_in(ctx);
         for stmt in &block.body {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::SequenceExpression(seq) = &expr_stmt.expression
@@ -97,15 +98,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
                     seq.expressions.len()
                 );
                 for expr in &seq.expressions {
-                    new_body.push(
-                        ctx.ast
-                            .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
-                    );
+                    new_body.push(Statement::new_expression_statement(
+                        SPAN,
+                        expr.clone_in_with_semantic_ids(ctx.allocator()),
+                        &ctx.ast,
+                    ));
                 }
                 self.split_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
         eprintln!("[SEQ_SPLIT] Block body: {before} -> {after} statements");
@@ -125,7 +127,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
         }
 
         let before = body.statements.len();
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = OxcVec::new_in(ctx);
         for stmt in &body.statements {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::SequenceExpression(seq) = &expr_stmt.expression
@@ -135,15 +137,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
                     seq.expressions.len()
                 );
                 for expr in &seq.expressions {
-                    new_stmts.push(
-                        ctx.ast
-                            .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
-                    );
+                    new_stmts.push(Statement::new_expression_statement(
+                        SPAN,
+                        expr.clone_in_with_semantic_ids(ctx.allocator()),
+                        &ctx.ast,
+                    ));
                 }
                 self.split_count += 1;
                 continue;
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_stmts.len();
         eprintln!("[SEQ_SPLIT] Function body: {before} -> {after} statements");

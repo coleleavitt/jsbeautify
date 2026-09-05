@@ -48,7 +48,7 @@ mod tests {
         let allocator = Allocator::default();
         let source_type = SourceType::mjs();
         let ret = Parser::new(&allocator, code, source_type).parse();
-        assert!(ret.errors.is_empty(), "Parse errors: {:?}", ret.errors);
+        assert!(ret.diagnostics.is_empty(), "Parse errors: {:?}", ret.diagnostics);
         let mut program = ret.program;
 
         let mut pass = SelfDefendingStringArray::new();

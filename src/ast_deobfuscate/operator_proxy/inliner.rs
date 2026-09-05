@@ -1,10 +1,8 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{BinaryExpression, BindingPattern, CallExpression, EmptyStatement, Expression, Statement};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{BindingPattern, CallExpression, Expression, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -49,17 +47,17 @@ impl OperatorProxyInliner {
         eprintln!("[AST] Inlining operator proxy: {} -> {:?}", name, proxy.operator);
         self.changed = true;
 
-        Some(Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            left: Self::clone_expression(arg1, ctx),
-            operator: proxy.operator,
-            right: Self::clone_expression(arg2, ctx),
-        })))
+        Some(Expression::new_binary_expression(
+            SPAN,
+            Self::clone_expression(arg1, ctx),
+            proxy.operator,
+            Self::clone_expression(arg2, ctx),
+            ctx,
+        ))
     }
 
     fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator)
+        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 }
 
@@ -80,10 +78,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for OperatorProxyInliner {
             if self.proxies.contains_key(name) {
                 eprintln!("[AST] Removing operator proxy function: {name}");
                 self.changed = true;
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
                 return;
             }
         }
@@ -113,10 +108,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for OperatorProxyInliner {
                     names.join(", ")
                 );
                 self.changed = true;
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             }
         }
     }

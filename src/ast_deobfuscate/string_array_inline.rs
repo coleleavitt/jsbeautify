@@ -6,11 +6,10 @@
 //! console.log(_0x1234[0]); // Inlined to: console.log("hello");
 //! ```
 
-use oxc_ast::ast::{ComputedMemberExpression, Expression, StringLiteral};
+use oxc_allocator::GetAllocator;
+use oxc_ast::ast::{ComputedMemberExpression, Expression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -65,13 +64,8 @@ impl StringArrayInliner {
         let string_value = &array_info.strings[index];
         eprintln!("[AST] ✓ Inlining: {array_name}[{index}] → \"{string_value}\"");
 
-        Some(Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: ctx.ast.str(string_value.as_str()),
-            raw: None,
-            lone_surrogates: false,
-        })))
+        let string_value = ctx.ast.allocator().alloc_str(string_value);
+        Some(Expression::new_string_literal(SPAN, string_value, None, &ctx.ast))
     }
 }
 

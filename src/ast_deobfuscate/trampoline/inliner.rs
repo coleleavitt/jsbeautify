@@ -1,13 +1,11 @@
-use oxc_allocator::{CloneIn, Vec as OxcVec};
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
-    Argument, ArrayExpression, ArrayExpressionElement, AssignmentTarget, BindingPattern, CallExpression,
-    EmptyStatement, Expression, IdentifierName, IdentifierReference, Statement, StaticMemberExpression, ThisExpression,
+    Argument, ArrayExpressionElement, AssignmentTarget, BindingPattern, CallExpression, Expression, IdentifierName,
+    Statement,
 };
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -39,66 +37,39 @@ impl TrampolineInliner {
         call_args: &OxcVec<'a, Argument<'a>>,
         ctx: &Ctx<'a>,
     ) -> Expression<'a> {
-        let dispatcher_ident = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident(dispatcher),
-            reference_id: Cell::default(),
-        }));
-        let call_member = Expression::StaticMemberExpression(ctx.ast.alloc(StaticMemberExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            object: dispatcher_ident,
-            property: IdentifierName {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident("call"),
-            },
-            optional: false,
-        }));
+        let dispatcher = ctx.ast.allocator().alloc_str(dispatcher);
+        let state = ctx.ast.allocator().alloc_str(state);
+        let dispatcher_ident = Expression::new_identifier(SPAN, dispatcher, &ctx.ast);
+        let call_member = Expression::new_static_member_expression(
+            SPAN,
+            dispatcher_ident,
+            IdentifierName::new(SPAN, "call", &ctx.ast),
+            false,
+            &ctx.ast,
+        );
 
-        let this_arg = Expression::ThisExpression(ctx.ast.alloc(ThisExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-        }));
-        let state_arg = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident(state),
-            reference_id: Cell::default(),
-        }));
+        let this_arg = Expression::new_this_expression(SPAN, &ctx.ast);
+        let state_arg = Expression::new_identifier(SPAN, state, &ctx.ast);
 
-        let mut array_elems: OxcVec<'a, ArrayExpressionElement<'a>> = ctx.ast.vec();
+        let mut array_elems: OxcVec<'a, ArrayExpressionElement<'a>> = ArenaVec::new_in(&ctx.ast);
         for arg in call_args {
             if let Some(e) = arg.as_expression() {
                 array_elems.push(ArrayExpressionElement::from(
-                    e.clone_in_with_semantic_ids(ctx.ast.allocator),
+                    e.clone_in_with_semantic_ids(ctx.ast.allocator()),
                 ));
             } else {
-                let cloned_arg: Argument<'a> = arg.clone_in_with_semantic_ids(ctx.ast.allocator);
+                let cloned_arg: Argument<'a> = arg.clone_in_with_semantic_ids(ctx.ast.allocator());
                 array_elems.push(cloned_arg.into());
             }
         }
-        let args_array = Expression::ArrayExpression(ctx.ast.alloc(ArrayExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            elements: array_elems,
-        }));
+        let args_array = Expression::new_array_expression(SPAN, array_elems, &ctx.ast);
 
-        let mut new_arguments: OxcVec<'a, Argument<'a>> = ctx.ast.vec();
+        let mut new_arguments: OxcVec<'a, Argument<'a>> = ArenaVec::new_in(&ctx.ast);
         new_arguments.push(Argument::from(this_arg));
         new_arguments.push(Argument::from(state_arg));
         new_arguments.push(Argument::from(args_array));
 
-        Expression::CallExpression(ctx.ast.alloc(CallExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            callee: call_member,
-            arguments: new_arguments,
-            optional: false,
-            type_arguments: None,
-            pure: false,
-        }))
+        Expression::new_call_expression_with_pure(SPAN, call_member, None, new_arguments, false, false, &ctx.ast)
     }
 
     fn try_inline<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
@@ -140,10 +111,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineInliner {
             && self.trampolines.contains_key(id.name.as_str())
         {
             eprintln!("[AST/tramp] remove function {}", id.name.as_str());
-            *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }));
+            *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
             return;
         }
         if let Statement::VariableDeclaration(decl) = stmt {
@@ -159,10 +127,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineInliner {
                 });
             if all_are_trampolines {
                 eprintln!("[AST/tramp] remove var declaration");
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
                 return;
             }
         }
@@ -173,10 +138,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineInliner {
             && self.trampolines.contains_key(target.name.as_str())
         {
             eprintln!("[AST/tramp] remove {} = function()", target.name.as_str());
-            *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }));
+            *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
         }
     }
 }

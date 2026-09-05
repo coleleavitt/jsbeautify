@@ -1,8 +1,6 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{ArrowFunctionExpression, Expression, Statement, VariableDeclaration, VariableDeclarator};
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_ast::ast::{ArrowFunctionBody, ArrowFunctionExpression, Expression, Statement, VariableDeclarator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use std::cell::Cell;
 
 use super::Ctx;
 
@@ -22,13 +20,20 @@ fn extract_zero_arg_arrow_iife<'a, 'b>(expr: &'b Expression<'a>) -> Option<&'b A
     if !arrow.params.items.is_empty() {
         return None;
     }
-    if arrow.expression {
+    if !matches!(arrow.body, ArrowFunctionBody::FunctionBody(_)) {
         return None;
     }
     if arrow.r#async {
         return None;
     }
     Some(arrow)
+}
+
+fn arrow_function_body<'a, 'b>(arrow: &'b ArrowFunctionExpression<'a>) -> &'b oxc_ast::ast::FunctionBody<'a> {
+    let ArrowFunctionBody::FunctionBody(body) = &arrow.body else {
+        unreachable!("expression-bodied arrows are rejected by extract_zero_arg_arrow_iife")
+    };
+    body
 }
 
 pub(super) fn has_iife_candidate(stmt: &Statement<'_>) -> bool {
@@ -58,11 +63,11 @@ pub(super) fn try_unwrap_standalone<'a>(
     let Some(arrow) = extract_zero_arg_arrow_iife(&expr_stmt.expression) else {
         return false;
     };
-    if arrow.body.statements.iter().any(|s| contains_return(s)) {
+    if arrow_function_body(arrow).statements.iter().any(|s| contains_return(s)) {
         return false;
     }
-    for inner_stmt in &arrow.body.statements {
-        new_body.push(inner_stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+    for inner_stmt in &arrow_function_body(arrow).statements {
+        new_body.push(inner_stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
     }
     true
 }
@@ -127,7 +132,7 @@ pub(super) fn try_unwrap_assigned<'a>(
     let Some(arrow) = extract_zero_arg_arrow_iife(init) else {
         return false;
     };
-    let body_stmts = &arrow.body.statements;
+    let body_stmts = &arrow_function_body(arrow).statements;
     if body_stmts.is_empty() {
         return false;
     }
@@ -143,29 +148,22 @@ pub(super) fn try_unwrap_assigned<'a>(
         return false;
     }
     for inner_stmt in &body_stmts[..last_idx] {
-        new_body.push(inner_stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+        new_body.push(inner_stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
     }
-    let new_init = return_expr.clone_in_with_semantic_ids(ctx.ast.allocator);
-    let new_declarator = VariableDeclarator {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        kind: var_decl.kind,
-        id: var_decl.declarations[0]
+    let new_init = return_expr.clone_in_with_semantic_ids(ctx.ast.allocator());
+    let new_declarator = VariableDeclarator::new(
+        SPAN,
+        var_decl.declarations[0]
             .id
-            .clone_in_with_semantic_ids(ctx.ast.allocator),
-        type_annotation: None,
-        init: Some(new_init),
-        definite: false,
-    };
-    let mut new_declarations = ctx.ast.vec();
+            .clone_in_with_semantic_ids(ctx.ast.allocator()),
+        None,
+        Some(new_init),
+        false,
+        ctx,
+    );
+    let mut new_declarations = ArenaVec::new_in(ctx);
     new_declarations.push(new_declarator);
-    let new_var = Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        kind: var_decl.kind,
-        declarations: new_declarations,
-        declare: var_decl.declare,
-    }));
+    let new_var = Statement::new_variable_declaration(SPAN, var_decl.kind, new_declarations, var_decl.declare, ctx);
     new_body.push(new_var);
     true
 }

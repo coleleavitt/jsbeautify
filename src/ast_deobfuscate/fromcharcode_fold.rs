@@ -7,11 +7,10 @@
 //! If ANY argument is not a valid integer in range the call is left intact —
 //! partial folding would change semantics.
 
-use oxc_ast::ast::{Expression, StringLiteral};
+use oxc_allocator::GetAllocator;
+use oxc_ast::ast::Expression;
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -83,13 +82,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for FromCharCodeFolder {
             );
         }
         self.folded += 1;
-        *expr = Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: ctx.ast.str(&decoded),
-            raw: None,
-            lone_surrogates: false,
-        }));
+        *expr = Expression::new_string_literal(SPAN, ctx.ast.allocator().alloc_str(&decoded), None, &ctx.ast);
     }
 }
 

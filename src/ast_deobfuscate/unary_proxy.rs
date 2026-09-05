@@ -10,16 +10,13 @@
 //! calls them hundreds of times — the existing [`OperatorProxyCollector`] only
 //! handles 2-argument binary proxies, so this complements it.
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{
-    BindingPattern, CallExpression, EmptyStatement, Expression, Function, Statement, UnaryExpression, UnaryOperator,
-    VariableDeclarator,
+    BindingPattern, CallExpression, Expression, Function, Statement, UnaryOperator, VariableDeclarator,
 };
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -140,12 +137,12 @@ impl UnaryProxyInliner {
             eprintln!("[AST] Inlining unary proxy: {name} -> {:?}", info.operator);
         }
         self.inlined += 1;
-        Some(Expression::UnaryExpression(ctx.ast.alloc(UnaryExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            operator: info.operator,
-            argument: arg.clone_in_with_semantic_ids(ctx.ast.allocator),
-        })))
+        Some(Expression::new_unary_expression(
+            SPAN,
+            info.operator,
+            arg.clone_in_with_semantic_ids(ctx.allocator()),
+            ctx,
+        ))
     }
 }
 
@@ -164,10 +161,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyInliner {
             && self.proxies.contains_key(id.name.as_str())
         {
             eprintln!("[AST] Removing unary proxy function: {}", id.name.as_str());
-            *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }));
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
             return;
         }
         if let Statement::VariableDeclaration(decl) = stmt {
@@ -191,10 +185,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyInliner {
                     })
                     .collect();
                 eprintln!("[AST] Removing unary proxy var declaration: var {};", names.join(", "));
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
             }
         }
     }

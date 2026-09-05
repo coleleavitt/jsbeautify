@@ -19,12 +19,10 @@
 //! block body, or function body. For-loop variable declarations (e.g.
 //! `for (var i = 0, j = 10; ...)`) are left untouched.
 
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{BlockStatement, FunctionBody, Program, Statement, VariableDeclaration};
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_ast::ast::{BlockStatement, FunctionBody, Program, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -51,7 +49,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
         }
 
         let before = program.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(&ctx.ast);
         for stmt in &program.body {
             if let Statement::VariableDeclaration(var_decl) = stmt
                 && var_decl.declarations.len() > 1
@@ -62,20 +60,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
                     var_decl.declarations.len()
                 );
                 for declarator in &var_decl.declarations {
-                    let mut single_declarations = ctx.ast.vec();
-                    single_declarations.push(declarator.clone_in_with_semantic_ids(ctx.ast.allocator));
-                    new_body.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        kind: var_decl.kind,
-                        declarations: single_declarations,
-                        declare: var_decl.declare,
-                    })));
+                    let mut single_declarations = ArenaVec::new_in(&ctx.ast);
+                    single_declarations.push(declarator.clone_in_with_semantic_ids(ctx.allocator()));
+                    new_body.push(Statement::new_variable_declaration(
+                        SPAN,
+                        var_decl.kind,
+                        single_declarations,
+                        var_decl.declare,
+                        ctx,
+                    ));
                 }
                 self.split_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
         eprintln!("[MULTI_VAR_SPLIT] Program body: {before} -> {after} statements");
@@ -95,7 +93,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
         }
 
         let before = block.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(&ctx.ast);
         for stmt in &block.body {
             if let Statement::VariableDeclaration(var_decl) = stmt
                 && var_decl.declarations.len() > 1
@@ -106,20 +104,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
                     var_decl.declarations.len()
                 );
                 for declarator in &var_decl.declarations {
-                    let mut single_declarations = ctx.ast.vec();
-                    single_declarations.push(declarator.clone_in_with_semantic_ids(ctx.ast.allocator));
-                    new_body.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        kind: var_decl.kind,
-                        declarations: single_declarations,
-                        declare: var_decl.declare,
-                    })));
+                    let mut single_declarations = ArenaVec::new_in(&ctx.ast);
+                    single_declarations.push(declarator.clone_in_with_semantic_ids(ctx.allocator()));
+                    new_body.push(Statement::new_variable_declaration(
+                        SPAN,
+                        var_decl.kind,
+                        single_declarations,
+                        var_decl.declare,
+                        ctx,
+                    ));
                 }
                 self.split_count += 1;
                 continue;
             }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
         eprintln!("[MULTI_VAR_SPLIT] Block body: {before} -> {after} statements");
@@ -139,7 +137,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
         }
 
         let before = body.statements.len();
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = ArenaVec::new_in(&ctx.ast);
         for stmt in &body.statements {
             if let Statement::VariableDeclaration(var_decl) = stmt
                 && var_decl.declarations.len() > 1
@@ -150,20 +148,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
                     var_decl.declarations.len()
                 );
                 for declarator in &var_decl.declarations {
-                    let mut single_declarations = ctx.ast.vec();
-                    single_declarations.push(declarator.clone_in_with_semantic_ids(ctx.ast.allocator));
-                    new_stmts.push(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        kind: var_decl.kind,
-                        declarations: single_declarations,
-                        declare: var_decl.declare,
-                    })));
+                    let mut single_declarations = ArenaVec::new_in(&ctx.ast);
+                    single_declarations.push(declarator.clone_in_with_semantic_ids(ctx.allocator()));
+                    new_stmts.push(Statement::new_variable_declaration(
+                        SPAN,
+                        var_decl.kind,
+                        single_declarations,
+                        var_decl.declare,
+                        ctx,
+                    ));
                 }
                 self.split_count += 1;
                 continue;
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_stmts.len();
         eprintln!("[MULTI_VAR_SPLIT] Function body: {before} -> {after} statements");

@@ -10,6 +10,7 @@
 //!
 //! Only renames params that match Bun's slot pattern (H, $, q, K, _, A, z, Y, f, O, M, w).
 
+use oxc_allocator::GetAllocator;
 use oxc_ast::ast::{BindingPattern, Function, FunctionBody, IdentifierReference};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -106,7 +107,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
             if let Some(param) = func.params.items.get_mut(*idx)
                 && let BindingPattern::BindingIdentifier(b) = &mut param.pattern
             {
-                b.name = ctx.ast.ident(new_name);
+                b.name = ctx.allocator().alloc_str(new_name).into();
                 self.renames.insert(*symbol_id, new_name.clone());
                 self.renamed += 1;
             }
@@ -121,7 +122,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
             return;
         };
         if ident.name.as_str() != new_name {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = ctx.allocator().alloc_str(new_name).into();
         }
     }
 }

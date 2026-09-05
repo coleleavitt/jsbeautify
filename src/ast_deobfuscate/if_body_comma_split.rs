@@ -20,12 +20,10 @@
 //! Only applies when the consequent/alternate is an `ExpressionStatement` containing
 //! a `SequenceExpression` (the comma operator in a non-braced if body).
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{Expression, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -68,26 +66,22 @@ fn is_sequence_expr_stmt(stmt: &Statement<'_>) -> bool {
 
 fn split_to_block<'a>(stmt: &Statement<'a>, ctx: &mut Ctx<'a>) -> Statement<'a> {
     let Statement::ExpressionStatement(es) = stmt else {
-        return stmt.clone_in_with_semantic_ids(ctx.ast.allocator);
+        return stmt.clone_in_with_semantic_ids(ctx.ast.allocator());
     };
     let Expression::SequenceExpression(seq) = &es.expression else {
-        return stmt.clone_in_with_semantic_ids(ctx.ast.allocator);
+        return stmt.clone_in_with_semantic_ids(ctx.ast.allocator());
     };
 
-    let mut body = ctx.ast.vec();
+    let mut body = ArenaVec::new_in(&ctx.ast);
     for expr in &seq.expressions {
-        body.push(
-            ctx.ast
-                .statement_expression(SPAN, expr.clone_in_with_semantic_ids(ctx.ast.allocator)),
-        );
+        body.push(Statement::new_expression_statement(
+            SPAN,
+            expr.clone_in_with_semantic_ids(ctx.ast.allocator()),
+            &ctx.ast,
+        ));
     }
 
-    Statement::BlockStatement(ctx.ast.alloc(oxc_ast::ast::BlockStatement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        body,
-        scope_id: Cell::new(None),
-    }))
+    Statement::new_block_statement(SPAN, body, &ctx.ast)
 }
 
 #[cfg(test)]

@@ -1,12 +1,10 @@
-use oxc_allocator::Vec as OxcVec;
+use oxc_allocator::{GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPattern, Expression, Function, Program, ReturnStatement, Statement, VariableDeclaration,
+    BindingPattern, Expression, Function, IdentifierName, Program, ReturnStatement, Statement, VariableDeclaration,
     VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -34,109 +32,42 @@ impl SelfInitAccessorFlattener {
     }
 
     fn make_init_expr<'a>(kind: InitKind, ctx: &Ctx<'a>) -> Expression<'a> {
-        use oxc_ast::ast::{ArrayExpression, CallExpression, NewExpression, NullLiteral, ObjectExpression};
         match kind {
-            InitKind::EmptyArray => Expression::ArrayExpression(ctx.ast.alloc(ArrayExpression {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                elements: ctx.ast.vec(),
-            })),
-            InitKind::EmptyObject => Expression::ObjectExpression(ctx.ast.alloc(ObjectExpression {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                properties: ctx.ast.vec(),
-            })),
+            InitKind::EmptyArray => Expression::new_array_expression(SPAN, OxcVec::new_in(ctx), ctx),
+            InitKind::EmptyObject => Expression::new_object_expression(SPAN, OxcVec::new_in(ctx), ctx),
             InitKind::NewObject | InitKind::NewArray => {
                 let name = if matches!(kind, InitKind::NewObject) {
                     "Object"
                 } else {
                     "Array"
                 };
-                let callee = Expression::Identifier(ctx.ast.alloc(oxc_ast::ast::IdentifierReference {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident(name),
-                    reference_id: Cell::default(),
-                }));
-                Expression::NewExpression(ctx.ast.alloc(NewExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    callee,
-                    arguments: ctx.ast.vec(),
-                    type_arguments: None,
-                    pure: false,
-                }))
+                let callee = Expression::new_identifier(SPAN, name, ctx);
+                Expression::new_new_expression(SPAN, callee, None, OxcVec::new_in(ctx), ctx)
             }
             InitKind::ObjectCreateNull | InitKind::ObjectCreateProto => {
-                let obj = Expression::Identifier(ctx.ast.alloc(oxc_ast::ast::IdentifierReference {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident("Object"),
-                    reference_id: Cell::default(),
-                }));
-                let property = oxc_ast::ast::IdentifierName {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident("create"),
-                };
-                let callee = Expression::StaticMemberExpression(ctx.ast.alloc(oxc_ast::ast::StaticMemberExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    object: obj,
-                    property,
-                    optional: false,
-                }));
-                let arg_expr = if matches!(kind, InitKind::ObjectCreateNull) {
-                    Expression::NullLiteral(ctx.ast.alloc(NullLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                    }))
+                let object = Expression::new_identifier(SPAN, "Object", ctx);
+                let property = IdentifierName::new(SPAN, "create", ctx);
+                let callee = Expression::new_static_member_expression(SPAN, object, property, false, ctx);
+                let argument = if matches!(kind, InitKind::ObjectCreateNull) {
+                    Expression::new_null_literal(SPAN, ctx)
                 } else {
-                    Expression::ObjectExpression(ctx.ast.alloc(ObjectExpression {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        properties: ctx.ast.vec(),
-                    }))
+                    Expression::new_object_expression(SPAN, OxcVec::new_in(ctx), ctx)
                 };
-                let mut args = ctx.ast.vec();
-                args.push(oxc_ast::ast::Argument::from(arg_expr));
-                Expression::CallExpression(ctx.ast.alloc(CallExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
+                Expression::new_call_expression(
+                    SPAN,
                     callee,
-                    arguments: args,
-                    optional: false,
-                    type_arguments: None,
-                    pure: false,
-                }))
+                    None,
+                    [oxc_ast::ast::Argument::from(argument)],
+                    false,
+                    ctx,
+                )
             }
             InitKind::ArrayIter(method) => {
-                let empty_arr = Expression::ArrayExpression(ctx.ast.alloc(ArrayExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    elements: ctx.ast.vec(),
-                }));
-                let property = oxc_ast::ast::IdentifierName {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident(method),
-                };
-                let callee = Expression::StaticMemberExpression(ctx.ast.alloc(oxc_ast::ast::StaticMemberExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    object: empty_arr,
-                    property,
-                    optional: false,
-                }));
-                Expression::CallExpression(ctx.ast.alloc(CallExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    callee,
-                    arguments: ctx.ast.vec(),
-                    optional: false,
-                    type_arguments: None,
-                    pure: false,
-                }))
+                let object = Expression::new_array_expression(SPAN, OxcVec::new_in(ctx), ctx);
+                let method = ctx.allocator().alloc_str(method);
+                let property = IdentifierName::new(SPAN, method, ctx);
+                let callee = Expression::new_static_member_expression(SPAN, object, property, false, ctx);
+                Expression::new_call_expression(SPAN, callee, None, OxcVec::new_in(ctx), false, ctx)
             }
         }
     }
@@ -146,19 +77,10 @@ impl SelfInitAccessorFlattener {
         let cache_var = format!("__{name}_cache");
 
         let body = func.body.as_mut()?;
-        let mut new_stmts = ctx.ast.vec();
-        let return_stmt = Statement::ReturnStatement(ctx.ast.alloc(ReturnStatement {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            argument: Some(Expression::Identifier(ctx.ast.alloc(
-                oxc_ast::ast::IdentifierReference {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident(&cache_var),
-                    reference_id: Cell::default(),
-                },
-            ))),
-        }));
+        let mut new_stmts = OxcVec::new_in(ctx);
+        let cache_name = ctx.allocator().alloc_str(&cache_var);
+        let argument = Expression::new_identifier(SPAN, cache_name, ctx);
+        let return_stmt = Statement::ReturnStatement(ReturnStatement::boxed(SPAN, Some(argument), ctx));
         new_stmts.push(return_stmt);
         body.statements = new_stmts;
         Some((cache_var, kind))
@@ -168,34 +90,14 @@ impl SelfInitAccessorFlattener {
         if self.cache_vars_to_hoist.is_empty() {
             return;
         }
-        let mut new_decls = ctx.ast.vec();
+        let mut new_decls = OxcVec::new_in(ctx);
         for (name, kind) in self.cache_vars_to_hoist.drain(..) {
-            let id = BindingIdentifier {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident(&name),
-                symbol_id: Cell::default(),
-            };
+            let name = ctx.allocator().alloc_str(&name);
+            let id = BindingPattern::new_binding_identifier(SPAN, name, ctx);
             let init = Self::make_init_expr(kind, ctx);
-            let declarator = VariableDeclarator {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                kind: VariableDeclarationKind::Var,
-                id: BindingPattern::BindingIdentifier(ctx.ast.alloc(id)),
-                type_annotation: None,
-                init: Some(init),
-                definite: false,
-            };
-            let mut declarations = ctx.ast.vec();
-            declarations.push(declarator);
-            let decl = Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                kind: VariableDeclarationKind::Var,
-                declarations,
-                declare: false,
-            }));
-            new_decls.push(decl);
+            let declarator = VariableDeclarator::new(SPAN, id, None, Some(init), false, ctx);
+            let declaration = VariableDeclaration::boxed(SPAN, VariableDeclarationKind::Var, [declarator], false, ctx);
+            new_decls.push(Statement::VariableDeclaration(declaration));
         }
         for existing in statements.drain(..) {
             new_decls.push(existing);

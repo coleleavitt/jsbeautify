@@ -1,8 +1,6 @@
-use oxc_ast::ast::{Expression, IdentifierReference, UnaryOperator};
+use oxc_ast::ast::{Expression, UnaryOperator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -28,12 +26,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for VoidReplacer {
         }
         eprintln!("[AST] Converting void <pure-expr> -> undefined");
         self.changed = true;
-        *expr = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident("undefined"),
-            reference_id: Cell::default(),
-        }));
+        *expr = Expression::new_identifier(SPAN, "undefined", ctx);
     }
 }
 
