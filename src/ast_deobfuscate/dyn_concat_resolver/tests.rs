@@ -91,9 +91,9 @@ fn escapes_template_raw_when_inlining() {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, &out, SourceType::mjs()).parse();
     assert!(
-        parsed.errors.is_empty(),
+        parsed.diagnostics.is_empty(),
         "output must parse: {out:?} / {:?}",
-        parsed.errors
+        parsed.diagnostics
     );
     assert!(out.contains("\\`"), "backtick must be escaped in template raw: {out}");
     assert!(

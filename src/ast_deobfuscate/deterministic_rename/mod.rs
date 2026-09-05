@@ -3,7 +3,7 @@
 //! Converts minified variable names to canonical slot-based names (s0, s1, s2, ...)
 //! that are stable across different Bun versions regardless of alphabet ordering.
 
-use oxc_ast::ast::{BindingIdentifier, Function, IdentifierReference};
+use oxc_ast::ast::{BindingIdentifier, Function, Ident, IdentifierReference};
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -128,7 +128,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeterministicRenamer {
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
         let old_name = ident.name.as_str();
         if let Some(new_name) = self.try_rename(old_name) {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, ctx);
             self.changed = true;
             self.renamed_count += 1;
         }
@@ -137,7 +137,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeterministicRenamer {
     fn enter_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
         let old_name = ident.name.as_str();
         if let Some(new_name) = self.try_rename(old_name) {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, ctx);
             self.changed = true;
             self.renamed_count += 1;
         }
@@ -147,7 +147,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeterministicRenamer {
         if let Some(ident) = &mut func.id {
             let old_name = ident.name.as_str();
             if let Some(new_name) = self.try_rename(old_name) {
-                ident.name = ctx.ast.ident(new_name);
+                ident.name = Ident::from_str_in(new_name, ctx);
                 self.changed = true;
                 self.renamed_count += 1;
             }

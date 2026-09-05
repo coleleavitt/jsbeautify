@@ -1,9 +1,7 @@
-use oxc_ast::ast::{Expression, StringLiteral};
+use oxc_ast::ast::{Expression, Str};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -70,12 +68,6 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerRewriter {
         }
         self.inlined += 1;
 
-        *expr = Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: ctx.ast.str(value),
-            raw: None,
-            lone_surrogates: false,
-        }));
+        *expr = Expression::new_string_literal(SPAN, Str::from_str_in(value.as_str(), ctx), None, ctx);
     }
 }

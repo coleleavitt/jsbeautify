@@ -4,7 +4,7 @@
 //! These are left behind by other deobfuscation passes that replace removed
 //! statements (proxy functions, dead code, etc.) with `EmptyStatement`.
 
-use oxc_allocator::CloneIn;
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{BlockStatement, FunctionBody, Program, Statement};
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -22,12 +22,12 @@ counter_pass!(EmptyStatementCleanup, removed_count, removed_count);
 impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         let before = program.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(ctx);
         for stmt in &program.body {
             if matches!(stmt, Statement::EmptyStatement(_)) {
                 self.removed_count += 1;
             } else {
-                new_body.push(stmt.clone_in_with_semantic_ids(ctx));
+                new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
             }
         }
         let after = new_body.len();
@@ -49,12 +49,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
         }
 
         let before = block.body.len();
-        let mut new_body = ctx.ast.vec();
+        let mut new_body = ArenaVec::new_in(ctx);
         for stmt in &block.body {
             if matches!(stmt, Statement::EmptyStatement(_)) {
                 self.removed_count += 1;
             } else {
-                new_body.push(stmt.clone_in_with_semantic_ids(ctx));
+                new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
             }
         }
         let after = new_body.len();
@@ -77,12 +77,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
         }
 
         let before = body.statements.len();
-        let mut new_stmts = ctx.ast.vec();
+        let mut new_stmts = ArenaVec::new_in(ctx);
         for stmt in &body.statements {
             if matches!(stmt, Statement::EmptyStatement(_)) {
                 self.removed_count += 1;
             } else {
-                new_stmts.push(stmt.clone_in_with_semantic_ids(ctx));
+                new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
             }
         }
         let after = new_stmts.len();

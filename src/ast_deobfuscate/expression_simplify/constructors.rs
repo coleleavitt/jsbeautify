@@ -1,4 +1,4 @@
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::Expression;
 use oxc_span::SPAN;
 use oxc_syntax::number::NumberBase;
@@ -22,11 +22,11 @@ impl ExpressionSimplifier {
     }
 
     pub(super) fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx)
+        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 
     pub(super) fn make_boolean<'a>(val: bool, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::new_boolean_literal(SPAN, val, ctx)
+        Expression::new_boolean_literal(SPAN, val, &ctx.ast)
     }
 
     pub(super) fn make_number<'a>(val: i64, ctx: &mut Ctx<'a>) -> Expression<'a> {

@@ -1,8 +1,6 @@
-use oxc_ast::ast::{BooleanLiteral, Expression, IdentifierReference, NullLiteral, NumericLiteral, StringLiteral};
+use oxc_ast::ast::{Expression, Ident, Str};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::number::NumberBase;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::ReturnValue;
 
@@ -14,35 +12,17 @@ impl DispatcherInliner {
         ctx: &mut Ctx<'a>,
     ) -> Expression<'a> {
         match return_value {
-            ReturnValue::Number(n) => Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: *n,
-                raw: None,
-                base: NumberBase::Decimal,
-            })),
-            ReturnValue::String(s) => Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: ctx.ast.str(s.as_str()),
-                raw: None,
-                lone_surrogates: false,
-            })),
-            ReturnValue::Bool(b) => Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: *b,
-            })),
-            ReturnValue::Null => Expression::NullLiteral(ctx.ast.alloc(NullLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            })),
-            ReturnValue::Identifier(name) => Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident(name.as_str()),
-                reference_id: None.into(),
-            })),
+            ReturnValue::Number(n) => Expression::new_numeric_literal(SPAN, *n, None, NumberBase::Decimal, ctx),
+            ReturnValue::String(s) => {
+                Expression::new_string_literal(SPAN, Str::from_str_in(s.as_str(), ctx), None, ctx)
+            }
+            ReturnValue::Bool(b) => Expression::new_boolean_literal(SPAN, *b, ctx),
+            ReturnValue::Null => Expression::new_null_literal(SPAN, ctx),
+            ReturnValue::Identifier(name) => ctx.create_unbound_ident_expr(
+                SPAN,
+                Ident::from_str_in(name.as_str(), &ctx.ast),
+                oxc_syntax::reference::ReferenceFlags::Read,
+            ),
         }
     }
 }

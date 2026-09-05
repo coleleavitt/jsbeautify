@@ -1,7 +1,5 @@
-use oxc_ast::ast::{Argument, CallExpression, Expression, StringLiteral};
+use oxc_ast::ast::{Argument, CallExpression, Expression, Str};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::OffsetOperation;
 
@@ -98,12 +96,11 @@ impl DecoderInliner {
             func_name, arg_value, decoded_value, decoder.decoder_type
         );
 
-        Some(Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: ctx.ast.str(&decoded_value),
-            raw: None,
-            lone_surrogates: false,
-        })))
+        Some(Expression::new_string_literal(
+            SPAN,
+            Str::from_str_in(&decoded_value, ctx),
+            None,
+            ctx,
+        ))
     }
 }

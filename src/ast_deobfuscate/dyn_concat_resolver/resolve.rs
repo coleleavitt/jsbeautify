@@ -1,4 +1,4 @@
-use oxc_allocator::CloneIn;
+use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{BinaryOperator, Expression, TemplateElement, TemplateLiteral};
 
 use super::literal::{make_string_literal, make_template_element};
@@ -139,7 +139,7 @@ pub(super) fn substitute_in_template<'a>(
                 continue;
             }
             new_quasis.push(make_template_element(&pending_text, false, ctx));
-            rebuilt_expressions.push(interp.clone_in_with_semantic_ids(ctx.ast.allocator));
+            rebuilt_expressions.push(interp.clone_in_with_semantic_ids(ctx.allocator()));
             pending_text.clear();
         }
     }
@@ -147,8 +147,8 @@ pub(super) fn substitute_in_template<'a>(
     new_quasis.push(make_template_element(&pending_text, true, ctx));
 
     if count > 0 {
-        tmpl.quasis = ctx.ast.vec_from_iter(new_quasis);
-        tmpl.expressions = ctx.ast.vec_from_iter(rebuilt_expressions);
+        tmpl.quasis = ArenaVec::from_iter_in(new_quasis, ctx);
+        tmpl.expressions = ArenaVec::from_iter_in(rebuilt_expressions, ctx);
     }
     count
 }

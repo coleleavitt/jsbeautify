@@ -16,10 +16,9 @@ pub(super) fn checkpoint_error_context(label: &str, code: &str, errors: &[OxcDia
     };
     let offset: usize = first
         .labels
-        .as_ref()
-        .and_then(|labels| labels.first())
+        .first()
         .map_or(0, oxc_diagnostics::LabeledSpan::offset)
-        .min(code.len());
+        .min(code.len() as u32) as usize;
 
     // Snap the window to char boundaries (offset may land mid-token but should
     // be on a boundary; the ±window edges might not be).
@@ -48,24 +47,24 @@ pub(super) fn checkpoint_error_context(label: &str, code: &str, errors: &[OxcDia
 pub(super) fn log_output_validity(label: &str, code: &str, source_type: SourceType) -> bool {
     let allocator = Allocator::default();
     let parse_result = Parser::new(&allocator, code, source_type).parse();
-    if !parse_result.errors.is_empty() {
+    if !parse_result.diagnostics.is_empty() {
         eprintln!(
             "[DEOBFUSCATE] {label}: GENERATED OUTPUT IS INVALID JAVASCRIPT ({} parse error(s))",
-            parse_result.errors.len()
+            parse_result.diagnostics.len()
         );
-        for (idx, error) in parse_result.errors.iter().enumerate().take(5) {
+        for (idx, error) in parse_result.diagnostics.iter().enumerate().take(5) {
             eprintln!("[DEOBFUSCATE] {label}: parse error {idx}: {error:?}");
         }
         return false;
     }
 
     let semantic_result = SemanticBuilder::new().build(&parse_result.program);
-    if !semantic_result.errors.is_empty() {
+    if !semantic_result.diagnostics.is_empty() {
         eprintln!(
             "[DEOBFUSCATE] {label}: GENERATED OUTPUT HAS {} SEMANTIC ERROR(S)",
-            semantic_result.errors.len()
+            semantic_result.diagnostics.len()
         );
-        for (idx, error) in semantic_result.errors.iter().enumerate().take(5) {
+        for (idx, error) in semantic_result.diagnostics.iter().enumerate().take(5) {
             eprintln!("[DEOBFUSCATE] {label}: semantic error {idx}: {error:?}");
         }
         return true;
@@ -127,16 +126,15 @@ mod tests {
         let bad = "const a = 1;\nclass C { @@@ }\nconst b = 2;\n";
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, bad, SourceType::mjs()).parse();
-        assert!(!parsed.errors.is_empty(), "sample should fail to parse");
+        assert!(!parsed.diagnostics.is_empty(), "sample should fail to parse");
 
-        let expected = parsed.errors[0]
+        let expected = parsed.diagnostics[0]
             .labels
-            .as_ref()
-            .and_then(|l| l.first())
+            .first()
             .map(oxc_diagnostics::LabeledSpan::offset)
             .expect("parse error should carry a labelled span");
 
-        let ctx = checkpoint_error_context("TEST", bad, &parsed.errors);
+        let ctx = checkpoint_error_context("TEST", bad, &parsed.diagnostics);
         assert!(
             ctx.contains(&format!("error at byte {expected}")),
             "context should report the diagnostic's real offset {expected}, got:\n{ctx}"
@@ -155,8 +153,8 @@ mod tests {
         let allocator = Allocator::default();
         // Produce at least one diagnostic, then format against empty code.
         let parsed = Parser::new(&allocator, "(", SourceType::mjs()).parse();
-        assert!(!parsed.errors.is_empty());
-        let ctx = checkpoint_error_context("TEST", "", &parsed.errors);
+        assert!(!parsed.diagnostics.is_empty());
+        let ctx = checkpoint_error_context("TEST", "", &parsed.diagnostics);
         assert!(
             ctx.contains("output len=0"),
             "should clamp offset/window to empty code: {ctx}"
