@@ -1,7 +1,7 @@
 use super::{
-    Allocator, AstDeobfuscator, DeadVarCollector, DeadVarEliminator, DeobfuscateState, DispatchInlinerCollector,
-    DispatchInlinerRewriter, DoWhileSwitchCleaner, DoWhileSwitchDetector, FunctionCollector, FunctionInliner,
-    FxHashMap, Program, ReusableTraverseCtx, SemanticBuilder, TraceSpan, collect_constants, mem_ck,
+    Allocator, AstDeobfuscator, DeobfuscateState, DispatchInlinerCollector, DispatchInlinerRewriter,
+    DoWhileSwitchCleaner, DoWhileSwitchDetector, FunctionCollector, FunctionInliner, FxHashMap, Program,
+    ReusableTraverseCtx, SemanticBuilder, TraceSpan, collect_constants, eliminate_dead_vars, mem_ck,
     resolve_compound_transitions, traverse_mut_with_ctx,
 };
 
@@ -107,9 +107,9 @@ impl AstDeobfuscator {
         let semantic_result = SemanticBuilder::new().build(program);
         eprintln!(
             "[DEOBFUSCATE] Phase 11: SemanticBuilder completed, errors: {}",
-            semantic_result.errors.len()
+            semantic_result.diagnostics.len()
         );
-        for (i, err) in semantic_result.errors.iter().enumerate().take(5) {
+        for (i, err) in semantic_result.diagnostics.iter().enumerate().take(5) {
             eprintln!("[DEOBFUSCATE] Phase 11: Semantic error {i}: {err:?}");
         }
         let scoping = semantic_result.semantic.into_scoping();
@@ -142,20 +142,12 @@ impl AstDeobfuscator {
 
     fn run_dead_var_sweep<'a>(allocator: &'a Allocator, program: &mut Program<'a>, phase: &str, label: &str) {
         eprintln!("[DEOBFUSCATE] Phase {phase}: {label}");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut collector = DeadVarCollector::new();
-        traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-            traverse_mut_with_ctx(&mut eliminator, program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase {phase}: Eliminated {} dead variables",
-                dead_vars.len()
-            );
-        }
+        let result = eliminate_dead_vars(allocator, program);
+        eprintln!(
+            "[DEOBFUSCATE] Phase {phase}: Removed {} dead declarators ({} candidate symbols, rejected={})",
+            result.removed_declarators(),
+            result.candidate_symbols(),
+            result.was_rejected()
+        );
     }
 }

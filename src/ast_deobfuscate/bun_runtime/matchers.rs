@@ -78,7 +78,13 @@ pub(super) fn is_toesm_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>)
     }
     // Heuristic: body contains a reference to a getPrototypeOf-aliased function call,
     // OR contains an `__esModule` string check.
-    body_contains_esmodule_check(&arrow.body.as_function_body().expect("block body checked above").statements)
+    body_contains_esmodule_check(
+        &arrow
+            .body
+            .as_function_body()
+            .expect("block body checked above")
+            .statements,
+    )
 }
 
 /// `__toCommonJS`: `from => { … __esModule: true … }`, 1 param.
@@ -86,7 +92,13 @@ pub(super) fn is_tocommonjs_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression
     if arrow.params.items.len() != 1 || arrow.body.is_expression() {
         return false;
     }
-    body_contains_esmodule_string(&arrow.body.as_function_body().expect("block body checked above").statements)
+    body_contains_esmodule_string(
+        &arrow
+            .body
+            .as_function_body()
+            .expect("block body checked above")
+            .statements,
+    )
 }
 
 /// `__name` arrow form: `(target, name) => { Object.defineProperty(target, "name", …); return target; }`
@@ -94,7 +106,13 @@ pub(super) fn is_name_helper_arrow(arrow: &oxc_ast::ast::ArrowFunctionExpression
     if arrow.params.items.len() != 2 || arrow.body.is_expression() {
         return false;
     }
-    body_calls_define_property_with_name(&arrow.body.as_function_body().expect("block body checked above").statements)
+    body_calls_define_property_with_name(
+        &arrow
+            .body
+            .as_function_body()
+            .expect("block body checked above")
+            .statements,
+    )
 }
 
 /// Unwraps the "single `ExpressionStatement` returning an arrow whose body is a single

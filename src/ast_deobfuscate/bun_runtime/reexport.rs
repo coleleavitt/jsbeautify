@@ -14,9 +14,12 @@ use super::types::{BunHelper, BunHelperMap};
 /// first statement is `VarDecl` with a `CallExpression` init, has for-of,
 /// does NOT contain `__esModule` (which would indicate __toESM instead).
 pub(super) fn is_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
-    if !(3..=4).contains(&arrow.params.items.len()) || arrow.expression {
+    if !(3..=4).contains(&arrow.params.items.len()) || arrow.body.is_expression() {
         return false;
     }
+    let Some(body) = arrow.body.as_function_body() else {
+        return false;
+    };
     // All params must be simple identifiers (not destructured)
     for p in &arrow.params.items {
         if !matches!(p.pattern, BindingPattern::BindingIdentifier(_)) {
@@ -30,22 +33,25 @@ pub(super) fn is_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<
     let Some(keys_name) = reexport_keys_binding(arrow, source_param, helpers) else {
         return false;
     };
-    let has_for_of_over_keys =
-        arrow.body.statements.iter().any(
-            |stmt| matches!(stmt, Statement::ForOfStatement(for_of) if expression_is_ident(&for_of.right, keys_name)),
-        );
+    let has_for_of_over_keys = body
+        .statements
+        .iter()
+        .any(|stmt| matches!(stmt, Statement::ForOfStatement(for_of) if expression_is_ident(&for_of.right, keys_name)));
 
     // Must NOT contain __esModule (that's __toESM)
-    has_for_of_over_keys && !body_contains_esmodule_check(&arrow.body.statements)
+    has_for_of_over_keys && !body_contains_esmodule_check(&body.statements)
 }
 
 /// `__reExport`: Bun's 3-param export-star helper. It skips the `"default"`
 /// key and conditionally copies descriptors into a second target before
 /// returning the third parameter.
 pub(super) fn is_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
-    if arrow.params.items.len() != 3 || arrow.expression {
+    if arrow.params.items.len() != 3 || arrow.body.is_expression() {
         return false;
     }
+    let Some(body) = arrow.body.as_function_body() else {
+        return false;
+    };
     if !arrow
         .params
         .items
@@ -69,7 +75,7 @@ pub(super) fn is_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'
     let Some(keys_name) = reexport_keys_binding(arrow, source_param, helpers) else {
         return false;
     };
-    let Some(for_of) = arrow.body.statements.iter().find_map(|stmt| match stmt {
+    let Some(for_of) = body.statements.iter().find_map(|stmt| match stmt {
         Statement::ForOfStatement(for_of) if expression_is_ident(&for_of.right, keys_name) => Some(for_of.as_ref()),
         _ => None,
     }) else {
@@ -79,8 +85,7 @@ pub(super) fn is_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'
         return false;
     };
 
-    let returns_third_param = arrow
-        .body
+    let returns_third_param = body
         .statements
         .iter()
         .any(|stmt| stmt_returns_ident(stmt, return_param));
@@ -88,10 +93,7 @@ pub(super) fn is_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'
     let has_descriptor_copy =
         stmt_has_reexport_define_property_copy(&for_of.body, target_param, source_param, loop_var, helpers);
 
-    returns_third_param
-        && has_default_skip
-        && has_descriptor_copy
-        && !body_contains_esmodule_check(&arrow.body.statements)
+    returns_third_param && has_default_skip && has_descriptor_copy && !body_contains_esmodule_check(&body.statements)
 }
 
 fn param_name<'a>(pattern: &'a BindingPattern<'a>) -> Option<&'a str> {
@@ -106,7 +108,7 @@ fn reexport_keys_binding<'a>(
     source_param: &str,
     helpers: &BunHelperMap,
 ) -> Option<&'a str> {
-    let Statement::VariableDeclaration(var_decl) = arrow.body.statements.first()? else {
+    let Statement::VariableDeclaration(var_decl) = arrow.body.as_function_body()?.statements.first()? else {
         return None;
     };
     let decl = var_decl.declarations.first()?;

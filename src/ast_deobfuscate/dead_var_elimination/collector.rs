@@ -1,21 +1,21 @@
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentTarget, BindingPattern, ExportDefaultDeclaration, ExportDefaultDeclarationKind,
-    ExportNamedDeclaration, FormalParameter, IdentifierReference, ModuleExportName, SimpleAssignmentTarget,
-    UpdateExpression, VariableDeclarator,
+    BindingPattern, CallExpression, ExportDefaultDeclaration, ExportDefaultDeclarationKind, ExportNamedDeclaration,
+    Expression, IdentifierReference, ModuleExportName, VariableDeclarator,
 };
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::types::VarInfo;
+use super::types::{UnresolvedReference, VarInfo};
 
 pub struct DeadVarCollector {
-    variables: FxHashMap<String, VarInfo>,
-    in_lhs_of_assignment: bool,
-    in_declaration: bool,
-    current_declaration_name: Option<String>,
+    variables: FxHashMap<SymbolId, VarInfo>,
+    unresolved_references: FxHashSet<UnresolvedReference>,
+    has_direct_eval_syntax: bool,
+    resolution_failed: bool,
 }
 
 impl DeadVarCollector {
@@ -23,44 +23,63 @@ impl DeadVarCollector {
     pub fn new() -> Self {
         Self {
             variables: FxHashMap::default(),
-            in_lhs_of_assignment: false,
-            in_declaration: false,
-            current_declaration_name: None,
+            unresolved_references: FxHashSet::default(),
+            has_direct_eval_syntax: false,
+            resolution_failed: false,
         }
     }
 
     #[must_use]
-    pub fn get_dead_vars(&self) -> FxHashSet<String> {
+    pub fn get_dead_vars(&self) -> FxHashSet<SymbolId> {
+        if self.resolution_failed || self.has_direct_eval_syntax {
+            return FxHashSet::default();
+        }
+
         self.variables
             .iter()
             .filter(|(_, info)| info.is_dead())
-            .map(|(name, _)| name.clone())
+            .map(|(&symbol_id, _)| symbol_id)
             .collect()
     }
 
-    fn record_declaration(&mut self, name: &str) {
-        let entry = self.variables.entry(name.to_string()).or_insert_with(VarInfo::new);
+    pub(super) const fn unresolved_references(&self) -> &FxHashSet<UnresolvedReference> {
+        &self.unresolved_references
+    }
+
+    pub(super) const fn resolution_failed(&self) -> bool {
+        self.resolution_failed
+    }
+
+    fn record_declaration(&mut self, symbol_id: SymbolId) {
+        let entry = self.variables.entry(symbol_id).or_insert_with(VarInfo::new);
         entry.declaration_count += 1;
     }
 
-    fn record_read(&mut self, name: &str) {
-        let entry = self.variables.entry(name.to_string()).or_insert_with(VarInfo::new);
+    fn record_read(&mut self, symbol_id: SymbolId) {
+        let entry = self.variables.entry(symbol_id).or_insert_with(VarInfo::new);
         entry.read_count += 1;
     }
 
-    fn record_write(&mut self, name: &str) {
-        let entry = self.variables.entry(name.to_string()).or_insert_with(VarInfo::new);
+    fn record_write(&mut self, symbol_id: SymbolId) {
+        let entry = self.variables.entry(symbol_id).or_insert_with(VarInfo::new);
         entry.write_count += 1;
     }
 
-    fn record_function_param(&mut self, name: &str) {
-        let entry = self.variables.entry(name.to_string()).or_insert_with(VarInfo::new);
-        entry.is_function_param = true;
+    fn record_export(&mut self, symbol_id: SymbolId) {
+        let entry = self.variables.entry(symbol_id).or_insert_with(VarInfo::new);
+        entry.is_exported = true;
     }
 
-    fn record_export(&mut self, name: &str) {
-        let entry = self.variables.entry(name.to_string()).or_insert_with(VarInfo::new);
-        entry.is_exported = true;
+    fn record_export_reference(&mut self, ident: &IdentifierReference<'_>, ctx: &Ctx<'_>) {
+        let Some(reference_id) = ident.reference_id.get() else {
+            self.resolution_failed = true;
+            return;
+        };
+        let Some(symbol_id) = ctx.scoping().get_reference(reference_id).symbol_id() else {
+            self.resolution_failed = true;
+            return;
+        };
+        self.record_export(symbol_id);
     }
 }
 
@@ -71,95 +90,63 @@ impl Default for DeadVarCollector {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
+    fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, _ctx: &mut Ctx<'a>) {
+        if matches!(&call.callee, Expression::Identifier(id) if id.name == "eval") {
+            self.has_direct_eval_syntax = true;
+        }
+    }
+
     fn enter_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
-        if let BindingPattern::BindingIdentifier(ident) = &decl.id {
-            let name = ident.name.as_str();
-            self.record_declaration(name);
-            self.current_declaration_name = Some(name.to_string());
-            self.in_declaration = true;
-            if crate::ast_deobfuscate::ast_trace_enabled() {
-                eprintln!("[AST] Found declaration: {name}");
-            }
-        }
-    }
-
-    fn exit_variable_declarator(&mut self, _decl: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
-        self.in_declaration = false;
-        self.current_declaration_name = None;
-    }
-
-    fn enter_formal_parameter(&mut self, param: &mut FormalParameter<'a>, _ctx: &mut Ctx<'a>) {
-        if let BindingPattern::BindingIdentifier(ident) = &param.pattern {
-            let name = ident.name.as_str();
-            self.record_function_param(name);
-            if crate::ast_deobfuscate::ast_trace_enabled() {
-                eprintln!("[AST] Found function param: {name}");
-            }
-        }
-    }
-
-    fn enter_assignment_expression(&mut self, _expr: &mut AssignmentExpression<'a>, _ctx: &mut Ctx<'a>) {
-        self.in_lhs_of_assignment = true;
-    }
-
-    fn exit_assignment_expression(&mut self, expr: &mut AssignmentExpression<'a>, _ctx: &mut Ctx<'a>) {
-        self.in_lhs_of_assignment = false;
-
-        if let AssignmentTarget::AssignmentTargetIdentifier(ident) = &expr.left {
-            let name = ident.name.as_str();
-            self.record_write(name);
-        }
-    }
-
-    fn enter_update_expression(&mut self, expr: &mut UpdateExpression<'a>, _ctx: &mut Ctx<'a>) {
-        if let SimpleAssignmentTarget::AssignmentTargetIdentifier(ident) = &expr.argument {
-            let name = ident.name.as_str();
-            self.record_read(name);
-            self.record_write(name);
-        }
-    }
-
-    fn enter_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, _ctx: &mut Ctx<'a>) {
-        let name = ident.name.as_str();
-
-        if self.in_declaration
-            && let Some(ref decl_name) = self.current_declaration_name
-            && name == decl_name
-        {
+        let BindingPattern::BindingIdentifier(ident) = &decl.id else {
             return;
-        }
+        };
+        let Some(symbol_id) = ident.symbol_id.get() else {
+            self.resolution_failed = true;
+            return;
+        };
 
-        if !self.in_lhs_of_assignment {
-            self.record_read(name);
+        self.record_declaration(symbol_id);
+        if crate::ast_deobfuscate::ast_trace_enabled() {
+            eprintln!("[AST] Found declaration: {}", ident.name);
         }
     }
 
-    fn enter_export_named_declaration(&mut self, decl: &mut ExportNamedDeclaration<'a>, _ctx: &mut Ctx<'a>) {
+    fn enter_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
+        let Some(reference_id) = ident.reference_id.get() else {
+            self.resolution_failed = true;
+            return;
+        };
+        let reference = ctx.scoping().get_reference(reference_id);
+        let Some(symbol_id) = reference.symbol_id() else {
+            self.unresolved_references.insert(UnresolvedReference {
+                name: ident.name.to_string(),
+                span_start: ident.span.start,
+                span_end: ident.span.end,
+            });
+            return;
+        };
+
+        if reference.is_read() {
+            self.record_read(symbol_id);
+        }
+        if reference.is_write() {
+            self.record_write(symbol_id);
+        }
+    }
+
+    fn enter_export_named_declaration(&mut self, decl: &mut ExportNamedDeclaration<'a>, ctx: &mut Ctx<'a>) {
         for specifier in &decl.specifiers {
-            if let ModuleExportName::IdentifierName(ident) = &specifier.local {
-                self.record_export(ident.name.as_str());
-            } else if let ModuleExportName::IdentifierReference(ident) = &specifier.local {
-                self.record_export(ident.name.as_str());
+            match &specifier.local {
+                ModuleExportName::IdentifierReference(ident) => self.record_export_reference(ident, ctx),
+                ModuleExportName::IdentifierName(_) => self.resolution_failed = true,
+                ModuleExportName::StringLiteral(_) => {}
             }
         }
     }
 
-    fn enter_export_default_declaration(&mut self, decl: &mut ExportDefaultDeclaration<'a>, _ctx: &mut Ctx<'a>) {
-        match &decl.declaration {
-            ExportDefaultDeclarationKind::Identifier(ident) => {
-                self.record_export(ident.name.as_str());
-            }
-            ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
-                if let Some(ref id) = func.id {
-                    self.record_export(id.name.as_str());
-                }
-            }
-            ExportDefaultDeclarationKind::ClassDeclaration(class) => {
-                if let Some(ref id) = class.id {
-                    self.record_export(id.name.as_str());
-                }
-            }
-            _ => {}
+    fn enter_export_default_declaration(&mut self, decl: &mut ExportDefaultDeclaration<'a>, ctx: &mut Ctx<'a>) {
+        if let ExportDefaultDeclarationKind::Identifier(ident) = &decl.declaration {
+            self.record_export_reference(ident, ctx);
         }
     }
 }

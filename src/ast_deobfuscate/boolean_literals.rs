@@ -1,8 +1,6 @@
-use oxc_ast::ast::{BooleanLiteral, Expression, UnaryOperator};
+use oxc_ast::ast::{Expression, UnaryOperator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 

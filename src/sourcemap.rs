@@ -121,7 +121,7 @@ mod tests {
     fn test_add_simple_mapping() {
         let mut map = SourceMap::new("input.js");
         map.add_simple_mapping(1, 1);
-        assert!(!map.mappings.is_empty());
+        assert_ne!(map.mappings, "");
     }
 
     #[test]
@@ -140,6 +140,6 @@ mod tests {
         assert_eq!(map.sources.len(), 1);
         assert_eq!(map.sources[0], "LoginView");
         assert_eq!(map.file, Some("LoginView.chunk.363842.js".to_string()));
-        assert!(!map.mappings.is_empty());
+        assert_ne!(map.mappings, "");
     }
 }

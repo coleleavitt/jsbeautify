@@ -6,7 +6,11 @@ pub(super) fn run_split_sources(bundle: &str, bundle_path: Option<&Path>, out_di
     let dir = PathBuf::from(out_dir);
     let written = js_beautify_rs::sourcemap::reconstruct_bundle_tree(bundle, bundle_path, &dir)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    eprintln!("Split {} source file(s) into {}/reversed/", written.len(), dir.display());
+    eprintln!(
+        "Split {} source file(s) into {}/reversed/",
+        written.len(),
+        dir.display()
+    );
     for w in &written {
         println!("{w}");
     }

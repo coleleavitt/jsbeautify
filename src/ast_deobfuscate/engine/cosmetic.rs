@@ -1,7 +1,7 @@
 use super::{
-    Allocator, AstDeobfuscator, BunHelperMap, Codegen, DeadVarCollector, DeadVarEliminator, DeobfuscateState,
-    EsbuildHelperCollector, IfBodyCommaSplitter, Parser, Result, ReturnSequenceSplitter, ReusableTraverseCtx,
-    SemanticBuilder, SourceType, checkpoint_error_context, mem_ck, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, BunHelperMap, Codegen, DeobfuscateState, EsbuildHelperCollector, IfBodyCommaSplitter,
+    Parser, Result, ReturnSequenceSplitter, ReusableTraverseCtx, SemanticBuilder, SourceType, checkpoint_error_context,
+    eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
 };
 
 impl AstDeobfuscator {
@@ -9,18 +9,18 @@ impl AstDeobfuscator {
         let intermediate2 = {
             let allocator = Allocator::default();
             let parse_result = Parser::new(&allocator, intermediate, source_type).parse();
-            if !parse_result.errors.is_empty() {
+            if !parse_result.diagnostics.is_empty() {
                 eprintln!(
                     "[DEOBFUSCATE] Phase 12.6 re-parse FAILED ({} error(s)) — dumping context around the first error:",
-                    parse_result.errors.len()
+                    parse_result.diagnostics.len()
                 );
                 eprintln!(
                     "{}",
-                    checkpoint_error_context("Phase 12.6", intermediate, &parse_result.errors)
+                    checkpoint_error_context("Phase 12.6", intermediate, &parse_result.diagnostics)
                 );
                 return Err(crate::BeautifyError::BeautificationFailed(format!(
                     "Phase 12.6 checkpoint re-parse failed: {:?}",
-                    parse_result.errors.first()
+                    parse_result.diagnostics.first()
                 )));
             }
             let mut program = parse_result.program;
@@ -37,21 +37,13 @@ impl AstDeobfuscator {
             );
 
             eprintln!("[DEOBFUSCATE] Phase 13.5: Post-Phase-13 dead-var sweep");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut collector = DeadVarCollector::new();
-            traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-            let dead_vars = collector.get_dead_vars();
-            if !dead_vars.is_empty() {
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-                traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 13.5: Eliminated {} dead variables",
-                    dead_vars.len()
-                );
-            }
+            let result = eliminate_dead_vars(&allocator, &mut program);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 13.5: Removed {} dead declarators ({} candidate symbols, rejected={})",
+                result.removed_declarators(),
+                result.candidate_symbols(),
+                result.was_rejected()
+            );
 
             mem_ck("enter Phase 14 (sequence split)");
             eprintln!("[DEOBFUSCATE] Phase 14: SemanticBuilder for sequence_expression_split");
@@ -117,18 +109,18 @@ impl AstDeobfuscator {
         // ── Cosmetic-B half (Phases 16–21): fresh arena, re-parse Cosmetic-A output.
         let allocator = Allocator::default();
         let parse_result = Parser::new(&allocator, intermediate2, source_type).parse();
-        if !parse_result.errors.is_empty() {
+        if !parse_result.diagnostics.is_empty() {
             eprintln!(
                 "[DEOBFUSCATE] Phase 15.6 re-parse FAILED ({} error(s)) — dumping context around the first error:",
-                parse_result.errors.len()
+                parse_result.diagnostics.len()
             );
             eprintln!(
                 "{}",
-                checkpoint_error_context("Phase 15.6", intermediate2, &parse_result.errors)
+                checkpoint_error_context("Phase 15.6", intermediate2, &parse_result.diagnostics)
             );
             return Err(crate::BeautifyError::BeautificationFailed(format!(
                 "Phase 15.6 checkpoint re-parse failed: {:?}",
-                parse_result.errors.first()
+                parse_result.diagnostics.first()
             )));
         }
         let mut program = parse_result.program;
@@ -211,21 +203,13 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut esbuild_collector, &mut program, &mut ctx);
 
         eprintln!("[DEOBFUSCATE] Phase 19.5: Final dead-var sweep");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut collector = DeadVarCollector::new();
-        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars.clone());
-            traverse_mut_with_ctx(&mut eliminator, &mut program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 19.5: Eliminated {} dead variables",
-                dead_vars.len()
-            );
-        }
+        let result = eliminate_dead_vars(&allocator, &mut program);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 19.5: Removed {} dead declarators ({} candidate symbols, rejected={})",
+            result.removed_declarators(),
+            result.candidate_symbols(),
+            result.was_rejected()
+        );
 
         self.generate_final_output(&program, source_type, &esbuild_collector, bun_helper_map)
     }

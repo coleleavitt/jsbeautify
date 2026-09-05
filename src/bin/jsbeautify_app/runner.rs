@@ -1,13 +1,13 @@
 use super::{
-    AlignArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs, SplitChunksArgs, SplitSourcesArgs,
-    align, sources,
+    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs, SplitChunksArgs,
+    SplitSourcesArgs, align, sources,
 };
 use clap::Parser;
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
 use js_beautify_rs::{Options, beautify};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -30,6 +30,7 @@ fn run() -> Fallible {
         Some(Command::SplitSources(a)) => run_split_sources(a),
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
+        Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
         None => run_beautify(&cli.beautify),
     }
 }
@@ -44,12 +45,69 @@ fn read_input(input: &str) -> Result<String, Box<dyn std::error::Error>> {
     }
 }
 
+fn read_vm_input_bounded(input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let limit = js_beautify_rs::vm_analysis::AnalysisLimits::default().max_source_bytes;
+    let reader: Box<dyn Read> = if input == "-" {
+        Box::new(io::stdin())
+    } else {
+        let metadata = fs::metadata(input)?;
+        if metadata.len() > limit as u64 {
+            return Err(format!("analyze-vm input exceeds {limit} byte limit").into());
+        }
+        Box::new(fs::File::open(input)?)
+    };
+    let mut reader = reader;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0_u8; 64 * 1024].into_boxed_slice();
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        if read > limit.saturating_sub(bytes.len()) {
+            return Err(format!("analyze-vm input exceeds {limit} byte limit").into());
+        }
+        bytes.try_reserve_exact(read)?;
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Ok(String::from_utf8(bytes)?)
+}
+
 fn write_output(output: Option<&String>, text: &str) -> Fallible {
     if let Some(output_path) = output {
         fs::write(output_path, text)?;
         eprintln!("Output written to {output_path}");
     } else {
         println!("{text}");
+    }
+    Ok(())
+}
+
+fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
+    let source = read_vm_input_bounded(&args.input)?;
+    let report = js_beautify_rs::vm_analysis::analyze(&source);
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = &args.output {
+        fs::write(path, format!("{json}\n"))?;
+        eprintln!("VM analysis written to {}", path.display());
+    } else {
+        println!("{json}");
+    }
+    if let Some(directory) = &args.extract_wasm {
+        fs::create_dir_all(directory)?;
+        for (index, module) in js_beautify_rs::vm_analysis::extract_wasm(&source).iter().enumerate() {
+            let path = directory.join(format!("module-{index:03}.wasm"));
+            let mut output = match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(output) => output,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    eprintln!("Skipped existing WebAssembly module {}", path.display());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            output.write_all(&module.bytes)?;
+            eprintln!("Extracted WebAssembly module to {}", path.display());
+        }
     }
     Ok(())
 }

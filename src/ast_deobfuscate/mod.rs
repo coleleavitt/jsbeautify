@@ -123,7 +123,7 @@ pub use concat_canonicaliser::ConcatCanonicaliser;
 pub use constant_folding::ConstantFolder;
 pub use control_flow_unflatten::ControlFlowUnflattener;
 pub use dead_code::DeadCodeEliminator;
-pub use dead_var_elimination::{DeadVarCollector, DeadVarEliminator};
+pub use dead_var_elimination::{DeadVarCollector, DeadVarEliminator, DeadVarSweepResult, eliminate_dead_vars};
 pub use decoder_inline::DecoderInliner;
 pub use deterministic_rename::DeterministicRenamer;
 pub use dispatch_inliner::{DispatchInlinerCollector, DispatchInlinerRewriter};

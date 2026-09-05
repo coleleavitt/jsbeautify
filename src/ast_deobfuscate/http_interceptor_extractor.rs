@@ -89,7 +89,7 @@ pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
         let security_note = classify_header_security(&header);
 
         headers.push(HeaderInjection {
-            header: header.clone(),
+            header,
             value_source,
             condition: None,
             security_note,

@@ -27,5 +27,13 @@ pub(super) fn make_template_element<'a>(value: &str, tail: bool, ctx: &Ctx<'a>) 
     let cooked = oxc_ast::ast::Str::from_str_in(ctx.allocator().alloc_str(value), ctx);
     let raw_text = escape_template_raw(value);
     let raw = oxc_ast::ast::Str::from_str_in(&raw_text, ctx);
-    TemplateElement::new(SPAN, TemplateElementValue { cooked: Some(cooked), raw }, tail, ctx)
+    TemplateElement::new(
+        SPAN,
+        TemplateElementValue {
+            cooked: Some(cooked),
+            raw,
+        },
+        tail,
+        ctx,
+    )
 }

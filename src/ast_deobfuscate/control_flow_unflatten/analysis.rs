@@ -25,7 +25,7 @@ impl ControlFlowUnflattener {
                     && let Some(seq_var) = self.find_associated_sequence_var(var_name)
                 {
                     eprintln!("[AST] Found index variable: {var_name} for sequence {seq_var}");
-                    self.detected_index_vars.insert(seq_var.clone(), var_name.to_string());
+                    self.detected_index_vars.insert(seq_var, var_name.to_string());
                 }
             }
         }

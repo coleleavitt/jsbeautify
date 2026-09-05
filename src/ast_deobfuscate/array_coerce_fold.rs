@@ -5,11 +5,9 @@
 //! - `[] + undefined` → `"undefined"`
 //! - `undefined + []` → `"undefined"`
 
-use oxc_ast::ast::{BinaryOperator, Expression, StringLiteral};
+use oxc_ast::ast::{BinaryOperator, Expression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;

@@ -2,6 +2,7 @@ use oxc_ast::ast::{BindingPattern, Class, ClassElement, Expression, MethodDefini
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::bun_export_renamer::names::{is_valid_identifier, sanitize_identifier};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::util::{find_this_name_assignment, is_xml_name};
@@ -149,8 +150,26 @@ impl<'a> Traverse<'a, DeobfuscateState> for DisplayNameCollector {
         let mangled = obj_id.name.as_str();
         let real_name = s.value.as_str();
 
-        if real_name.len() > 2 && mangled != real_name {
-            self.name_map.insert(symbol_id, real_name.to_string());
+        if real_name.len() <= 2 {
+            return;
+        }
+
+        // React compound components declare dotted display names
+        // (`Accordion.Content`, `Menu.Item`). The renamer writes this string
+        // straight into binding positions, so a dot would emit
+        // `var Accordion.Content = ...` -- a member expression where a binding
+        // identifier must be, which fails the re-parse that guards this pass
+        // and aborts deobfuscation for the whole file. Sanitize to
+        // `Accordion_Content` so the readable name survives as a legal
+        // identifier instead of being dropped.
+        let candidate = if is_valid_identifier(real_name) {
+            real_name.to_string()
+        } else {
+            sanitize_identifier(real_name)
+        };
+
+        if candidate != mangled {
+            self.name_map.insert(symbol_id, candidate);
         }
     }
 }

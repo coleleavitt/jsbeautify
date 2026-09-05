@@ -95,6 +95,26 @@ enum Command {
     /// Align two bundle versions for a stable diff, recovering names via a
     /// sourcemap / names.json.
     Align(AlignArgs),
+
+    /// Statically inspect a JavaScript-hosted VM and embedded WebAssembly.
+    /// Never executes JavaScript or instantiates WebAssembly.
+    AnalyzeVm(AnalyzeVmArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct AnalyzeVmArgs {
+    /// Input JavaScript file, or "-" for stdin.
+    #[arg(value_name = "FILE", default_value = "-")]
+    input: String,
+
+    /// Write the JSON report to a file instead of stdout.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Extract literal embedded WebAssembly modules into this directory.
+    /// Existing module files are never overwritten.
+    #[arg(long, value_name = "DIR")]
+    extract_wasm: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]

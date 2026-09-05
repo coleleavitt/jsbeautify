@@ -123,7 +123,7 @@ impl AngularMetadataExtractor {
                         self.visit_statement(stmt);
                     }
                 } else if let Some(expr) = arrow.body.as_expression() {
-                    self.visit_expression(expr);
+                    self.walk_expression(expr);
                 }
             }
             Expression::CallExpression(call) => {
@@ -196,7 +196,7 @@ impl AngularMetadataExtractor {
                         self.visit_statement(stmt);
                     }
                 } else if let Some(expr) = arrow.body.as_expression() {
-                    self.visit_expression(expr);
+                    self.walk_into_functions_only(expr);
                 }
             }
             Expression::CallExpression(call) => {

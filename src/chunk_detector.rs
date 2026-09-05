@@ -829,7 +829,7 @@ mod tests {
         assert_eq!(chunk.name, "LoginView");
         assert_eq!(chunk.hash, "363842");
         assert_eq!(chunk.filename, "LoginView.chunk.363842.js");
-        assert!(chunk.modules.is_empty());
+        assert_eq!(chunk.modules, Vec::<usize>::new());
     }
 
     #[test]

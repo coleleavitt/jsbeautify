@@ -1,9 +1,8 @@
 use super::{
     Allocator, ApplyCallSimplifier, AstDeobfuscator, BunSyntaxNormalizer, CallProxyCollector, CallProxyInliner,
-    CallThisSimplifier, CffUnflattener, ConcatCanonicaliser, DeadVarCollector, DeadVarEliminator, DeobfuscateState,
-    DispatcherDetector, DynConcatResolver, FromCharCodeFolder, OperatorProxyCollector, OperatorProxyInliner, Program,
-    ReusableTraverseCtx, SemanticBuilder, UnaryProxyCollector, UnaryProxyInliner, collect_case_bodies, mem_ck,
-    traverse_mut_with_ctx,
+    CallThisSimplifier, CffUnflattener, ConcatCanonicaliser, DeobfuscateState, DispatcherDetector, DynConcatResolver,
+    FromCharCodeFolder, OperatorProxyCollector, OperatorProxyInliner, Program, ReusableTraverseCtx, SemanticBuilder,
+    UnaryProxyCollector, UnaryProxyInliner, collect_case_bodies, eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
 };
 
 impl AstDeobfuscator {
@@ -225,19 +224,14 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.dead_code_eliminator, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 7: DONE");
 
-        eprintln!("[DEOBFUSCATE] Phase 8: SemanticBuilder for dead_var");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut collector = DeadVarCollector::new();
-        eprintln!("[DEOBFUSCATE] Phase 8: Running dead_var_collector");
-        traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-        let dead_vars = collector.get_dead_vars();
-        if !dead_vars.is_empty() {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            let mut eliminator = DeadVarEliminator::new(dead_vars);
-            traverse_mut_with_ctx(&mut eliminator, program, &mut ctx);
-        }
+        eprintln!("[DEOBFUSCATE] Phase 8: Running validated dead-var sweep");
+        let result = eliminate_dead_vars(allocator, program);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 8: Removed {} dead declarators ({} candidate symbols, rejected={})",
+            result.removed_declarators(),
+            result.candidate_symbols(),
+            result.was_rejected()
+        );
 
         mem_ck("enter Phase 8.5 (CFF unflatten)");
         eprintln!("[DEOBFUSCATE] Phase 8.5: CFF unflattener");

@@ -23,9 +23,9 @@ impl AstDeobfuscator {
         // all), log the diagnostics and continue on the recovered program.
         // The final codegen + re-parse checkpoints below validate the
         // result, and the CLI/pipeline fall back to raw on empty output.
-        if !parse_result.errors.is_empty() {
-            let diagnostic_count = parse_result.errors.len();
-            let first_diagnostic = parse_result.errors.first().map(ToString::to_string);
+        if !parse_result.diagnostics.is_empty() {
+            let diagnostic_count = parse_result.diagnostics.len();
+            let first_diagnostic = parse_result.diagnostics.first().map(ToString::to_string);
             if let Some((fallback_source_type, fallback_parse_result)) =
                 Self::parse_with_source_type_fallback(&allocator, code, source_type)
             {
@@ -70,7 +70,7 @@ impl AstDeobfuscator {
                 continue;
             }
             let parse_result = Parser::new(allocator, code, candidate).parse();
-            if parse_result.errors.is_empty() && !parse_result.panicked {
+            if parse_result.diagnostics.is_empty() && !parse_result.panicked {
                 return Some((candidate, parse_result));
             }
         }

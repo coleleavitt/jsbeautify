@@ -5,14 +5,12 @@ resolver = "3"
 name = "js-beautify-rs"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
 autobins = false
 autotests = false
 autobenches = false
 description = "A fast JavaScript beautifier and deobfuscator powered by oxc"
 license = "MIT"
 repository = "https://github.com/coleleavitt/js-beautify-rs"
-readme = "README.md"
 keywords = ["javascript", "beautifier", "deobfuscator", "webpack", "oxc"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [
@@ -78,24 +76,24 @@ base64 = "0.22"
 rc4 = "0.1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+wasmparser = "0.244"
 rustc-hash = "2"
 # oxc pinned to the revision this crate currently targets. Plain
 # `cargo install --path .` does not honor Cargo.lock unless `--locked` is
 # supplied, so leaving these on `branch = "main"` makes installs break whenever
 # upstream OXC changes its AST API.
-# To use your fork instead: git = "https://github.com/coleleavitt/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5"
+# To use your fork instead: git = "https://github.com/coleleavitt/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314"
 # To use the local checkout: replace each with `path = "/home/cole/RustProjects/forks/oxc/crates/<crate>"`
-oxc_allocator = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_ast = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_ast_visit = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_parser = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_semantic = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_span = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_syntax = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_traverse = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_codegen = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_cfg = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
-oxc_diagnostics = { git = "https://github.com/oxc-project/oxc.git", rev = "6cb34b83741e6cc48d76821d5b08ba9b83a21ad5" }
+oxc_allocator = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_ast = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_ast_visit = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_parser = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_semantic = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_span = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_syntax = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_traverse = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_codegen = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
+oxc_diagnostics = { git = "https://github.com/oxc-project/oxc.git", rev = "ca7104f775bd372e834845c96218db57b0cb5314" }
 clap = { version = "4.6.1", features = ["derive"] }
 md5 = "0.7"
 dhat = { version = "0.3", optional = true }

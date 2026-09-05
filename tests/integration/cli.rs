@@ -56,3 +56,93 @@ fn split_sources_splits_no_sourcemap_bundle_by_structure() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn analyze_vm_emits_static_json_without_executing_input() {
+    let dir = std::env::temp_dir().join(format!("jsb-cli-vm-analysis-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let input = dir.join("vm.js");
+    let report = dir.join("report.json");
+    let extracted = dir.join("wasm");
+    let sentinel = dir.join("executed.txt");
+    std::fs::write(
+        &input,
+        format!(
+            r#"
+            require("fs").writeFileSync("{}", "executed");
+            function decodeBase64(value) {{ return atob(value); }}
+            const bytes = decodeBase64("AGFzbQEAAAABBQFgAAF/AwIBAAcFAQFmAAAKBgEEAEEHCw==");
+            const module = new WebAssembly.Module(bytes);
+            "#,
+            sentinel.display()
+        ),
+    )
+    .expect("write VM fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("analyze-vm")
+        .arg(&input)
+        .arg("--output")
+        .arg(&report)
+        .arg("--extract-wasm")
+        .arg(&extracted)
+        .output()
+        .expect("run jsbeautify analyze-vm");
+
+    assert!(output.status.success(), "VM analysis failed: {output:?}");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report).expect("read report")).expect("valid JSON report");
+    assert_eq!(value["wasm_modules"].as_array().map(Vec::len), Some(1));
+    assert!(
+        value["patterns"]
+            .as_array()
+            .is_some_and(|patterns| { patterns.iter().any(|finding| finding["kind"] == "web_assembly_bridge") })
+    );
+    let module_path = extracted.join("module-000.wasm");
+    let original_module = std::fs::read(&module_path).expect("read extracted WASM");
+    assert_eq!(original_module[..4], *b"\0asm");
+    assert!(!sentinel.exists(), "analyze-vm executed target JavaScript");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("analyze-vm")
+        .arg(&input)
+        .arg("--output")
+        .arg(&report)
+        .arg("--extract-wasm")
+        .arg(&extracted)
+        .output()
+        .expect("rerun analyze-vm with existing artifact");
+    assert!(
+        second.status.success(),
+        "existing extraction should be skipped: {second:?}"
+    );
+    assert_eq!(std::fs::read(&module_path).expect("reread module"), original_module);
+    assert!(!sentinel.exists(), "rerun executed target JavaScript");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn analyze_vm_rejects_over_limit_file_before_reading_it() {
+    let dir = std::env::temp_dir().join(format!("jsb-cli-vm-over-limit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let input = dir.join("oversized.js");
+    let file = std::fs::File::create(&input).expect("create sparse input");
+    file.set_len((32 * 1024 * 1024 + 1) as u64).expect("size sparse input");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("analyze-vm")
+        .arg(&input)
+        .output()
+        .expect("run analyze-vm over limit");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("exceeds") && stderr.contains("byte limit"),
+        "stderr: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -4,7 +4,7 @@ use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
     pub(in crate::ast_deobfuscate::esbuild_helper) fn is_identity_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
-        if arrow.params.items.len() != 1 || !arrow.expression {
+        if arrow.params.items.len() != 1 || !arrow.body.is_expression() {
             return false;
         }
 
@@ -16,15 +16,7 @@ impl EsbuildHelperCollector {
             None => return false,
         };
 
-        let Some(body) = arrow.body.statements.first() else {
-            return false;
-        };
-
-        let Statement::ExpressionStatement(expr_stmt) = body else {
-            return false;
-        };
-
-        if let Expression::Identifier(ident) = &expr_stmt.expression {
+        if let Some(Expression::Identifier(ident)) = arrow.body.as_expression() {
             return ident.name.as_str() == param_name;
         }
 
@@ -116,7 +108,7 @@ impl EsbuildHelperCollector {
             return false;
         }
 
-        let Some(body) = arrow.body.statements.first() else {
+        let Some(body) = arrow.body.as_function_body().and_then(|body| body.statements.first()) else {
             return false;
         };
 

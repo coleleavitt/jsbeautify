@@ -9,7 +9,7 @@ fn beautifies_minified_object() {
     let src = fixtures::obfuscated("real_bundle_sample.js");
     let out = beautify(&src, &Options::default()).expect("beautify minified object");
     assert!(out.contains("enabled"), "expected property names preserved");
-    assert!(!out.trim().is_empty());
+    assert_ne!(out.trim(), "");
 }
 
 #[test]

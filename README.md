@@ -56,6 +56,11 @@ jsbeautify align v1.js v2.js --sourcemap v1.js.map --align-output v2.aligned.js 
 
 # Recover names from Bun bundles (MR exports, this.name, displayName)
 jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
+
+# Bounded, static inspection of a JavaScript-hosted VM and literal embedded WebAssembly.
+# JavaScript is never executed; WebAssembly is validated but never instantiated.
+# Reports contain structured-control/nesting metadata, not decompiled code or reconstructed high-level flow.
+jsbeautify analyze-vm bundle.js -o vm-report.json --extract-wasm ./vm-wasm
 ```
 
 ## CLI Reference
@@ -69,6 +74,7 @@ Commands:
   split-sources    Reconstruct the original source tree from a bundle
   reconstruct      Rebuild original sources from a standalone .js.map file
   align            Align two bundle versions for a stable diff
+  analyze-vm       Statically inspect a JavaScript-hosted VM and embedded WebAssembly
 
 Arguments:
   [FILE]  Input JavaScript file, or "-" for stdin [default: -]

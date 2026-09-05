@@ -1,5 +1,5 @@
 use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
-use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression, Ident, Statement, Str, UnaryOperator};
+use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression, Statement, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_syntax::number::NumberBase;
 use oxc_traverse::Traverse;

@@ -18,6 +18,30 @@ fn collect(code: &str) -> ClassNameMap {
     collector.into_map()
 }
 
+fn collect_display(code: &str) -> ClassNameMap {
+    let alloc = Allocator::default();
+    let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+    let mut prog = parsed.program;
+    let mut collector = DisplayNameCollector::new();
+    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+    traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+    collector.into_map()
+}
+
+#[test]
+fn dotted_display_names_are_sanitized_into_legal_identifiers() {
+    // React compound components (`Accordion.Content`) would otherwise be
+    // written into a binding position as `var Accordion.Content = ...`, which
+    // is invalid JS and aborts deobfuscation of the entire file.
+    let code = r#"
+            var C = forwardRef(function () {});
+            C.displayName = "Accordion.Content";
+        "#;
+    let names: Vec<String> = collect_display(code).into_values().collect();
+    assert_eq!(names, vec!["Accordion_Content".to_string()]);
+}
+
 #[test]
 fn detects_this_name_in_constructor() {
     let code = r#"

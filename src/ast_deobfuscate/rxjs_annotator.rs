@@ -224,7 +224,7 @@ mod tests {
         ";
 
         let usage = extract_operator_usage(source);
-        assert!(!usage.is_empty());
+        assert_ne!(usage, []);
         // map appears twice
         let map_usage = usage.iter().find(|(name, _)| name == "map");
         assert!(map_usage.is_some());
