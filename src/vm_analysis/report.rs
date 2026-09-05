@@ -1,5 +1,48 @@
 use serde::{Deserialize, Serialize};
 
+/// Current JSON schema version for [`VmAnalysisReport`].
+pub const VM_ANALYSIS_SCHEMA_VERSION: u32 = 1;
+
+/// The structured completion state of a VM analysis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AnalysisOutcome {
+    #[default]
+    CompletedNone,
+    CompletedFindings,
+    Invalid {
+        reason: InvalidAnalysisReason,
+    },
+    NotAnalyzed {
+        reason: NotAnalyzedReason,
+    },
+    Truncated {
+        reason: TruncatedAnalysisReason,
+    },
+}
+
+/// A typed reason that makes the analyzed input invalid as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvalidAnalysisReason {
+    JavaScriptSyntax,
+}
+
+/// A typed reason why analysis did not start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotAnalyzedReason {
+    SourceTooLarge { actual_bytes: usize, limit_bytes: usize },
+}
+
+/// A typed reason why analysis returned only bounded partial results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TruncatedAnalysisReason {
+    AggregateBudgetExhausted,
+    ReportPayloadLimitExceeded,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceSpan {
     pub start: usize,
@@ -186,8 +229,10 @@ pub struct WasmModuleReport {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VmAnalysisReport {
+    pub schema_version: u32,
+    pub outcome: AnalysisOutcome,
     pub patterns: Vec<JsPatternFinding>,
     pub handler_candidates: Vec<HandlerCandidate>,
     pub literal_folds: Vec<LiteralFold>,
@@ -195,4 +240,31 @@ pub struct VmAnalysisReport {
     pub role_suggestions: Vec<RoleAnnotationSuggestion>,
     pub symbol_role_suggestions: Vec<SymbolRoleSuggestion>,
     pub diagnostics: Vec<String>,
+}
+
+impl Default for VmAnalysisReport {
+    fn default() -> Self {
+        Self {
+            schema_version: VM_ANALYSIS_SCHEMA_VERSION,
+            outcome: AnalysisOutcome::CompletedNone,
+            patterns: Vec::new(),
+            handler_candidates: Vec::new(),
+            literal_folds: Vec::new(),
+            wasm_modules: Vec::new(),
+            role_suggestions: Vec::new(),
+            symbol_role_suggestions: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+impl VmAnalysisReport {
+    pub(super) const fn has_findings(&self) -> bool {
+        !self.patterns.is_empty()
+            || !self.handler_candidates.is_empty()
+            || !self.literal_folds.is_empty()
+            || !self.wasm_modules.is_empty()
+            || !self.role_suggestions.is_empty()
+            || !self.symbol_role_suggestions.is_empty()
+    }
 }
