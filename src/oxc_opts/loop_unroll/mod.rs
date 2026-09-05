@@ -101,7 +101,7 @@ impl LoopUnroller {
             return None;
         }
 
-        let mut unrolled_stmts = ctx.ast.vec();
+        let mut unrolled_stmts = oxc_allocator::Vec::new_in(&ctx.ast);
 
         for i in 0..iterations {
             let current_value = init_value.checked_add(i.checked_mul(increment)?)?;
@@ -128,8 +128,7 @@ impl<'a> Traverse<'a, OptimizationState> for LoopUnroller {
             && let Some(unrolled) = self.try_unroll_for_loop(for_stmt, ctx)
         {
             let scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-            let block = ctx.ast.block_statement_with_scope_id(SPAN, unrolled, scope_id);
-            *stmt = Statement::BlockStatement(ctx.ast.alloc(block));
+            *stmt = Statement::new_block_statement_with_scope_id(SPAN, unrolled, scope_id, ctx);
         }
     }
 }

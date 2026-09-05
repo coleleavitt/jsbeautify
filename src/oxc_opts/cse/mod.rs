@@ -57,7 +57,7 @@ impl CommonSubexpressionElimination {
     }
 
     fn process_block_for_cse<'a>(&mut self, statements: &mut oxc_allocator::Vec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
-        let mut new_statements = ctx.ast.vec();
+        let mut new_statements = oxc_allocator::Vec::new_in(&ctx.ast);
         let mut expr_map: FxHashMap<String, String> = FxHashMap::default();
 
         for stmt in statements.iter() {

@@ -57,11 +57,11 @@ impl<'a> Visit<'a> for AstNormalizer {
             Statement::TSTypeAliasDeclaration(_) => self.push("TSTypeAlias"),
             Statement::TSInterfaceDeclaration(_) => self.push("TSInterface"),
             Statement::TSEnumDeclaration(_) => self.push("TSEnum"),
-            Statement::TSModuleDeclaration(_) => self.push("TSModule"),
             Statement::TSImportEqualsDeclaration(_) => self.push("TSImportEquals"),
             Statement::TSExportAssignment(_) => self.push("TSExportAssign"),
             Statement::TSNamespaceExportDeclaration(_) => self.push("TSNsExport"),
             Statement::TSGlobalDeclaration(_) => self.push("TSGlobal"),
+            _ => self.push("Other"),
         }
 
         walk::walk_statement(self, stmt);
@@ -83,7 +83,7 @@ impl<'a> Visit<'a> for AstNormalizer {
             Expression::StringLiteral(_) => self.push("Str"),
             Expression::TemplateLiteral(_) => self.push("Template"),
             Expression::Identifier(_) => self.push("Id"),
-            Expression::MetaProperty(_) => self.push("Meta"),
+            Expression::ImportMeta(_) | Expression::NewTarget(_) => self.push("Meta"),
             Expression::Super(_) => self.push("Super"),
             Expression::ArrayExpression(_) => self.push("Array"),
             Expression::ArrowFunctionExpression(_) => self.push("Arrow"),

@@ -1,10 +1,5 @@
-use oxc_ast::ast::{
-    Argument, BinaryExpression, BooleanLiteral, CallExpression, IdentifierReference, NullLiteral, NumberBase,
-    NumericLiteral, StringLiteral,
-};
+use oxc_ast::ast::{Argument, NumberBase};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use std::cell::Cell;
 
 use super::super::{Ctx, LoopUnroller};
 
@@ -18,76 +13,46 @@ impl LoopUnroller {
     ) -> Option<Argument<'a>> {
         match arg {
             Argument::Identifier(ident) => {
-                if ident.name.as_str() == loop_var {
-                    Some(Argument::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        value: value as f64,
-                        raw: None,
-                        base: NumberBase::Decimal,
-                    })))
+                if ident.name == loop_var {
+                    Some(Argument::new_numeric_literal(
+                        SPAN,
+                        value as f64,
+                        None,
+                        NumberBase::Decimal,
+                        ctx,
+                    ))
                 } else {
-                    Some(Argument::Identifier(ctx.ast.alloc(IdentifierReference {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        name: ctx.ast.ident(ident.name.as_str()),
-                        reference_id: None.into(),
-                    })))
+                    Some(Argument::new_identifier(SPAN, ident.name.as_str(), ctx))
                 }
             }
-            Argument::NumericLiteral(lit) => Some(Argument::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: lit.value,
-                raw: lit.raw,
-                base: lit.base,
-            }))),
-            Argument::StringLiteral(lit) => Some(Argument::StringLiteral(ctx.ast.alloc(StringLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: ctx.ast.str(lit.value.as_str()),
-                raw: None,
-                lone_surrogates: false,
-            }))),
-            Argument::BooleanLiteral(lit) => Some(Argument::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: lit.value,
-            }))),
-            Argument::NullLiteral(_) => Some(Argument::NullLiteral(ctx.ast.alloc(NullLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }))),
+            Argument::NumericLiteral(lit) => {
+                Some(Argument::new_numeric_literal(SPAN, lit.value, lit.raw, lit.base, ctx))
+            }
+            Argument::StringLiteral(lit) => Some(Argument::new_string_literal(SPAN, lit.value.as_str(), None, ctx)),
+            Argument::BooleanLiteral(lit) => Some(Argument::new_boolean_literal(SPAN, lit.value, ctx)),
+            Argument::NullLiteral(_) => Some(Argument::new_null_literal(SPAN, ctx)),
             Argument::BinaryExpression(bin) => {
                 let left = self.substitute_in_expression(&bin.left, loop_var, value, ctx)?;
                 let right = self.substitute_in_expression(&bin.right, loop_var, value, ctx)?;
-                Some(Argument::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    left,
-                    operator: bin.operator,
-                    right,
-                })))
+                Some(Argument::new_binary_expression(SPAN, left, bin.operator, right, ctx))
             }
             Argument::CallExpression(call) => {
                 let new_callee = self.substitute_in_expression(&call.callee, loop_var, value, ctx)?;
-                let mut new_args = ctx.ast.vec();
+                let mut new_args = oxc_allocator::Vec::new_in(&ctx.ast);
                 for a in &call.arguments {
                     if let Argument::SpreadElement(_) = a {
                         return None;
                     }
-                    let new_a = self.substitute_in_argument(a, loop_var, value, ctx)?;
-                    new_args.push(new_a);
+                    new_args.push(self.substitute_in_argument(a, loop_var, value, ctx)?);
                 }
-                Some(Argument::CallExpression(ctx.ast.alloc(CallExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    callee: new_callee,
-                    type_arguments: None,
-                    arguments: new_args,
-                    optional: call.optional,
-                    pure: false,
-                })))
+                Some(Argument::new_call_expression(
+                    SPAN,
+                    new_callee,
+                    None,
+                    new_args,
+                    call.optional,
+                    ctx,
+                ))
             }
             _ => None,
         }

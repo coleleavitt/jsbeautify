@@ -1,13 +1,7 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    Argument, BinaryExpression, CallExpression, ComputedMemberExpression, Expression, ExpressionStatement,
-    IdentifierName, IdentifierReference, NumberBase, NumericLiteral, Statement, StaticMemberExpression, StringLiteral,
-    VariableDeclaration, VariableDeclarator,
-};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{Argument, Expression, IdentifierName, NumberBase, Statement, VariableDeclarator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::scope::ScopeFlags;
-use std::cell::Cell;
 
 mod argument;
 
@@ -23,18 +17,14 @@ impl LoopUnroller {
     ) -> Option<Statement<'a>> {
         match body {
             Statement::BlockStatement(block) => {
-                let mut new_stmts = ctx.ast.vec();
-
+                let mut new_stmts = oxc_allocator::Vec::new_in(&ctx.ast);
                 for stmt in &block.body {
-                    {
-                        let new_stmt = self.substitute_in_statement(stmt, loop_var, value, ctx)?;
-                        new_stmts.push(new_stmt);
-                    }
+                    new_stmts.push(self.substitute_in_statement(stmt, loop_var, value, ctx)?);
                 }
-
                 let scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-                let block = ctx.ast.block_statement_with_scope_id(SPAN, new_stmts, scope_id);
-                Some(Statement::BlockStatement(ctx.ast.alloc(block)))
+                Some(Statement::new_block_statement_with_scope_id(
+                    SPAN, new_stmts, scope_id, ctx,
+                ))
             }
             Statement::ExpressionStatement(_) => self.substitute_in_statement(body, loop_var, value, ctx),
             _ => None,
@@ -50,42 +40,32 @@ impl LoopUnroller {
     ) -> Option<Statement<'a>> {
         match stmt {
             Statement::ExpressionStatement(expr_stmt) => {
-                let new_expr = self.substitute_in_expression(&expr_stmt.expression, loop_var, value, ctx)?;
-                Some(Statement::ExpressionStatement(ctx.ast.alloc(ExpressionStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    expression: new_expr,
-                })))
+                let expression = self.substitute_in_expression(&expr_stmt.expression, loop_var, value, ctx)?;
+                Some(Statement::new_expression_statement(SPAN, expression, ctx))
             }
             Statement::VariableDeclaration(var_decl) => {
-                let mut new_decls = ctx.ast.vec();
+                let mut declarations = oxc_allocator::Vec::new_in(&ctx.ast);
                 for decl in &var_decl.declarations {
-                    let new_init = if let Some(init) = &decl.init {
-                        Some(self.substitute_in_expression(init, loop_var, value, ctx)?)
-                    } else {
-                        None
+                    let init = match &decl.init {
+                        Some(init) => Some(self.substitute_in_expression(init, loop_var, value, ctx)?),
+                        None => None,
                     };
-
-                    let new_id = decl.id.clone_in(ctx.ast.allocator);
-
-                    new_decls.push(VariableDeclarator {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        kind: var_decl.kind,
-                        id: new_id,
-                        type_annotation: None,
-                        init: new_init,
-                        definite: decl.definite,
-                    });
+                    declarations.push(VariableDeclarator::new(
+                        SPAN,
+                        decl.id.clone_in(ctx.ast.allocator()),
+                        None,
+                        init,
+                        decl.definite,
+                        ctx,
+                    ));
                 }
-
-                Some(Statement::VariableDeclaration(ctx.ast.alloc(VariableDeclaration {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    kind: var_decl.kind,
-                    declarations: new_decls,
-                    declare: var_decl.declare,
-                })))
+                Some(Statement::new_variable_declaration(
+                    SPAN,
+                    var_decl.kind,
+                    declarations,
+                    var_decl.declare,
+                    ctx,
+                ))
             }
             _ => None,
         }
@@ -100,102 +80,67 @@ impl LoopUnroller {
     ) -> Option<Expression<'a>> {
         match expr {
             Expression::Identifier(ident) => {
-                if ident.name.as_str() == loop_var {
-                    Some(Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        value: value as f64,
-                        raw: None,
-                        base: NumberBase::Decimal,
-                    })))
+                if ident.name == loop_var {
+                    Some(Expression::new_numeric_literal(
+                        SPAN,
+                        value as f64,
+                        None,
+                        NumberBase::Decimal,
+                        ctx,
+                    ))
                 } else {
-                    Some(Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        name: ctx.ast.ident(ident.name.as_str()),
-                        reference_id: None.into(),
-                    })))
+                    Some(Expression::new_identifier(SPAN, ident.name.as_str(), ctx))
                 }
             }
             Expression::CallExpression(call) => {
-                let new_callee = self.substitute_in_expression(&call.callee, loop_var, value, ctx)?;
-                let mut new_args = ctx.ast.vec();
-
+                let callee = self.substitute_in_expression(&call.callee, loop_var, value, ctx)?;
+                let mut arguments = oxc_allocator::Vec::new_in(&ctx.ast);
                 for arg in &call.arguments {
                     if let Argument::SpreadElement(_) = arg {
                         return None;
                     }
-                    let new_arg = self.substitute_in_argument(arg, loop_var, value, ctx)?;
-                    new_args.push(new_arg);
+                    arguments.push(self.substitute_in_argument(arg, loop_var, value, ctx)?);
                 }
-
-                Some(Expression::CallExpression(ctx.ast.alloc(CallExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    callee: new_callee,
-                    type_arguments: None,
-                    arguments: new_args,
-                    optional: call.optional,
-                    pure: false,
-                })))
+                Some(Expression::new_call_expression(
+                    SPAN,
+                    callee,
+                    None,
+                    arguments,
+                    call.optional,
+                    ctx,
+                ))
             }
             Expression::BinaryExpression(bin) => {
                 let left = self.substitute_in_expression(&bin.left, loop_var, value, ctx)?;
                 let right = self.substitute_in_expression(&bin.right, loop_var, value, ctx)?;
-
-                Some(Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    left,
-                    operator: bin.operator,
-                    right,
-                })))
+                Some(Expression::new_binary_expression(SPAN, left, bin.operator, right, ctx))
             }
-            Expression::StaticMemberExpression(static_mem) => {
-                let object = self.substitute_in_expression(&static_mem.object, loop_var, value, ctx)?;
-
-                Some(Expression::StaticMemberExpression(ctx.ast.alloc(
-                    StaticMemberExpression {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        object,
-                        property: IdentifierName {
-                            node_id: Cell::new(NodeId::DUMMY),
-                            span: SPAN,
-                            name: ctx.ast.ident(static_mem.property.name.as_str()),
-                        },
-                        optional: static_mem.optional,
-                    },
-                )))
+            Expression::StaticMemberExpression(member) => {
+                let object = self.substitute_in_expression(&member.object, loop_var, value, ctx)?;
+                let property = IdentifierName::new(SPAN, member.property.name.as_str(), ctx);
+                Some(Expression::new_static_member_expression(
+                    SPAN,
+                    object,
+                    property,
+                    member.optional,
+                    ctx,
+                ))
             }
-            Expression::ComputedMemberExpression(computed) => {
-                let object = self.substitute_in_expression(&computed.object, loop_var, value, ctx)?;
-                let property = self.substitute_in_expression(&computed.expression, loop_var, value, ctx)?;
-
-                Some(Expression::ComputedMemberExpression(ctx.ast.alloc(
-                    ComputedMemberExpression {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        object,
-                        expression: property,
-                        optional: computed.optional,
-                    },
-                )))
+            Expression::ComputedMemberExpression(member) => {
+                let object = self.substitute_in_expression(&member.object, loop_var, value, ctx)?;
+                let property = self.substitute_in_expression(&member.expression, loop_var, value, ctx)?;
+                Some(Expression::new_computed_member_expression(
+                    SPAN,
+                    object,
+                    property,
+                    member.optional,
+                    ctx,
+                ))
             }
-            Expression::NumericLiteral(lit) => Some(Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: lit.value,
-                raw: lit.raw,
-                base: lit.base,
-            }))),
-            Expression::StringLiteral(lit) => Some(Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: ctx.ast.str(lit.value.as_str()),
-                raw: None,
-                lone_surrogates: false,
-            }))),
+            Expression::NumericLiteral(lit) => {
+                Some(Expression::new_numeric_literal(SPAN, lit.value, lit.raw, lit.base, ctx))
+            }
+            Expression::StringLiteral(lit) => Some(Expression::new_string_literal(SPAN, lit.value.as_str(), None, ctx)),
             _ => None,
         }
     }
