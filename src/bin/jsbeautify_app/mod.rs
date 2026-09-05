@@ -99,6 +99,20 @@ enum Command {
     /// Statically inspect a JavaScript-hosted VM and embedded WebAssembly.
     /// Never executes JavaScript or instantiates WebAssembly.
     AnalyzeVm(AnalyzeVmArgs),
+
+    /// Run framework and build-tool reconnaissance without executing input.
+    FrameworkRecon(FrameworkReconArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct FrameworkReconArgs {
+    /// Input JavaScript file, or "-" for stdin.
+    #[arg(value_name = "FILE", default_value = "-")]
+    input: String,
+
+    /// Write the JSON report to a file instead of stdout.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]

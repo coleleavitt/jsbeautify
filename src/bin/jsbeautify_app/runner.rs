@@ -1,6 +1,6 @@
 use super::{
-    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs, SplitChunksArgs,
-    SplitSourcesArgs, align, sources,
+    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, FrameworkReconArgs, ReconstructArgs,
+    SplitChunksArgs, SplitSourcesArgs, align, sources,
 };
 use clap::Parser;
 use js_beautify_rs::tokenizer::Tokenizer;
@@ -31,6 +31,7 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
+        Some(Command::FrameworkRecon(a)) => run_framework_recon(a),
         None => run_beautify(&cli.beautify),
     }
 }
@@ -47,12 +48,16 @@ fn read_input(input: &str) -> Result<String, Box<dyn std::error::Error>> {
 
 fn read_vm_input_bounded(input: &str) -> Result<String, Box<dyn std::error::Error>> {
     let limit = js_beautify_rs::vm_analysis::AnalysisLimits::default().max_source_bytes;
+    read_input_bounded(input, limit, "analyze-vm")
+}
+
+fn read_input_bounded(input: &str, limit: usize, command: &str) -> Result<String, Box<dyn std::error::Error>> {
     let reader: Box<dyn Read> = if input == "-" {
         Box::new(io::stdin())
     } else {
         let metadata = fs::metadata(input)?;
         if metadata.len() > limit as u64 {
-            return Err(format!("analyze-vm input exceeds {limit} byte limit").into());
+            return Err(format!("{command} input exceeds {limit} byte limit").into());
         }
         Box::new(fs::File::open(input)?)
     };
@@ -65,7 +70,7 @@ fn read_vm_input_bounded(input: &str) -> Result<String, Box<dyn std::error::Erro
             break;
         }
         if read > limit.saturating_sub(bytes.len()) {
-            return Err(format!("analyze-vm input exceeds {limit} byte limit").into());
+            return Err(format!("{command} input exceeds {limit} byte limit").into());
         }
         bytes.try_reserve_exact(read)?;
         bytes.extend_from_slice(&chunk[..read]);
@@ -79,6 +84,20 @@ fn write_output(output: Option<&String>, text: &str) -> Fallible {
         eprintln!("Output written to {output_path}");
     } else {
         println!("{text}");
+    }
+    Ok(())
+}
+
+fn run_framework_recon(args: &FrameworkReconArgs) -> Fallible {
+    let limit = js_beautify_rs::analyzers::framework_recon::AnalysisLimits::default().max_source_bytes;
+    let source = read_input_bounded(&args.input, limit, "framework-recon")?;
+    let report = js_beautify_rs::analyzers::framework_recon::analyze(&source);
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = &args.output {
+        fs::write(path, format!("{json}\n"))?;
+        eprintln!("Framework reconnaissance written to {}", path.display());
+    } else {
+        println!("{json}");
     }
     Ok(())
 }
