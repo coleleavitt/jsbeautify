@@ -100,7 +100,11 @@ fn scan_expr<'a>(
             }
         }
         Expression::ArrowFunctionExpression(func) => {
-            scan_stmts(&func.body.statements, dispatchers, bodies, alloc);
+            if let Some(body) = func.body.as_function_body() {
+                scan_stmts(&body.statements, dispatchers, bodies, alloc);
+            } else if let Some(expr) = func.body.as_expression() {
+                scan_expr(expr, dispatchers, bodies, alloc);
+            }
         }
         Expression::AssignmentExpression(assign) => {
             scan_expr(&assign.right, dispatchers, bodies, alloc);

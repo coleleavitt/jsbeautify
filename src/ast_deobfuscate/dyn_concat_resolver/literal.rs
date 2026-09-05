@@ -1,20 +1,11 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{Expression, StringLiteral, TemplateElement, TemplateElementValue};
+use oxc_allocator::GetAllocator;
+use oxc_ast::ast::{Expression, TemplateElement, TemplateElementValue};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use std::cell::Cell;
 
 use super::Ctx;
 
 pub(super) fn make_string_literal<'a>(value: &str, ctx: &Ctx<'a>) -> Expression<'a> {
-    let interned = ctx.ast.str(value).clone_in(ctx.ast.allocator);
-    Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        value: interned,
-        raw: None,
-        lone_surrogates: false,
-    }))
+    Expression::new_string_literal(SPAN, ctx.allocator().alloc_str(value), None, ctx)
 }
 
 fn escape_template_raw(value: &str) -> String {
@@ -33,17 +24,8 @@ fn escape_template_raw(value: &str) -> String {
 }
 
 pub(super) fn make_template_element<'a>(value: &str, tail: bool, ctx: &Ctx<'a>) -> TemplateElement<'a> {
-    let cooked = ctx.ast.str(value);
+    let cooked = oxc_ast::ast::Str::from_str_in(ctx.allocator().alloc_str(value), ctx);
     let raw_text = escape_template_raw(value);
-    let raw = ctx.ast.str(&raw_text);
-    TemplateElement {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        tail,
-        value: TemplateElementValue {
-            cooked: Some(cooked),
-            raw,
-        },
-        lone_surrogates: false,
-    }
+    let raw = oxc_ast::ast::Str::from_str_in(&raw_text, ctx);
+    TemplateElement::new(SPAN, TemplateElementValue { cooked: Some(cooked), raw }, tail, ctx)
 }

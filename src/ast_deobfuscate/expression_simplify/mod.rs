@@ -1,8 +1,6 @@
-use oxc_ast::ast::{EmptyStatement, Expression, Statement};
+use oxc_ast::ast::{Expression, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -39,13 +37,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExpressionSimplifier {
         if let Statement::DebuggerStatement(_) = stmt {
             eprintln!("[AST] Removing debugger statement");
             self.changed = true;
-            *stmt = Statement::EmptyStatement(oxc_allocator::Box::new_in(
-                EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                },
-                ctx.ast.allocator,
-            ));
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }
 }

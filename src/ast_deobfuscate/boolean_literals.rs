@@ -63,11 +63,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
         let result = !truthy;
         eprintln!("[AST] Converting !<literal> -> {result}");
         self.changed = true;
-        *expr = Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: result,
-        }));
+        *expr = Expression::new_boolean_literal(SPAN, result, ctx);
     }
 }
 

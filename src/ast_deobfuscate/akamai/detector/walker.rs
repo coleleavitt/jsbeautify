@@ -105,7 +105,13 @@ fn walk_detector_expr(expr: &Expression<'_>, detector: &mut AkamaiDetector) {
                 walk_detector(&body.statements, detector);
             }
         }
-        Expression::ArrowFunctionExpression(func) => walk_detector(&func.body.statements, detector),
+        Expression::ArrowFunctionExpression(func) => {
+            if let Some(body) = func.body.as_function_body() {
+                walk_detector(&body.statements, detector);
+            } else if let Some(expr) = func.body.as_expression() {
+                walk_detector_expr(expr, detector);
+            }
+        }
         Expression::StaticMemberExpression(sme) => walk_detector_expr(&sme.object, detector),
         Expression::ComputedMemberExpression(cme) => {
             walk_detector_expr(&cme.object, detector);

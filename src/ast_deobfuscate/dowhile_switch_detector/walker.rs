@@ -67,7 +67,11 @@ fn walk_expr(expr: &Expression<'_>, map: &mut DoWhileDispatcherMap) {
             }
         }
         Expression::ArrowFunctionExpression(func) => {
-            walk_stmts(&func.body.statements, map);
+            if let Some(body) = func.body.as_function_body() {
+                walk_stmts(&body.statements, map);
+            } else if let Some(expr) = func.body.as_expression() {
+                walk_expr(expr, map);
+            }
         }
         Expression::AssignmentExpression(assign) => {
             walk_expr(&assign.right, map);

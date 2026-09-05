@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Expression, ObjectPropertyKind, Statement};
+use oxc_ast::ast::{Expression, ObjectPropertyKind};
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
@@ -69,18 +69,11 @@ impl ExportNameCollector {
                 continue;
             };
 
-            if !arrow.expression || !arrow.params.items.is_empty() {
+            if !arrow.params.items.is_empty() {
                 continue;
             }
 
-            // Body should be a single ExpressionStatement with an Identifier
-            let Some(stmt) = arrow.body.statements.first() else {
-                continue;
-            };
-            let Statement::ExpressionStatement(es) = stmt else {
-                continue;
-            };
-            let Expression::Identifier(mangled_id) = &es.expression else {
+            let Some(Expression::Identifier(mangled_id)) = arrow.body.as_expression() else {
                 continue;
             };
 

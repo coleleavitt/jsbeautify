@@ -54,13 +54,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ArrayCoerceFold {
         }
         self.folded += 1;
 
-        *expr = Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: ctx.ast.str(replacement),
-            raw: None,
-            lone_surrogates: false,
-        }));
+        *expr = Expression::new_string_literal(SPAN, replacement, None, ctx);
     }
 }
 

@@ -8,11 +8,9 @@
 //! because `P6` is a top-level function that doesn't use `this`.
 
 use oxc_allocator::CloneIn;
-use oxc_ast::ast::{Argument, CallExpression, Expression};
+use oxc_ast::ast::{Argument, Expression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -55,25 +53,17 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallThisSimplifier {
         }
 
         let callee_name = ident.name.as_str().to_string();
-        let new_callee = sme.object.clone_in_with_semantic_ids(ctx.ast.allocator);
+        let new_callee = sme.object.clone_in_with_semantic_ids(ctx);
         let mut new_args = ctx.ast.vec();
         for arg in call.arguments.iter().skip(1) {
-            new_args.push(arg.clone_in_with_semantic_ids(ctx.ast.allocator));
+            new_args.push(arg.clone_in_with_semantic_ids(ctx));
         }
 
         if self.rewrites < 10 {
             eprintln!("[AST/call-this] rewriting {callee_name}.call(this, ...) -> {callee_name}(...)");
         }
         self.rewrites += 1;
-        *expr = Expression::CallExpression(ctx.ast.alloc(CallExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            callee: new_callee,
-            arguments: new_args,
-            optional: false,
-            type_arguments: None,
-            pure: false,
-        }));
+        *expr = Expression::new_call_expression(SPAN, new_callee, None, new_args, false, ctx);
     }
 }
 

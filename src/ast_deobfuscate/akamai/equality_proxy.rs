@@ -178,10 +178,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for EqualityProxyUnwrapper {
             let Argument::SpreadElement(_) = &call.arguments[1] else {
                 let left = call.arguments[0]
                     .to_expression()
-                    .clone_in_with_semantic_ids(ctx.ast.allocator);
+                    .clone_in_with_semantic_ids(ctx.allocator());
                 let right = call.arguments[1]
                     .to_expression()
-                    .clone_in_with_semantic_ids(ctx.ast.allocator);
+                    .clone_in_with_semantic_ids(ctx.allocator());
                 if self.unwrapped < 10 {
                     eprintln!(
                         "[AKAMAI/eq-proxy] inline {}(a, b) -> a {:?} b  (call #{})",

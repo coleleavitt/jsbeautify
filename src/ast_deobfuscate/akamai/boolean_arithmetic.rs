@@ -1,9 +1,7 @@
-use oxc_ast::ast::{BinaryOperator, Expression, NumericLiteral, UnaryOperator};
+use oxc_ast::ast::{BinaryOperator, Expression, UnaryOperator};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_syntax::number::NumberBase;
 use oxc_traverse::Traverse;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -41,17 +39,17 @@ impl BooleanArithmeticFolder {
     fn make_number<'a>(val: f64, ctx: &Ctx<'a>) -> Expression<'a> {
         let as_int = val as i64;
         let raw = if (as_int as f64 - val).abs() < f64::EPSILON {
-            Some(ctx.ast.str(&as_int.to_string()))
+            as_int.to_string()
         } else {
-            Some(ctx.ast.str(&val.to_string()))
+            val.to_string()
         };
-        Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: val,
-            raw,
-            base: NumberBase::Decimal,
-        }))
+        Expression::new_numeric_literal(
+            SPAN,
+            val,
+            Some(oxc_ast::ast::Str::new_in(&raw, ctx)),
+            NumberBase::Decimal,
+            ctx,
+        )
     }
 }
 

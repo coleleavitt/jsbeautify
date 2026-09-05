@@ -1,6 +1,6 @@
 //! Bun module wrapper handle renaming.
 
-use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, IdentifierReference, VariableDeclarator};
+use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, Ident, IdentifierReference, VariableDeclarator};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -123,7 +123,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunModuleHandleRenamer {
             return;
         };
         if ident.name.as_str() != new_name {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, &ctx.ast);
             self.renamed_decls += 1;
         }
     }
@@ -136,7 +136,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunModuleHandleRenamer {
             return;
         };
         if ident.name.as_str() != new_name {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, &ctx.ast);
             self.renamed_refs += 1;
         }
     }

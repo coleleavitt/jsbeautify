@@ -45,12 +45,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UndefinedPatternNormalizer {
                 eprintln!("[AKAMAI/undef-pat] [][[]] -> undefined");
             }
             self.replaced += 1;
-            *expr = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                name: ctx.ast.ident("undefined"),
-                reference_id: Cell::default(),
-            }));
+            *expr = Expression::new_identifier_reference(SPAN, "undefined", ctx);
         }
     }
 }

@@ -102,7 +102,11 @@ fn scan_expr_for_entries(
             }
         }
         Expression::ArrowFunctionExpression(func) => {
-            scan_stmts_for_entries(&func.body.statements, dispatchers, entries);
+            if let Some(body) = func.body.as_function_body() {
+                scan_stmts_for_entries(&body.statements, dispatchers, entries);
+            } else if let Some(expr) = func.body.as_expression() {
+                scan_expr_for_entries(expr, dispatchers, entries);
+            }
         }
         Expression::AssignmentExpression(a) => scan_expr_for_entries(&a.right, dispatchers, entries),
         Expression::BinaryExpression(b) => {

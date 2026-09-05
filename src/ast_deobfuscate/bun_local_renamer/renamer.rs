@@ -1,4 +1,4 @@
-use oxc_ast::ast::{BindingIdentifier, Function, IdentifierReference};
+use oxc_ast::ast::{BindingIdentifier, Function, Ident, IdentifierReference};
 use oxc_traverse::Traverse;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -53,7 +53,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LocalRenamer {
         if let Some(new_name) = self.map.get(&symbol_id)
             && ident.name.as_str() != new_name
         {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, &ctx.ast);
             self.renamed_refs += 1;
         }
     }
@@ -65,7 +65,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LocalRenamer {
         if let Some(new_name) = self.map.get(&symbol_id)
             && ident.name.as_str() != new_name
         {
-            ident.name = ctx.ast.ident(new_name);
+            ident.name = Ident::from_str_in(new_name, &ctx.ast);
             self.renamed += 1;
         }
     }
@@ -76,7 +76,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LocalRenamer {
             && let Some(new_name) = self.map.get(&symbol_id)
             && id.name.as_str() != new_name
         {
-            id.name = ctx.ast.ident(new_name);
+            id.name = Ident::from_str_in(new_name, &ctx.ast);
             self.renamed_functions += 1;
         }
     }

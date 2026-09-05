@@ -1,4 +1,4 @@
-use oxc_ast::ast::IdentifierReference;
+use oxc_ast::ast::{Ident, IdentifierReference};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 
@@ -51,7 +51,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameRenamer {
         if let Some(original) = self.lookup(symbol_id)
             && ident.name.as_str() != original
         {
-            ident.name = ctx.ast.ident(original);
+            ident.name = Ident::from_str_in(original, &ctx.ast);
             self.renamed_refs += 1;
         }
     }
@@ -63,7 +63,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameRenamer {
         if let Some(original) = self.lookup(symbol_id)
             && ident.name.as_str() != original
         {
-            ident.name = ctx.ast.ident(original);
+            ident.name = Ident::from_str_in(original, &ctx.ast);
             self.renamed_decls += 1;
         }
     }
@@ -76,7 +76,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameRenamer {
             if let Some(original) = self.lookup(symbol_id)
                 && id.name.as_str() != original
             {
-                id.name = ctx.ast.ident(original);
+                id.name = Ident::from_str_in(original, &ctx.ast);
                 self.renamed_decls += 1;
             }
         }

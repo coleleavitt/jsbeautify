@@ -33,24 +33,20 @@ impl AlgebraicSimplifier {
     }
 
     pub(super) fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator)
+        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 
     pub(super) fn make_number<'a>(val: i64, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::NumericLiteral(ctx.ast.alloc(NumericLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: val as f64,
-            raw: Some(ctx.ast.str(&val.to_string())),
-            base: NumberBase::Decimal,
-        }))
+        Expression::new_numeric_literal(
+            SPAN,
+            val as f64,
+            Some(oxc_ast::ast::Str::new_in(&val.to_string(), ctx)),
+            NumberBase::Decimal,
+            ctx,
+        )
     }
 
     pub(super) fn make_boolean<'a>(val: bool, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        Expression::BooleanLiteral(ctx.ast.alloc(BooleanLiteral {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            value: val,
-        }))
+        Expression::new_boolean_literal(SPAN, val, ctx)
     }
 }

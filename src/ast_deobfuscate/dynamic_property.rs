@@ -1,11 +1,7 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{
-    BinaryOperator, ComputedMemberExpression, Expression, IdentifierName, MemberExpression, StaticMemberExpression,
-};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{BinaryOperator, ComputedMemberExpression, Expression, MemberExpression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -33,19 +29,10 @@ impl DynamicPropertyConverter {
 
         let object = Self::clone_expression(&computed.object, ctx);
 
-        Some(Expression::StaticMemberExpression(ctx.ast.alloc(
-            StaticMemberExpression {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                object,
-                property: IdentifierName {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident(&property_name),
-                },
-                optional: false,
-            },
-        )))
+        let property = oxc_ast::ast::IdentifierName::new(SPAN, ctx.allocator().alloc_str(&property_name), ctx);
+        Some(Expression::new_static_member_expression(
+            SPAN, object, property, false, ctx,
+        ))
     }
 
     fn try_extract_property_name(expr: &Expression<'_>) -> Option<String> {
@@ -70,7 +57,7 @@ impl DynamicPropertyConverter {
     }
 
     fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator)
+        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 }
 

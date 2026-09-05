@@ -181,7 +181,11 @@ fn scan_expr_for_tracker(expr: &Expression<'_>, map: &mut FxHashMap<String, Trac
             }
         }
         Expression::ArrowFunctionExpression(func) => {
-            collect_tracker_stats(&func.body.statements, map);
+            if let Some(body) = func.body.as_function_body() {
+                collect_tracker_stats(&body.statements, map);
+            } else if let Some(expr) = func.body.as_expression() {
+                scan_expr_for_tracker(expr, map);
+            }
         }
         Expression::ParenthesizedExpression(paren) => scan_expr_for_tracker(&paren.expression, map),
         _ => {}

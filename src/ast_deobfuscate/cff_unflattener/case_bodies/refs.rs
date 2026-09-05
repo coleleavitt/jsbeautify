@@ -101,7 +101,11 @@ fn expr_references(expr: &Expression<'_>, name: &str) -> bool {
             .body
             .as_ref()
             .is_some_and(|b| b.statements.iter().any(|s| stmt_references(s, name))),
-        Expression::ArrowFunctionExpression(a) => a.body.statements.iter().any(|s| stmt_references(s, name)),
+        Expression::ArrowFunctionExpression(a) => a
+            .body
+            .as_function_body()
+            .is_some_and(|body| body.statements.iter().any(|s| stmt_references(s, name)))
+            || a.body.as_expression().is_some_and(|expr| expr_references(expr, name)),
         Expression::TemplateLiteral(t) => t.expressions.iter().any(|e| expr_references(e, name)),
         Expression::TaggedTemplateExpression(t) => {
             expr_references(&t.tag, name) || t.quasi.expressions.iter().any(|e| expr_references(e, name))

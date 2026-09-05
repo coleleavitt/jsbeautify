@@ -58,11 +58,12 @@ fn normalize_typeof_undefined<'a>(binary: &BinaryExpression<'a>, ctx: &Ctx<'a>) 
             BinaryOperator::LessThan => BinaryOperator::StrictInequality,
             _ => return None,
         };
-        return Some(ctx.ast.expression_binary(
+        return Some(Expression::new_binary_expression(
             SPAN,
-            binary.left.clone_in_with_semantic_ids(ctx.ast.allocator),
+            binary.left.clone_in_with_semantic_ids(ctx),
             op,
             undefined_string(ctx),
+            ctx,
         ));
     }
 
@@ -72,11 +73,12 @@ fn normalize_typeof_undefined<'a>(binary: &BinaryExpression<'a>, ctx: &Ctx<'a>) 
             BinaryOperator::GreaterThan => BinaryOperator::StrictInequality,
             _ => return None,
         };
-        return Some(ctx.ast.expression_binary(
+        return Some(Expression::new_binary_expression(
             SPAN,
-            binary.right.clone_in_with_semantic_ids(ctx.ast.allocator),
+            binary.right.clone_in_with_semantic_ids(ctx),
             op,
             undefined_string(ctx),
+            ctx,
         ));
     }
 
@@ -89,12 +91,17 @@ fn normalize_numeric_idiom<'a>(binary: &BinaryExpression<'a>, ctx: &Ctx<'a>) -> 
     }
 
     match numeric_value(&binary.left)? {
-        1.0 => Some(ctx.ast.expression_identifier(SPAN, "Infinity")),
+        1.0 => Some(Expression::new_identifier(SPAN, "Infinity", ctx)),
         -1.0 => {
-            let infinity = ctx.ast.expression_identifier(SPAN, "Infinity");
-            Some(ctx.ast.expression_unary(SPAN, UnaryOperator::UnaryNegation, infinity))
+            let infinity = Expression::new_identifier(SPAN, "Infinity", ctx);
+            Some(Expression::new_unary_expression(
+                SPAN,
+                UnaryOperator::UnaryNegation,
+                infinity,
+                ctx,
+            ))
         }
-        0.0 => Some(ctx.ast.expression_identifier(SPAN, "NaN")),
+        0.0 => Some(Expression::new_identifier(SPAN, "NaN", ctx)),
         _ => None,
     }
 }
@@ -110,9 +117,7 @@ fn is_positive_zero_literal(expr: &Expression<'_>) -> bool {
 }
 
 fn undefined_string<'a>(ctx: &Ctx<'a>) -> Expression<'a> {
-    let value = ctx.ast.str("undefined");
-    let raw = ctx.ast.str("\"undefined\"");
-    ctx.ast.expression_string_literal(SPAN, value, Some(raw))
+    Expression::new_string_literal(SPAN, "undefined", Some("\"undefined\""), ctx)
 }
 
 fn is_typeof_expr(expr: &Expression<'_>) -> bool {

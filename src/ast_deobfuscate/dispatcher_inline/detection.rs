@@ -76,31 +76,20 @@ impl DispatcherInliner {
     }
 
     fn extract_arrow_return(arrow: &ArrowFunctionExpression<'_>) -> Option<ReturnValue> {
-        // Case 1: Expression body: x => value (single expression in function body)
-        if arrow.expression {
-            // When expression is true, body contains a single ExpressionStatement
-            if arrow.body.statements.len() == 1
-                && let Statement::ExpressionStatement(expr_stmt) = &arrow.body.statements[0]
-            {
-                return Self::extract_literal_value(&expr_stmt.expression);
-            }
-            return None;
+        if let Some(expr) = arrow.body.as_expression() {
+            return Self::extract_literal_value(expr);
         }
 
-        // Case 2: Block body with single return statement
-        if arrow.body.statements.len() == 1
-            && let Statement::ReturnStatement(ret) = &arrow.body.statements[0]
+        let statements = &arrow.body.as_function_body()?.statements;
+
+        if statements.len() == 1
+            && let Statement::ReturnStatement(ret) = &statements[0]
         {
             return ret.argument.as_ref().and_then(Self::extract_literal_value);
         }
 
-        // Case 3: Block body with expression statement (last statement)
-        // x => { statements; value }
-        if !arrow.body.statements.is_empty()
-            && let Statement::ExpressionStatement(expr_stmt) = &arrow.body.statements[arrow.body.statements.len() - 1]
-        {
-            // Check that all previous statements are not returns (so value is the "implicit return")
-            let all_non_return = arrow.body.statements[..arrow.body.statements.len() - 1]
+        if let Some(Statement::ExpressionStatement(expr_stmt)) = statements.last() {
+            let all_non_return = statements[..statements.len() - 1]
                 .iter()
                 .all(|s| !matches!(s, Statement::ReturnStatement(_)));
 

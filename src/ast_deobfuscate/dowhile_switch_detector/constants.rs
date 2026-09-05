@@ -201,7 +201,11 @@ fn collect_constants_from_expr(
             }
         }
         Expression::ArrowFunctionExpression(func) => {
-            collect_constants_from_stmts(&func.body.statements, known, deferred);
+            if let Some(body) = func.body.as_function_body() {
+                collect_constants_from_stmts(&body.statements, known, deferred);
+            } else if let Some(expr) = func.body.as_expression() {
+                collect_constants_from_expr(expr, known, deferred);
+            }
         }
         Expression::AssignmentExpression(assign) => {
             collect_constants_from_expr(&assign.right, known, deferred);

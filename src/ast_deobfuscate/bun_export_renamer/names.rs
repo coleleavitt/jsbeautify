@@ -68,7 +68,7 @@ pub(super) const fn is_identifier_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
 
-pub(super) fn is_valid_identifier(name: &str) -> bool {
+pub fn is_valid_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -77,7 +77,7 @@ pub(super) fn is_valid_identifier(name: &str) -> bool {
     is_identifier_start(first) && chars.all(is_identifier_continue)
 }
 
-pub(super) fn sanitize_identifier(name: &str) -> String {
+pub fn sanitize_identifier(name: &str) -> String {
     let mut out = String::with_capacity(name.len().max("exported".len()));
     for ch in name.chars() {
         if out.is_empty() {

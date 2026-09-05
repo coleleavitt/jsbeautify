@@ -59,12 +59,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
             return;
         }
 
-        let new_callee = sme.object.clone_in_with_semantic_ids(ctx.ast.allocator);
+        let new_callee = sme.object.clone_in_with_semantic_ids(ctx.allocator());
         let new_args: OxcVec<'a, Argument<'a>> = match method {
             "call" => {
-                let mut v = ctx.ast.vec();
+                let mut v = oxc_allocator::ArenaVec::new_in(ctx);
                 for arg in call.arguments.iter().skip(1) {
-                    v.push(arg.clone_in_with_semantic_ids(ctx.ast.allocator));
+                    v.push(arg.clone_in_with_semantic_ids(ctx.allocator()));
                 }
                 v
             }
@@ -83,10 +83,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
                 }) {
                     return;
                 }
-                let mut v = ctx.ast.vec();
+                let mut v = oxc_allocator::ArenaVec::new_in(ctx);
                 for el in &arr.elements {
                     if let Some(e) = el.as_expression() {
-                        v.push(Argument::from(e.clone_in_with_semantic_ids(ctx.ast.allocator)));
+                        v.push(Argument::from(e.clone_in_with_semantic_ids(ctx.allocator())));
                     } else {
                         return;
                     }

@@ -34,7 +34,7 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 pub type ExportNameMap = FxHashMap<SymbolId, String>;
 
 mod collector;
-mod names;
+pub(crate) mod names;
 mod renamer;
 mod unique;
 

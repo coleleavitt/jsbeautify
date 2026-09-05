@@ -1,10 +1,8 @@
+use oxc_allocator::GetAllocator;
 use oxc_ast::ast::{
-    BinaryExpression, BinaryOperator, ComputedMemberExpression, Expression, IdentifierName, IdentifierReference,
-    StaticMemberExpression, StringLiteral, UnaryExpression, UnaryOperator,
+    BinaryExpression, BinaryOperator, ComputedMemberExpression, Expression, UnaryExpression, UnaryOperator,
 };
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
-use std::cell::Cell;
 
 use super::{Ctx, ExpressionSimplifier};
 
@@ -109,12 +107,7 @@ impl ExpressionSimplifier {
 
         eprintln!("[AST] Simplifying void expr to undefined");
         self.changed = true;
-        Some(Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            name: ctx.ast.ident("undefined"),
-            reference_id: Cell::default(),
-        })))
+        Some(Expression::new_identifier(SPAN, "undefined", ctx))
     }
 
     pub(super) fn try_simplify_bracket_to_dot<'a>(
@@ -129,19 +122,15 @@ impl ExpressionSimplifier {
                 eprintln!("[AST] Converting [\"{prop_name}\"]] to .{prop_name}");
                 self.changed = true;
 
-                return Some(Expression::StaticMemberExpression(ctx.ast.alloc(
-                    StaticMemberExpression {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: SPAN,
-                        object: Self::clone_expression(&member.object, ctx),
-                        property: IdentifierName {
-                            node_id: Cell::new(NodeId::DUMMY),
-                            span: SPAN,
-                            name: ctx.ast.ident(prop_name),
-                        },
-                        optional: member.optional,
-                    },
-                )));
+                let object = Self::clone_expression(&member.object, ctx);
+                let property = oxc_ast::ast::IdentifierName::new(SPAN, prop_name, ctx);
+                return Some(Expression::new_static_member_expression(
+                    SPAN,
+                    object,
+                    property,
+                    member.optional,
+                    ctx,
+                ));
             }
         }
 
@@ -167,13 +156,12 @@ impl ExpressionSimplifier {
             );
             self.changed = true;
 
-            return Some(Expression::StringLiteral(ctx.ast.alloc(StringLiteral {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-                value: ctx.ast.str(&combined),
-                raw: None,
-                lone_surrogates: false,
-            })));
+            return Some(Expression::new_string_literal(
+                SPAN,
+                ctx.allocator().alloc_str(&combined),
+                None,
+                ctx,
+            ));
         }
 
         None

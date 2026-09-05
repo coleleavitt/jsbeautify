@@ -1,4 +1,4 @@
-use oxc_ast::ast::{BindingPattern, Function, IdentifierReference, VariableDeclarator};
+use oxc_ast::ast::{BindingPattern, Function, Ident, IdentifierReference, VariableDeclarator};
 use oxc_traverse::Traverse;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -42,7 +42,7 @@ impl BunRuntimeRenamer {
 impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeRenamer {
     fn exit_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
         if let Some(canon) = self.canonical_for(ident.name.as_str()) {
-            ident.name = ctx.ast.ident(canon);
+            ident.name = Ident::from_str_in(canon, &ctx.ast);
             self.renamed_refs += 1;
         }
     }
@@ -52,7 +52,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeRenamer {
         if let BindingPattern::BindingIdentifier(ident) = &mut decl.id
             && let Some(canon) = self.canonical_for(ident.name.as_str())
         {
-            ident.name = ctx.ast.ident(canon);
+            ident.name = Ident::from_str_in(canon, &ctx.ast);
             self.renamed_decls += 1;
         }
         // Rename inside `var { defineProperty: fjH, … } = Object;`
@@ -61,7 +61,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeRenamer {
                 if let BindingPattern::BindingIdentifier(b) = &mut prop.value
                     && let Some(canon) = self.canonical_for(b.name.as_str())
                 {
-                    b.name = ctx.ast.ident(canon);
+                    b.name = Ident::from_str_in(canon, &ctx.ast);
                     self.renamed_decls += 1;
                 }
             }
@@ -72,7 +72,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeRenamer {
         if let Some(id) = &mut func.id
             && let Some(canon) = self.canonical_for(id.name.as_str())
         {
-            id.name = ctx.ast.ident(canon);
+            id.name = Ident::from_str_in(canon, &ctx.ast);
             self.renamed_decls += 1;
         }
     }

@@ -118,8 +118,12 @@ impl AngularMetadataExtractor {
                 }
             }
             Expression::ArrowFunctionExpression(arrow) => {
-                for stmt in &arrow.body.statements {
-                    self.visit_statement(stmt);
+                if let Some(body) = arrow.body.as_function_body() {
+                    for stmt in &body.statements {
+                        self.visit_statement(stmt);
+                    }
+                } else if let Some(expr) = arrow.body.as_expression() {
+                    self.visit_expression(expr);
                 }
             }
             Expression::CallExpression(call) => {
@@ -187,8 +191,12 @@ impl AngularMetadataExtractor {
                 }
             }
             Expression::ArrowFunctionExpression(arrow) => {
-                for stmt in &arrow.body.statements {
-                    self.visit_statement(stmt);
+                if let Some(body) = arrow.body.as_function_body() {
+                    for stmt in &body.statements {
+                        self.visit_statement(stmt);
+                    }
+                } else if let Some(expr) = arrow.body.as_expression() {
+                    self.visit_expression(expr);
                 }
             }
             Expression::CallExpression(call) => {

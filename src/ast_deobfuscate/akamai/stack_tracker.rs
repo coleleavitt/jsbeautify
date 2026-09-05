@@ -166,13 +166,13 @@ impl<'a> Traverse<'a, DeobfuscateState> for StackTrackerRemover {
         // Drop tracker calls from comma sequences.
         if let Expression::SequenceExpression(seq) = expr {
             let before = seq.expressions.len();
-            let mut kept = ctx.ast.vec();
+            let mut kept = oxc_allocator::ArenaVec::new_in(ctx);
             for e in &seq.expressions {
                 if self.is_tracker_call(e) {
                     self.removed_calls += 1;
                     continue;
                 }
-                kept.push(e.clone_in_with_semantic_ids(ctx.ast.allocator));
+                kept.push(e.clone_in_with_semantic_ids(ctx.allocator()));
             }
             if kept.len() == before {
                 return;

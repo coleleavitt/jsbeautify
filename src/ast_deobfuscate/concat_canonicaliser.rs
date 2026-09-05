@@ -15,11 +15,9 @@
 //! or when the receiver is itself a `.concat` call (nested concat chains collapse).
 
 use oxc_allocator::CloneIn;
-use oxc_ast::ast::{BinaryExpression, BinaryOperator, Expression};
+use oxc_ast::ast::{BinaryOperator, Expression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -53,13 +51,7 @@ fn receiver_is_string_like(expr: &Expression<'_>) -> bool {
 }
 
 fn make_plus<'a>(left: Expression<'a>, right: Expression<'a>, ctx: &Ctx<'a>) -> Expression<'a> {
-    Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-        node_id: Cell::new(NodeId::DUMMY),
-        span: SPAN,
-        left,
-        operator: BinaryOperator::Addition,
-        right,
-    }))
+    Expression::new_binary_expression(SPAN, left, BinaryOperator::Addition, right, ctx)
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
@@ -86,12 +78,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
             );
         }
         self.rewrites += 1;
-        let mut acc = sme.object.clone_in_with_semantic_ids(ctx.ast.allocator);
+        let mut acc = sme.object.clone_in_with_semantic_ids(ctx);
         for arg in &call.arguments {
-            let rhs = arg
-                .as_expression()
-                .unwrap()
-                .clone_in_with_semantic_ids(ctx.ast.allocator);
+            let rhs = arg.as_expression().unwrap().clone_in_with_semantic_ids(ctx);
             acc = make_plus(acc, rhs, ctx);
         }
         *expr = acc;
