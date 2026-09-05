@@ -59,8 +59,10 @@ jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
 
 # Bounded, static inspection of a JavaScript-hosted VM and literal embedded WebAssembly.
 # JavaScript is never executed; WebAssembly is validated but never instantiated.
-# Reports contain structured-control/nesting metadata, not decompiled code or reconstructed high-level flow.
 jsbeautify analyze-vm bundle.js -o vm-report.json --extract-wasm ./vm-wasm
+
+# Bounded, non-executing framework/build-tool reconnaissance as stable JSON.
+jsbeautify framework-recon bundle.js -o framework-report.json
 ```
 
 ## CLI Reference
@@ -75,6 +77,7 @@ Commands:
   reconstruct      Rebuild original sources from a standalone .js.map file
   align            Align two bundle versions for a stable diff
   analyze-vm       Statically inspect a JavaScript-hosted VM and embedded WebAssembly
+  framework-recon  Extract framework and build-tool findings as JSON
 
 Arguments:
   [FILE]  Input JavaScript file, or "-" for stdin [default: -]
@@ -117,55 +120,35 @@ let clean = deobfuscator.deobfuscate(&obfuscated).unwrap();
 
 ## Deobfuscation Pipeline
 
-The `--deobfuscate` flag runs a **Phase 0 pre-processor** followed by a **20-phase AST transformation pipeline**. Each phase feeds the next — order matters.
+`--deobfuscate` is an ordered AST pipeline. The implementation is split by
+lifetime, not into one source file per numbered phase:
 
-### Phase 0: Encrypted Eval Decryption (Pre-AST)
+1. **Pre-AST input handling** decrypts supported encrypted `eval` payloads.
+2. **Structural arena (Phases 0–12.5)** parses with Oxc, runs Akamai and Bun
+   prepasses, control-flow and string decoding, proxy/function simplification,
+   dead-code/dead-variable sweeps, normalization, and variable naming.
+3. **Phase 12.6 checkpoint** code-generates the structural result, drops the
+   Oxc bump arena, and re-parses into a fresh arena. This bounds peak memory and
+   rejects invalid generated JavaScript.
+4. **Cosmetic-A arena (Phases 13–15)** removes empty statements, splits sequence
+   and multi-variable statements, and runs another validated dead-variable
+   sweep.
+5. **Phase 15.6 checkpoint** repeats the codegen, arena reset, and strict
+   re-parse before the final transforms.
+6. **Cosmetic-B arena (Phases 16–19.5)** converts statement-level ternaries,
+   `switch(true)`, and short circuits; evaluates safe literal `JSON.parse`
+   calls; normalizes optional/nullish syntax; unwraps safe IIFEs; detects
+   esbuild helpers; and performs the final dead-variable sweep.
+7. **Final output (Phases 19.6–21.5)** validates AST codegen, adds webpack,
+   esbuild, Bun, enum, namespace, and arrow annotations, then validates the
+   post-annotation JavaScript again.
 
-Before AST parsing, jsbeautify detects and decrypts a specific obfuscation pattern used by phishing kits (Tycoon2FA and similar):
-
-```javascript
-// Input: Encrypted eval pattern
-var data = "NjFiMjZkZDA6MTcwNDcy:SGVsbG8gV29ybGQh...";  // Base64 with PRNG seed
-var chars = ['\x23e64','\x23v05','\x23a0B','\x23l2C'];   // Steganographic "eval"
-// ... PRNG XOR + Caesar cipher decryption logic ...
-window[chars.map(c => c[1]).join('')](decrypted);       // eval(decrypted)
-
-// Output: Decrypted code directly in source
-console.log("Hello World!");
-```
-
-Encryption layers removed:
-1. Base64 decode with colon-delimited PRNG seed and counter
-2. XOR keystream via custom PRNG (seed-based)
-3. Variable-shift Caesar cipher (shift values 1-25 per character)
-4. Color-hex steganography for the `eval` call
-
-This pattern was reverse-engineered from a live phishing campaign. The decrypted payload replaces the entire encrypted block in-place before AST processing continues.
-
-### AST Transformation Phases (1-20)
-
-| Phase | Pass | What it does |
-|------:|------|-------------|
-| 1 | Control flow unflattening | Reconstructs original control flow from switch-based state machines |
-| 2 | String array rotation | Detects and applies array rotation (shift/push IIFE patterns) |
-| 3 | Decoder / string array / dispatcher inlining | Resolves decoder functions (base64, RC4, XOR, offset) and inlines string values |
-| 4 | Call proxy inlining | Detects single-use wrapper functions and inlines their targets |
-| 5 | Operator proxy inlining | Resolves proxy functions that wrap binary operators |
-| 6 | Expression simplification | Bracket-to-dot notation, `!0`->`true`, `void 0`->`undefined`, constant folding, algebraic simplification, strength reduction |
-| 7 | Dead code elimination | Removes `if(false)`, `while(false)`, unreachable code after return/throw |
-| 8 | Dead variable elimination | Removes variables that are never read |
-| 9 | Function inlining | Inlines single-use functions with simple bodies |
-| 10 | Array unpacking / dynamic property / ternary / try-catch | Resolves constant array indexing, simplifies constant ternaries, removes empty catch blocks |
-| 11 | Unicode / boolean / void / object sparsing | Normalizes unicode identifiers, boolean literals, void expressions, sparse object patterns |
-| 12 | Variable renaming | Renames hex-encoded identifiers (`_0x1a2b`) to readable names |
-| 13 | Empty statement cleanup | Removes leftover empty statements from prior passes |
-| 14 | Sequence expression splitting | Splits comma expressions (`a(), b(), c()`) into individual statements |
-| 15 | Multi-variable splitting | Splits `let a=1, b=2, c=3` into individual declarations |
-| 16 | Ternary to if/else | Converts standalone ternary expression statements to if/else blocks |
-| 17 | Short-circuit to if | Converts standalone `a && b()` / `a \|\| b()` to if statements |
-| 18 | IIFE unwrapping | Unwraps zero-argument arrow IIFEs into inline statements |
-| 19 | esbuild helper detection | Identifies `__commonJS`, `__esm`, `__export`, `__toESM`, `__toCommonJS` runtime helpers |
-| 20 | Module annotation | Labels webpack, esbuild, and Bun module boundaries with comment separators |
+The checkpoints are deliberate correctness and memory boundaries. State that
+must survive them (currently the Bun helper map and source type) is passed
+explicitly; all arena-owned AST data is discarded. See
+`src/ast_deobfuscate/engine/structural.rs`,
+`src/ast_deobfuscate/engine/cosmetic.rs`, and
+`src/ast_deobfuscate/engine/final_output.rs` for the authoritative order.
 
 ## Cross-Version Alignment
 
@@ -199,11 +182,42 @@ Patterns detected:
 - `this.name = "ClassName"` in class constructors
 - `Component.displayName = "ComponentName"` assignments
 
-## Testing
+## Development and testing
+
+This repository follows upstream Rust and Oxc rather than advertising a fixed
+minimum Rust version. There is intentionally no `rust-version` package key and
+no `rust-toolchain.toml`: use a current `rustc`/Cargo toolchain that can build
+the pinned Oxc revision in `Cargo.toml`, and update that Oxc revision and the
+code together.
+
+Run the full local gate across library, binary, and the single aggregated
+integration-test target:
 
 ```bash
-cargo test --lib
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
 ```
+
+Targeted checks:
+
+```bash
+# Static VM/Wasm analyzer integration tests (never executes target JavaScript)
+cargo test --test integration analyze_vm
+
+# Framework/build-tool extractor unit tests. These APIs are compiled and tested,
+# but are not exposed as CLI commands or automatically run by deobfuscation.
+cargo test --lib ast_deobfuscate::angular_metadata
+cargo test --lib ast_deobfuscate::angular_decompiler
+cargo test --lib ast_deobfuscate::angular_route_extractor
+cargo test --lib ast_deobfuscate::ngrx_extractor
+cargo test --lib ast_deobfuscate::rxjs_annotator
+cargo test --lib ast_deobfuscate::webpack_runtime_decoder
+```
+
+`Cargo.toml` sets `autotests = false` and declares `tests/integration/main.rs` as
+the integration-test aggregator, so `--all-targets` is the least ambiguous way
+to exercise every declared target.
 
 ## License
 
