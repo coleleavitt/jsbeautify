@@ -49,6 +49,7 @@ pub(super) struct SyntaxFacts {
     pub(super) decoder_calls: Vec<DecoderCallFact>,
     pub(super) decoders: Vec<DecoderFact>,
     pub(super) diagnostics: Vec<String>,
+    pub(super) valid_program: bool,
 }
 
 pub(super) fn collect(source: &str, budget: &mut AnalysisBudget) -> SyntaxFacts {
@@ -67,6 +68,7 @@ pub(super) fn collect(source: &str, budget: &mut AnalysisBudget) -> SyntaxFacts 
     let mut facts = SyntaxFacts {
         arrays: collector.arrays,
         diagnostics: Vec::new(),
+        valid_program: !parsed.panicked,
         ..SyntaxFacts::default()
     };
     if !parsed.diagnostics.is_empty() {

@@ -103,7 +103,11 @@ pub fn analyze_artifact_with_limits(source: &str, limits: AnalysisLimits) -> VmA
         diagnostics,
         ..VmAnalysisReport::default()
     };
-    report.outcome = if budget.exhausted() {
+    report.outcome = if !syntax.valid_program {
+        AnalysisOutcome::Invalid {
+            reason: InvalidAnalysisReason::JavaScriptSyntax,
+        }
+    } else if budget.exhausted() {
         AnalysisOutcome::Truncated {
             reason: TruncatedAnalysisReason::AggregateBudgetExhausted,
         }

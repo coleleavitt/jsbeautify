@@ -4,9 +4,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use super::{
-    AnalysisLimits, AnalysisOutcome, HandlerRole, JsPatternKind, LiteralFoldKind, NotAnalyzedReason,
-    StructuredControlEdgeKind, SymbolRole, TruncatedAnalysisReason, VM_ANALYSIS_SCHEMA_VERSION, analyze,
-    analyze_artifact_with_limits, analyze_with_limits, extract_wasm,
+    AnalysisLimits, AnalysisOutcome, HandlerRole, InvalidAnalysisReason, JsPatternKind, LiteralFoldKind,
+    NotAnalyzedReason, StructuredControlEdgeKind, SymbolRole, TruncatedAnalysisReason, VM_ANALYSIS_SCHEMA_VERSION,
+    analyze, analyze_artifact_with_limits, analyze_with_limits, extract_wasm,
 };
 
 #[test]
@@ -455,6 +455,44 @@ fn source_policy_rejection_is_typed_not_analyzed() {
         }
     );
     assert_eq!(artifact.extracted_wasm, []);
+}
+
+#[test]
+fn malformed_whole_source_has_typed_invalid_outcome() {
+    let report = analyze("const = ;");
+    assert_eq!(
+        report.outcome,
+        AnalysisOutcome::Invalid {
+            reason: InvalidAnalysisReason::JavaScriptSyntax,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&report).expect("serialize invalid report")["outcome"],
+        serde_json::json!({"status": "invalid", "reason": "java_script_syntax"})
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("JavaScript parser"))
+    );
+}
+
+#[test]
+fn recoverable_parser_diagnostic_with_usable_program_is_not_invalid() {
+    let report = analyze("const value = 1; \"unterminated");
+    assert_ne!(
+        report.outcome,
+        AnalysisOutcome::Invalid {
+            reason: InvalidAnalysisReason::JavaScriptSyntax,
+        }
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("JavaScript parser"))
+    );
 }
 
 #[test]
