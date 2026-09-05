@@ -235,7 +235,7 @@ mod tests {
     }
 
     fn nested_parentheses(depth: usize) -> String {
-        format!("const value = {}0{};", "(".repeat(depth), ")".repeat(depth))
+        format!("globalThis.value = {}0{};", "(".repeat(depth), ")".repeat(depth))
     }
 
     #[test]
