@@ -205,8 +205,9 @@ Targeted checks:
 # Static VM/Wasm analyzer integration tests (never executes target JavaScript)
 cargo test --test integration analyze_vm
 
-# Framework/build-tool extractor unit tests. These APIs are compiled and tested,
-# but are not exposed as CLI commands or automatically run by deobfuscation.
+# Individual framework/build-tool extractor helper APIs are compiled and tested.
+# They are not separate CLI commands or automatically run by deobfuscation;
+# their findings are exposed through the aggregate `framework-recon` CLI command.
 cargo test --lib ast_deobfuscate::angular_metadata
 cargo test --lib ast_deobfuscate::angular_decompiler
 cargo test --lib ast_deobfuscate::angular_route_extractor
