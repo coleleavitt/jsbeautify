@@ -13,29 +13,57 @@ mod wasm;
 
 pub use budget::AnalysisLimits;
 pub use report::{
-    ExtractedWasm, HandlerCandidate, HandlerRole, JsPatternFinding, JsPatternKind, LiteralFold, LiteralFoldKind,
-    RoleAnnotationSuggestion, SourceSpan, StructuredControlEdge, StructuredControlEdgeKind, StructuredControlNode,
-    StructuredControlNodeKind, SymbolRole, SymbolRoleSuggestion, VmAnalysisReport, WasmExport, WasmFunctionStructure,
-    WasmImport, WasmModuleReport, WasmOperator, WasmSection,
+    AnalysisOutcome, ExtractedWasm, HandlerCandidate, HandlerRole, InvalidAnalysisReason, JsPatternFinding,
+    JsPatternKind, LiteralFold, LiteralFoldKind, NotAnalyzedReason, RoleAnnotationSuggestion, SourceSpan,
+    StructuredControlEdge, StructuredControlEdgeKind, StructuredControlNode, StructuredControlNodeKind, SymbolRole,
+    SymbolRoleSuggestion, TruncatedAnalysisReason, VM_ANALYSIS_SCHEMA_VERSION, VmAnalysisReport, WasmExport,
+    WasmFunctionStructure, WasmImport, WasmModuleReport, WasmOperator, WasmSection,
 };
+
+/// One bounded analysis result and its exact validated WebAssembly artifacts.
+///
+/// `extracted_wasm` is intentionally excluded from report serialization. CLI
+/// consumers write these in-memory bytes directly instead of parsing and
+/// decoding the input again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmAnalysisArtifact {
+    pub report: VmAnalysisReport,
+    pub extracted_wasm: Vec<ExtractedWasm>,
+}
 
 /// Analyze JavaScript source without executing it or applying transformations.
 #[must_use]
 pub fn analyze(source: &str) -> VmAnalysisReport {
-    analyze_with_limits(source, AnalysisLimits::default())
+    analyze_artifact(source).report
 }
 
 /// Analyze with explicit aggregate hostile-input limits.
 #[must_use]
 pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> VmAnalysisReport {
+    analyze_artifact_with_limits(source, limits).report
+}
+
+/// Produce one report plus the exact validated WebAssembly found during it.
+#[must_use]
+pub fn analyze_artifact(source: &str) -> VmAnalysisArtifact {
+    analyze_artifact_with_limits(source, AnalysisLimits::default())
+}
+
+/// Produce one artifact under a single aggregate hostile-input budget.
+#[must_use]
+pub fn analyze_artifact_with_limits(source: &str, limits: AnalysisLimits) -> VmAnalysisArtifact {
     if source.len() > limits.max_source_bytes {
-        return VmAnalysisReport {
-            diagnostics: vec![format!(
-                "analysis truncated: source is {} bytes; limit is {} bytes",
-                source.len(),
-                limits.max_source_bytes
-            )],
-            ..VmAnalysisReport::default()
+        return VmAnalysisArtifact {
+            report: VmAnalysisReport {
+                outcome: AnalysisOutcome::NotAnalyzed {
+                    reason: NotAnalyzedReason::SourceTooLarge {
+                        actual_bytes: source.len(),
+                        limit_bytes: limits.max_source_bytes,
+                    },
+                },
+                ..VmAnalysisReport::default()
+            },
+            extracted_wasm: Vec::new(),
         };
     }
 
@@ -51,8 +79,11 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> VmAnalysisRe
     } else {
         literals::fold_local_base64_calls(&syntax, &mut budget)
     };
-    let wasm_modules = if budget.exhausted() {
-        Vec::new()
+    let wasm = if budget.exhausted() {
+        wasm::WasmAnalysis {
+            reports: Vec::new(),
+            extracted: Vec::new(),
+        }
     } else {
         wasm::analyze_decoded_modules(&literals.decoded, &mut budget)
     };
@@ -66,51 +97,35 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> VmAnalysisRe
         patterns: javascript.patterns,
         handler_candidates: javascript.handlers,
         literal_folds: literals.folds,
-        wasm_modules,
+        wasm_modules: wasm.reports,
         role_suggestions: javascript.handler_suggestions,
         symbol_role_suggestions,
         diagnostics,
+        ..VmAnalysisReport::default()
+    };
+    report.outcome = if budget.exhausted() {
+        AnalysisOutcome::Truncated {
+            reason: TruncatedAnalysisReason::AggregateBudgetExhausted,
+        }
+    } else if report.has_findings() {
+        AnalysisOutcome::CompletedFindings
+    } else {
+        AnalysisOutcome::CompletedNone
     };
     enforce_report_payload(&mut report, &mut budget);
-    if budget.exhausted() {
-        report
-            .diagnostics
-            .retain(|diagnostic| !diagnostic.starts_with("analysis truncated:"));
-        report
-            .diagnostics
-            .push("analysis truncated: aggregate hostile-input budget exhausted".to_string());
+    VmAnalysisArtifact {
+        report,
+        extracted_wasm: wasm.extracted,
     }
-    report
 }
 
-/// Extract only validated literal WebAssembly binaries passed through
-/// recognized local base64 decoders. No JavaScript or WebAssembly code is
-/// executed.
+/// Extract validated literal WebAssembly binaries through a compatibility API.
+///
+/// This performs the same single bounded analysis as [`analyze_artifact`] and
+/// returns the exact validated bytes retained by that result.
 #[must_use]
 pub fn extract_wasm(source: &str) -> Vec<ExtractedWasm> {
-    let limits = AnalysisLimits::default();
-    if source.len() > limits.max_source_bytes {
-        return Vec::new();
-    }
-    let mut budget = budget::AnalysisBudget::new(limits);
-    let syntax = syntax::collect(source, &mut budget);
-    if budget.exhausted() {
-        return Vec::new();
-    }
-    let literals = literals::fold_local_base64_calls(&syntax, &mut budget);
-    let mut extracted = Vec::new();
-    for literal in literals.decoded {
-        if budget.exhausted() || !budget.retain_module() {
-            break;
-        }
-        if wasm::is_valid_module(&literal.bytes) {
-            extracted.push(ExtractedWasm {
-                source_span: literal.span,
-                bytes: literal.bytes,
-            });
-        }
-    }
-    extracted
+    analyze_artifact(source).extracted_wasm
 }
 
 fn enforce_report_payload(report: &mut VmAnalysisReport, budget: &mut budget::AnalysisBudget) {
@@ -119,6 +134,9 @@ fn enforce_report_payload(report: &mut VmAnalysisReport, budget: &mut budget::An
         return;
     }
     budget.exhaust();
+    report.outcome = AnalysisOutcome::Truncated {
+        reason: TruncatedAnalysisReason::ReportPayloadLimitExceeded,
+    };
     for module in &mut report.wasm_modules {
         module.operators.clear();
         module.structured_control.clear();

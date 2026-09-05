@@ -2,8 +2,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use super::{
-    AnalysisLimits, HandlerRole, JsPatternKind, LiteralFoldKind, StructuredControlEdgeKind, SymbolRole, analyze,
-    analyze_with_limits, extract_wasm,
+    AnalysisLimits, AnalysisOutcome, HandlerRole, JsPatternKind, LiteralFoldKind, NotAnalyzedReason,
+    StructuredControlEdgeKind, SymbolRole, TruncatedAnalysisReason, VM_ANALYSIS_SCHEMA_VERSION, analyze,
+    analyze_artifact_with_limits, analyze_with_limits, extract_wasm,
 };
 
 #[test]
@@ -355,12 +356,10 @@ fn aggregate_budget_stops_analysis_with_one_truncation_diagnostic() {
     let report = analyze_with_limits(source, limits);
     assert_eq!(report.literal_folds, []);
     assert_eq!(
-        report
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.starts_with("analysis truncated:"))
-            .count(),
-        1
+        report.outcome,
+        AnalysisOutcome::Truncated {
+            reason: TruncatedAnalysisReason::AggregateBudgetExhausted,
+        }
     );
 }
 
@@ -378,20 +377,85 @@ fn report_payload_budget_drops_heavy_collections() {
     let report = analyze_with_limits(&source, limits);
     assert!(serde_json::to_vec(&report).expect("serialize bounded report").len() <= 1_024);
     assert_eq!(
-        report
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.starts_with("analysis truncated:"))
-            .count(),
-        1
+        report.outcome,
+        AnalysisOutcome::Truncated {
+            reason: TruncatedAnalysisReason::ReportPayloadLimitExceeded,
+        }
     );
 }
 
 #[test]
-fn report_is_serde_serializable() {
+fn report_is_versioned_and_serde_serializable() {
     let report = analyze("const handlers = [x => x, x => x, x => x, x => x];");
     let json = serde_json::to_value(&report).expect("report should serialize");
+    assert_eq!(json["schema_version"], VM_ANALYSIS_SCHEMA_VERSION);
+    assert_eq!(json["outcome"]["status"], "completed_findings");
     assert!(json.get("patterns").is_some());
     assert!(json.get("wasm_modules").is_some());
     assert!(json.get("role_suggestions").is_some());
+}
+
+#[test]
+fn artifact_reuses_one_budget_for_report_and_exact_extraction() {
+    let wasm = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    let encoded = STANDARD.encode(wasm);
+    let source = format!("function b64(x){{return atob(x);}} const m=b64('{encoded}');");
+    let limits = AnalysisLimits {
+        max_modules: 1,
+        max_decoded_bytes: wasm.len(),
+        ..AnalysisLimits::default()
+    };
+
+    let artifact = analyze_artifact_with_limits(&source, limits);
+
+    assert_eq!(artifact.report.outcome, AnalysisOutcome::CompletedFindings);
+    assert_eq!(artifact.report.wasm_modules.len(), 1);
+    assert_eq!(artifact.extracted_wasm.len(), 1);
+    assert_eq!(artifact.extracted_wasm[0].bytes, wasm);
+    assert_eq!(
+        artifact.extracted_wasm[0].source_span,
+        artifact.report.wasm_modules[0].source_span
+    );
+}
+
+#[test]
+fn artifact_keeps_extracted_bytes_out_of_serialized_report() {
+    let wasm = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    let source = format!(
+        "function b64(x){{return atob(x);}} const m=b64('{}');",
+        STANDARD.encode(wasm)
+    );
+    let artifact = analyze_artifact_with_limits(&source, AnalysisLimits::default());
+    let json = serde_json::to_value(&artifact.report).expect("serialize report");
+
+    assert_eq!(artifact.extracted_wasm[0].bytes, wasm);
+    assert!(json.get("extracted_wasm").is_none());
+    assert!(!json.to_string().contains("[0,97,115,109"));
+}
+
+#[test]
+fn source_policy_rejection_is_typed_not_analyzed() {
+    let artifact = analyze_artifact_with_limits(
+        "too large",
+        AnalysisLimits {
+            max_source_bytes: 3,
+            ..AnalysisLimits::default()
+        },
+    );
+
+    assert_eq!(
+        artifact.report.outcome,
+        AnalysisOutcome::NotAnalyzed {
+            reason: NotAnalyzedReason::SourceTooLarge {
+                actual_bytes: 9,
+                limit_bytes: 3,
+            },
+        }
+    );
+    assert!(artifact.extracted_wasm.is_empty());
+}
+
+#[test]
+fn empty_valid_input_has_completed_none_outcome() {
+    assert_eq!(analyze("").outcome, AnalysisOutcome::CompletedNone);
 }

@@ -104,8 +104,8 @@ fn run_framework_recon(args: &FrameworkReconArgs) -> Fallible {
 
 fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
     let source = read_vm_input_bounded(&args.input)?;
-    let report = js_beautify_rs::vm_analysis::analyze(&source);
-    let json = serde_json::to_string_pretty(&report)?;
+    let artifact = js_beautify_rs::vm_analysis::analyze_artifact(&source);
+    let json = serde_json::to_string_pretty(&artifact.report)?;
     if let Some(path) = &args.output {
         fs::write(path, format!("{json}\n"))?;
         eprintln!("VM analysis written to {}", path.display());
@@ -114,7 +114,7 @@ fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
     }
     if let Some(directory) = &args.extract_wasm {
         fs::create_dir_all(directory)?;
-        for (index, module) in js_beautify_rs::vm_analysis::extract_wasm(&source).iter().enumerate() {
+        for (index, module) in artifact.extracted_wasm.iter().enumerate() {
             let path = directory.join(format!("module-{index:03}.wasm"));
             let mut output = match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(output) => output,

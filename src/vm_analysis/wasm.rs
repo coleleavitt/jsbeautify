@@ -3,33 +3,37 @@ use wasmparser::{ExternalKind, Operator, Parser, Payload, TypeRef, Validator, Wa
 use super::budget::AnalysisBudget;
 use super::literals::DecodedLiteral;
 use super::report::{
-    StructuredControlEdge, StructuredControlEdgeKind, StructuredControlNode, StructuredControlNodeKind, WasmExport,
-    WasmFunctionStructure, WasmImport, WasmModuleReport, WasmOperator, WasmSection,
+    ExtractedWasm, StructuredControlEdge, StructuredControlEdgeKind, StructuredControlNode, StructuredControlNodeKind,
+    WasmExport, WasmFunctionStructure, WasmImport, WasmModuleReport, WasmOperator, WasmSection,
 };
 
 const MAX_SECTIONS_PER_MODULE: usize = 128;
 
-pub(super) fn analyze_decoded_modules(
-    literals: &[DecodedLiteral],
-    budget: &mut AnalysisBudget,
-) -> Vec<WasmModuleReport> {
+pub(super) struct WasmAnalysis {
+    pub(super) reports: Vec<WasmModuleReport>,
+    pub(super) extracted: Vec<ExtractedWasm>,
+}
+
+pub(super) fn analyze_decoded_modules(literals: &[DecodedLiteral], budget: &mut AnalysisBudget) -> WasmAnalysis {
     let mut reports = Vec::new();
+    let mut extracted = Vec::new();
     for literal in literals.iter().filter(|literal| literal.bytes.starts_with(b"\0asm")) {
         if !budget.retain_module() {
             break;
         }
-        reports.push(analyze_module(literal, budget));
+        let report = analyze_module(literal, budget);
+        if report.valid {
+            extracted.push(ExtractedWasm {
+                source_span: literal.span,
+                bytes: literal.bytes.clone(),
+            });
+        }
+        reports.push(report);
         if budget.exhausted() {
             break;
         }
     }
-    reports
-}
-
-pub(super) fn is_valid_module(bytes: &[u8]) -> bool {
-    Validator::new_with_features(WasmFeatures::WASM3)
-        .validate_all(bytes)
-        .is_ok()
+    WasmAnalysis { reports, extracted }
 }
 
 fn analyze_module(literal: &DecodedLiteral, budget: &mut AnalysisBudget) -> WasmModuleReport {
