@@ -90,6 +90,7 @@ pub struct NgrxReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TransmitReport {
     pub sdk_version: Option<String>,
     pub api_calls: Vec<NamedFinding>,
@@ -179,33 +180,7 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkRec
     let transmit = transmit_sdk_decoder::analyze_transmit_sdk(source);
     let webpack = webpack_module_resolver::resolve_module_ids(source);
 
-    let mut angular_report = AngularReport {
-        version: angular.version.map(|version| version.to_string()),
-        routes: routes
-            .routes
-            .into_iter()
-            .map(|route| RouteFinding {
-                path: route.path,
-                chunk_id: route.chunk_id,
-                module_name: route.module_name,
-                lazy: route.is_lazy,
-            })
-            .collect(),
-        ..AngularReport::default()
-    };
-    for definition in angular.definitions {
-        let finding = NamedFinding {
-            name: definition.class_name,
-            detail: Some(definition.selector),
-        };
-        match definition.kind {
-            angular_metadata::AngularDefKind::Component => angular_report.components.push(finding),
-            angular_metadata::AngularDefKind::Directive => angular_report.directives.push(finding),
-            angular_metadata::AngularDefKind::Pipe => angular_report.pipes.push(finding),
-            angular_metadata::AngularDefKind::Injectable => angular_report.injectables.push(finding),
-            angular_metadata::AngularDefKind::NgModule => angular_report.modules.push(finding),
-        }
-    }
+    let angular_report = build_angular_report(angular, routes);
 
     let mut report = FrameworkReconReport {
         angular: angular_report,
@@ -333,6 +308,40 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkRec
 
     sort_report(&mut report);
     enforce_limits(&mut report, limits);
+    report
+}
+
+fn build_angular_report(
+    angular: angular_metadata::AngularExtractionResult,
+    routes: angular_route_extractor::RouteExtractionResult,
+) -> AngularReport {
+    let mut report = AngularReport {
+        version: angular.version.map(|version| version.to_string()),
+        routes: routes
+            .routes
+            .into_iter()
+            .map(|route| RouteFinding {
+                path: route.path,
+                chunk_id: route.chunk_id,
+                module_name: route.module_name,
+                lazy: route.is_lazy,
+            })
+            .collect(),
+        ..AngularReport::default()
+    };
+    for definition in angular.definitions {
+        let finding = NamedFinding {
+            name: definition.class_name,
+            detail: Some(definition.selector),
+        };
+        match definition.kind {
+            angular_metadata::AngularDefKind::Component => report.components.push(finding),
+            angular_metadata::AngularDefKind::Directive => report.directives.push(finding),
+            angular_metadata::AngularDefKind::Pipe => report.pipes.push(finding),
+            angular_metadata::AngularDefKind::Injectable => report.injectables.push(finding),
+            angular_metadata::AngularDefKind::NgModule => report.modules.push(finding),
+        }
+    }
     report
 }
 
