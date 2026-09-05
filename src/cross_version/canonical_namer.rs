@@ -108,7 +108,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CanonicalNamer {
         if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end)
             && canonical != ident.name.as_str()
         {
-            ident.name = ctx.ast.ident(canonical);
+            ident.name = oxc_ast::ast::Ident::from_str_in(canonical, ctx);
             self.changed = true;
             self.renamed_count += 1;
         }
@@ -118,7 +118,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CanonicalNamer {
         if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end)
             && canonical != ident.name.as_str()
         {
-            ident.name = ctx.ast.ident(canonical);
+            ident.name = oxc_ast::ast::Ident::from_str_in(canonical, ctx);
             self.changed = true;
             self.renamed_count += 1;
         }

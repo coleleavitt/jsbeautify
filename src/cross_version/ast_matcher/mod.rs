@@ -44,11 +44,11 @@ impl StatementMatcher {
 
         let parse_result = Parser::new(&allocator, source, source_type).parse();
 
-        if !parse_result.errors.is_empty() {
+        if !parse_result.diagnostics.is_empty() {
             eprintln!(
                 "[AST_MATCHER] Parse had {} errors (continuing anyway), first: {:?}",
-                parse_result.errors.len(),
-                parse_result.errors.first()
+                parse_result.diagnostics.len(),
+                parse_result.diagnostics.first()
             );
         }
 

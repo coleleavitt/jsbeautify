@@ -33,8 +33,8 @@ impl OxcOptimizer {
 
         let parse_result = Parser::new(&allocator, code, source_type).parse();
 
-        if !parse_result.errors.is_empty() {
-            return Err(format!("Parse errors: {:?}", parse_result.errors));
+        if !parse_result.diagnostics.is_empty() {
+            return Err(format!("Parse errors: {:?}", parse_result.diagnostics));
         }
 
         let mut program = parse_result.program;

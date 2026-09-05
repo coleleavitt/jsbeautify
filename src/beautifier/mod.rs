@@ -19,11 +19,11 @@ fn oxc_beautify(code: &str) -> Result<String> {
     // even when `errors` is non-empty. Rather than bail — which left huge or
     // slightly-malformed bundles with no beautified output at all — we codegen
     // the recovered program and only treat an *empty* result as a hard failure.
-    if !parse_result.errors.is_empty() {
+    if !parse_result.diagnostics.is_empty() {
         eprintln!(
             "[beautify] {} parse diagnostic(s); using recovered AST (first: {:?})",
-            parse_result.errors.len(),
-            parse_result.errors.first().map(ToString::to_string),
+            parse_result.diagnostics.len(),
+            parse_result.diagnostics.first().map(ToString::to_string),
         );
     }
 

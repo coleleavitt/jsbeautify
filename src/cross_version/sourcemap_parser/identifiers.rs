@@ -83,7 +83,7 @@ impl SourcemapParser {
         let parser = Parser::new(&allocator, source, source_type);
         let result = parser.parse();
 
-        if result.panicked || !result.errors.is_empty() {
+        if result.panicked || !result.diagnostics.is_empty() {
             eprintln!("[SOURCEMAP] AST parse failed, using regex fallback");
             return self.extract_identifiers_fallback(source);
         }
