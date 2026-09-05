@@ -11,7 +11,7 @@ use super::{
 /// Maximum accepted delimiter nesting.
 ///
 /// This is intentionally conservative: the full parse/semantic/codegen pipeline
-/// completes at this boundary on the minimum supported 2 MiB worker stack.
+/// completes at this boundary on the minimum supported 2 `MiB` worker stack.
 const MAX_BRACKET_DEPTH: usize = 256;
 const MIN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
