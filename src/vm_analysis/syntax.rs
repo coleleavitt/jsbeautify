@@ -12,6 +12,7 @@ use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::operator::BinaryOperator;
 use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
+use regex::Regex;
 
 use super::budget::AnalysisBudget;
 use super::report::SourceSpan;
@@ -238,7 +239,7 @@ fn recognize_decoder(source: &str, scoping: &Scoping, function: &Function<'_>) -
     let body = function.body.as_ref()?;
     let rationale = if is_direct_wrapper(scoping, function, body) {
         "local decoder is a single-return wrapper with parameter-to-base64-primitive dataflow"
-    } else if is_manual_decoder(scoping, function, body) {
+    } else if is_manual_decoder(source, scoping, function, body) {
         "local decoder has canonical alphabet, bitwise decode structure, buffer writes, and returns that buffer"
     } else {
         return None;
@@ -283,31 +284,147 @@ fn is_direct_wrapper(scoping: &Scoping, function: &Function<'_>, body: &Function
     )
 }
 
-fn is_manual_decoder(scoping: &Scoping, function: &Function<'_>, body: &FunctionBody<'_>) -> bool {
+fn is_manual_decoder(source: &str, scoping: &Scoping, function: &Function<'_>, body: &FunctionBody<'_>) -> bool {
+    if function.params.items.len() != 1 {
+        return false;
+    }
+    let BindingPattern::BindingIdentifier(parameter) = &function.params.items[0].pattern else {
+        return false;
+    };
+    let Some(parameter_symbol) = parameter.symbol_id.get() else {
+        return false;
+    };
+    let body_span = source_span(body.span);
+    let Some(body_source) = source.get(body_span.start..body_span.end) else {
+        return false;
+    };
+    let Some(wiring) = canonical_manual_wiring(body_source, parameter.name.as_str()) else {
+        return false;
+    };
+
     let mut shape = ManualDecoderShape {
         scoping,
         canonical_alphabet: false,
         operator_mask: 0,
         returned_symbols: BTreeSet::new(),
         member_write_symbols: BTreeMap::new(),
+        allowed_calls: 0,
+        has_forbidden_call: false,
+        has_update_expression: false,
+        has_unresolved_member_write: false,
     };
     shape.visit_function_body(body);
-    if !shape.canonical_alphabet || shape.operator_mask != REQUIRED_MANUAL_OPERATORS {
+    if !shape.canonical_alphabet
+        || shape.operator_mask != REQUIRED_MANUAL_OPERATORS
+        || shape.has_forbidden_call
+        || shape.has_update_expression
+        || shape.has_unresolved_member_write
+        || !matches!(shape.allowed_calls, 4 | 5)
+        || shape.member_write_symbols.len() != 1
+    {
         return false;
     }
-    let parameter_symbols = function
-        .params
-        .items
-        .iter()
-        .filter_map(|parameter| match &parameter.pattern {
-            BindingPattern::BindingIdentifier(identifier) => identifier.symbol_id.get(),
-            _ => None,
-        })
-        .collect::<BTreeSet<_>>();
     shape.returned_symbols.iter().any(|symbol| {
-        (parameter_symbols.contains(symbol) || shape.member_write_symbols.contains_key(symbol))
-            && shape.member_write_symbols.get(symbol).copied().unwrap_or(0) >= 3
+        *symbol != parameter_symbol
+            && shape.member_write_symbols.get(symbol).copied() == Some(3)
+            && body_source.contains(&format!("return {};", wiring.output_name))
     })
+}
+
+struct CanonicalManualWiring {
+    output_name: String,
+}
+
+fn canonical_manual_wiring(body: &str, parameter: &str) -> Option<CanonicalManualWiring> {
+    let alphabet_re = Regex::new(
+        r#"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*["']ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\+/["']\s*;"#,
+    )
+    .ok()?;
+    let alphabet = alphabet_re.captures(body)?.get(1)?.as_str();
+    let output_re =
+        Regex::new(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:\[\]|new\s+Uint8Array\([^;]+\))\s*;").ok()?;
+    let output = output_re.captures(body)?.get(1)?.as_str();
+
+    let index_re = Regex::new(
+        r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\.indexOf\(\s*([A-Za-z_$][\w$]*)\s*\[([^]]+)\]\s*\)\s*;",
+    )
+    .ok()?;
+    let indices = index_re
+        .captures_iter(body)
+        .filter_map(|captures| {
+            Some((
+                captures.get(1)?.as_str().to_string(),
+                captures.get(2)?.as_str().to_string(),
+                captures.get(3)?.as_str().to_string(),
+                compact(captures.get(4)?.as_str()),
+            ))
+        })
+        .collect::<Vec<_>>();
+    if indices.len() != 4
+        || indices
+            .iter()
+            .any(|(_, table, input, _)| table != alphabet || input != parameter)
+    {
+        return None;
+    }
+    let input_index = indices[0].3.as_str();
+    if !is_identifier(input_index)
+        || indices[1].3 != format!("{input_index}+1")
+        || indices[2].3 != format!("{input_index}+2")
+        || indices[3].3 != format!("{input_index}+3")
+    {
+        return None;
+    }
+
+    let write_pattern = format!(r"{}\s*\[([^]]+)\]\s*=\s*([^;]+);", regex::escape(output));
+    let write_re = Regex::new(&write_pattern).ok()?;
+    let writes = write_re
+        .captures_iter(body)
+        .filter_map(|captures| Some((compact(captures.get(1)?.as_str()), compact(captures.get(2)?.as_str()))))
+        .collect::<Vec<_>>();
+    if writes.len() != 3 {
+        return None;
+    }
+    let output_index = writes[0].0.as_str();
+    if !is_identifier(output_index)
+        || writes[1].0 != format!("{output_index}+1")
+        || writes[2].0 != format!("{output_index}+2")
+    {
+        return None;
+    }
+    let names = indices.iter().map(|entry| entry.0.as_str()).collect::<Vec<_>>();
+    let expected = [
+        format!("{}<<2|{}>>4", names[0], names[1]),
+        format!("{}&15<<4|{}>>2", names[1], names[2]),
+        format!("{}&3<<6|{}", names[2], names[3]),
+    ];
+    if writes
+        .iter()
+        .zip(expected)
+        .any(|((_, expression), expected)| strip_parentheses(expression) != expected)
+    {
+        return None;
+    }
+
+    Some(CanonicalManualWiring {
+        output_name: output.to_string(),
+    })
+}
+
+fn compact(text: &str) -> String {
+    text.chars().filter(|character| !character.is_whitespace()).collect()
+}
+
+fn strip_parentheses(text: &str) -> String {
+    compact(text).replace(['(', ')'], "")
+}
+
+fn is_identifier(text: &str) -> bool {
+    let mut characters = text.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character == '$' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character == '$' || character.is_ascii_alphanumeric())
 }
 
 const OP_SHIFT_LEFT: u8 = 1;
@@ -322,6 +439,10 @@ struct ManualDecoderShape<'a> {
     operator_mask: u8,
     returned_symbols: BTreeSet<SymbolId>,
     member_write_symbols: BTreeMap<SymbolId, usize>,
+    allowed_calls: usize,
+    has_forbidden_call: bool,
+    has_update_expression: bool,
+    has_unresolved_member_write: bool,
 }
 
 impl<'a> Visit<'a> for ManualDecoderShape<'_> {
@@ -353,16 +474,46 @@ impl<'a> Visit<'a> for ManualDecoderShape<'_> {
         walk::walk_return_statement(self, statement);
     }
 
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        let allowed = match &call.callee {
+            Expression::StaticMemberExpression(member) => {
+                member.property.name == "indexOf"
+                    || (member.property.name == "ceil"
+                        && matches!(&member.object, Expression::Identifier(identifier) if identifier.name == "Math" && reference_symbol(self.scoping, identifier).is_none()))
+            }
+            _ => false,
+        };
+        if allowed {
+            self.allowed_calls += 1;
+        } else {
+            self.has_forbidden_call = true;
+        }
+        walk::walk_call_expression(self, call);
+    }
+
+    fn visit_update_expression(&mut self, expression: &oxc_ast::ast::UpdateExpression<'a>) {
+        self.has_update_expression = true;
+        walk::walk_update_expression(self, expression);
+    }
+
     fn visit_assignment_expression(&mut self, expression: &AssignmentExpression<'a>) {
         let object = match &expression.left {
             AssignmentTarget::ComputedMemberExpression(member) => Some(&member.object),
             AssignmentTarget::StaticMemberExpression(member) => Some(&member.object),
+            AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
+                if reference_symbol(self.scoping, identifier).is_none() {
+                    self.has_unresolved_member_write = true;
+                }
+                None
+            }
             _ => None,
         };
-        if let Some(Expression::Identifier(identifier)) = object
-            && let Some(symbol) = reference_symbol(self.scoping, identifier)
-        {
-            *self.member_write_symbols.entry(symbol).or_default() += 1;
+        if let Some(Expression::Identifier(identifier)) = object {
+            if let Some(symbol) = reference_symbol(self.scoping, identifier) {
+                *self.member_write_symbols.entry(symbol).or_default() += 1;
+            } else {
+                self.has_unresolved_member_write = true;
+            }
         }
         walk::walk_assignment_expression(self, expression);
     }
