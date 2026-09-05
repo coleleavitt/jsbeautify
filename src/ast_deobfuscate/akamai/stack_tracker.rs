@@ -1,10 +1,8 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{BindingPattern, EmptyStatement, Expression, IdentifierReference, Program, Statement};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{BindingPattern, Expression, Program, Statement};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::cell::Cell;
 use std::cmp::Reverse;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -136,10 +134,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for StackTrackerRemover {
                     })
                     .collect();
                 eprintln!("[AKAMAI/stack-tracker] removing declaration: var {};", names.join(", "));
-                *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                }));
+                *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
                 return;
             }
         }
@@ -154,10 +149,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for StackTrackerRemover {
                 eprintln!("[AKAMAI/stack-tracker] ... further removals silenced");
             }
             self.removed_calls += 1;
-            *stmt = Statement::EmptyStatement(ctx.ast.alloc(EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span: SPAN,
-            }));
+            *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
         }
     }
 
@@ -166,25 +158,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for StackTrackerRemover {
         // Drop tracker calls from comma sequences.
         if let Expression::SequenceExpression(seq) = expr {
             let before = seq.expressions.len();
-            let mut kept = oxc_allocator::ArenaVec::new_in(ctx);
+            let mut kept = oxc_allocator::ArenaVec::new_in(&ctx.ast);
             for e in &seq.expressions {
                 if self.is_tracker_call(e) {
                     self.removed_calls += 1;
                     continue;
                 }
-                kept.push(e.clone_in_with_semantic_ids(ctx.allocator()));
+                kept.push(e.clone_in_with_semantic_ids(ctx.ast.allocator()));
             }
             if kept.len() == before {
                 return;
             }
             if kept.is_empty() {
                 // Shouldn't happen, but be safe.
-                *expr = Expression::Identifier(ctx.ast.alloc(IdentifierReference {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    name: ctx.ast.ident("undefined"),
-                    reference_id: Cell::default(),
-                }));
+                *expr = Expression::new_identifier(SPAN, "undefined", &ctx.ast);
                 return;
             }
             if kept.len() == 1 {

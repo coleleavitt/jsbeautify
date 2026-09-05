@@ -1,8 +1,6 @@
-use oxc_allocator::CloneIn;
-use oxc_ast::ast::{ComputedMemberExpression, Expression, MemberExpression, NullLiteral};
-use oxc_syntax::node::NodeId;
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{Expression, MemberExpression};
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::flag_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -48,7 +46,7 @@ impl ArrayUnpacker {
     }
 
     fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.allocator())
+        expr.clone_in_with_semantic_ids(ctx.ast.allocator())
     }
 }
 
@@ -57,26 +55,10 @@ flag_pass!(ArrayUnpacker, changed, has_changed);
 impl<'a> Traverse<'a, DeobfuscateState> for ArrayUnpacker {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
         if let Expression::ComputedMemberExpression(member) = expr {
-            let member_expr = MemberExpression::ComputedMemberExpression(ctx.ast.alloc(std::mem::replace(
-                member.as_mut(),
-                ComputedMemberExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: oxc_span::SPAN,
-                    object: Expression::NullLiteral(ctx.ast.alloc(NullLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: oxc_span::SPAN,
-                    })),
-                    expression: Expression::NullLiteral(ctx.ast.alloc(NullLiteral {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span: oxc_span::SPAN,
-                    })),
-                    optional: false,
-                },
-            )));
+            let member_expr =
+                MemberExpression::ComputedMemberExpression(member.clone_in_with_semantic_ids(ctx.ast.allocator()));
             if let Some(unpacked) = self.try_unpack(&member_expr, ctx) {
                 *expr = unpacked;
-            } else if let MemberExpression::ComputedMemberExpression(original) = member_expr {
-                **member = original.unbox();
             }
         }
     }

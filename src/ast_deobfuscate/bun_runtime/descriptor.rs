@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Argument, CallExpression, Expression, ObjectPropertyKind, Statement};
+use oxc_ast::ast::{Argument, ArrowFunctionBody, CallExpression, Expression, ObjectPropertyKind, Statement};
 
 use super::types::{BunHelper, BunHelperMap};
 
@@ -133,11 +133,15 @@ fn expr_contains_source_key(expr: &Expression<'_>, source_param: &str, loop_var:
         Expression::ComputedMemberExpression(member) => {
             expression_is_ident(&member.object, source_param) && expression_is_ident(&member.expression, loop_var)
         }
-        Expression::ArrowFunctionExpression(arrow) => arrow
-            .body
-            .statements
-            .iter()
-            .any(|stmt| stmt_contains_source_key(stmt, source_param, loop_var)),
+        Expression::ArrowFunctionExpression(arrow) => match &arrow.body {
+            ArrowFunctionBody::FunctionBody(body) => body
+                .statements
+                .iter()
+                .any(|stmt| stmt_contains_source_key(stmt, source_param, loop_var)),
+            body => body
+                .as_expression()
+                .is_some_and(|expr| expr_contains_source_key(expr, source_param, loop_var)),
+        },
         Expression::FunctionExpression(func) => func.body.as_ref().is_some_and(|body| {
             body.statements
                 .iter()

@@ -15,7 +15,7 @@ pub fn extract_angular_metadata(source: &str) -> AngularExtractionResult {
 
     let mut extractor = AngularMetadataExtractor::new();
 
-    if parsed.errors.is_empty() && !parsed.program.body.is_empty() {
+    if parsed.diagnostics.is_empty() && !parsed.program.body.is_empty() {
         // AST-based extraction (preferred — gives inputs/outputs/full metadata)
         extractor.extract_from_statements(&parsed.program.body);
     }

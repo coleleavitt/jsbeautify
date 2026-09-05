@@ -1,8 +1,6 @@
-use oxc_ast::ast::{Expression, IdentifierReference};
+use oxc_ast::ast::Expression;
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -45,7 +43,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UndefinedPatternNormalizer {
                 eprintln!("[AKAMAI/undef-pat] [][[]] -> undefined");
             }
             self.replaced += 1;
-            *expr = Expression::new_identifier_reference(SPAN, "undefined", ctx);
+            *expr = Expression::new_identifier(SPAN, "undefined", &ctx.ast);
         }
     }
 }

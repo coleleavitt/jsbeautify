@@ -1,13 +1,10 @@
-use oxc_allocator::CloneIn;
+use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{
-    Argument, BinaryExpression, BinaryOperator, BindingPattern, Expression, Function, Program, Statement,
-    VariableDeclarator,
+    Argument, BinaryOperator, BindingPattern, Expression, Function, Program, Statement, VariableDeclarator,
 };
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -178,10 +175,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for EqualityProxyUnwrapper {
             let Argument::SpreadElement(_) = &call.arguments[1] else {
                 let left = call.arguments[0]
                     .to_expression()
-                    .clone_in_with_semantic_ids(ctx.allocator());
+                    .clone_in_with_semantic_ids(ctx.ast.allocator());
                 let right = call.arguments[1]
                     .to_expression()
-                    .clone_in_with_semantic_ids(ctx.allocator());
+                    .clone_in_with_semantic_ids(ctx.ast.allocator());
                 if self.unwrapped < 10 {
                     eprintln!(
                         "[AKAMAI/eq-proxy] inline {}(a, b) -> a {:?} b  (call #{})",
@@ -191,13 +188,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for EqualityProxyUnwrapper {
                     );
                 }
                 self.unwrapped += 1;
-                *expr = Expression::BinaryExpression(ctx.ast.alloc(BinaryExpression {
-                    node_id: Cell::new(NodeId::DUMMY),
-                    span: SPAN,
-                    left,
-                    operator: op,
-                    right,
-                }));
+                *expr = Expression::new_binary_expression(SPAN, left, op, right, &ctx.ast);
                 return;
             };
             return;

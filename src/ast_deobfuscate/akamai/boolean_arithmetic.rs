@@ -37,19 +37,7 @@ impl BooleanArithmeticFolder {
     }
 
     fn make_number<'a>(val: f64, ctx: &Ctx<'a>) -> Expression<'a> {
-        let as_int = val as i64;
-        let raw = if (as_int as f64 - val).abs() < f64::EPSILON {
-            as_int.to_string()
-        } else {
-            val.to_string()
-        };
-        Expression::new_numeric_literal(
-            SPAN,
-            val,
-            Some(oxc_ast::ast::Str::new_in(&raw, ctx)),
-            NumberBase::Decimal,
-            ctx,
-        )
+        Expression::new_numeric_literal(SPAN, val, None, NumberBase::Decimal, ctx)
     }
 }
 

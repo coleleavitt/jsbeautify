@@ -179,7 +179,7 @@ fn export_rename_sanitizes_non_identifier_export_keys() {
 
     let alloc = Allocator::default();
     let parsed = Parser::new(&alloc, &out, SourceType::mjs()).parse();
-    assert!(parsed.errors.is_empty(), "sanitized output must parse: {out}");
+    assert!(parsed.diagnostics.is_empty(), "sanitized output must parse: {out}");
 }
 
 #[test]

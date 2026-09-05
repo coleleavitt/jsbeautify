@@ -10,12 +10,10 @@
 //! 1. The first argument is the literal `null` or the identifier `undefined`.
 //! 2. For `apply`, the 2nd argument is a literal `ArrayExpression` with no spread elements.
 //!
-use oxc_allocator::{CloneIn, Vec as OxcVec};
-use oxc_ast::ast::{Argument, ArrayExpressionElement, CallExpression, Expression};
+use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
+use oxc_ast::ast::{Argument, ArrayExpressionElement, Expression};
 use oxc_span::SPAN;
-use oxc_syntax::node::NodeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use std::cell::Cell;
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -59,12 +57,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
             return;
         }
 
-        let new_callee = sme.object.clone_in_with_semantic_ids(ctx.allocator());
+        let new_callee = sme.object.clone_in_with_semantic_ids(ctx.ast.allocator());
         let new_args: OxcVec<'a, Argument<'a>> = match method {
             "call" => {
-                let mut v = oxc_allocator::ArenaVec::new_in(ctx);
+                let mut v = oxc_allocator::ArenaVec::new_in(&ctx.ast);
                 for arg in call.arguments.iter().skip(1) {
-                    v.push(arg.clone_in_with_semantic_ids(ctx.allocator()));
+                    v.push(arg.clone_in_with_semantic_ids(ctx.ast.allocator()));
                 }
                 v
             }
@@ -83,10 +81,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
                 }) {
                     return;
                 }
-                let mut v = oxc_allocator::ArenaVec::new_in(ctx);
+                let mut v = oxc_allocator::ArenaVec::new_in(&ctx.ast);
                 for el in &arr.elements {
                     if let Some(e) = el.as_expression() {
-                        v.push(Argument::from(e.clone_in_with_semantic_ids(ctx.allocator())));
+                        v.push(Argument::from(e.clone_in_with_semantic_ids(ctx.ast.allocator())));
                     } else {
                         return;
                     }
@@ -104,15 +102,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
             );
         }
         self.rewrites += 1;
-        *expr = Expression::CallExpression(ctx.ast.alloc(CallExpression {
-            node_id: Cell::new(NodeId::DUMMY),
-            span: SPAN,
-            callee: new_callee,
-            arguments: new_args,
-            optional: false,
-            type_arguments: None,
-            pure: false,
-        }));
+        *expr = Expression::new_call_expression(SPAN, new_callee, None, new_args, false, &ctx.ast);
     }
 }
 

@@ -2,6 +2,7 @@
 
 use oxc_allocator::{Allocator, TakeIn, Vec as ArenaVec};
 use oxc_ast::ast::{BindingPattern, Directive, Expression, Function, Program, Statement};
+use oxc_ast::builder::AstBuilder;
 
 /// Replaces a Bun standalone CJS wrapper:
 ///
@@ -44,8 +45,8 @@ fn take_cjs_wrapper_body<'a>(
         return None;
     }
     let body = func.body.as_mut()?;
-    let directives = body.directives.take_in(allocator);
-    let statements = body.statements.take_in(allocator);
+    let directives = body.directives.take_in(&AstBuilder::new(allocator));
+    let statements = body.statements.take_in(&AstBuilder::new(allocator));
     Some((directives, statements))
 }
 
