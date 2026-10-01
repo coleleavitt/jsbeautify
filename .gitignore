@@ -16,3 +16,7 @@ core.[0-9]*
 /.gjc/
 /.jfc/
 /.mcp.json
+
+# Local-only working directories
+/frontend/
+/research/mobile-kernel/
