@@ -15,6 +15,8 @@ use regex::Regex;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
+use crate::recon_budget::ReconBudget;
+
 /// A detected feature flag evaluation.
 #[derive(Debug, Clone)]
 pub struct FeatureFlag {
@@ -48,6 +50,21 @@ pub struct FeatureFlagResult {
 /// Extract `LaunchDarkly` feature flag patterns from source.
 #[must_use]
 pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
+    extract_feature_flags_with_limit(source, usize::MAX)
+}
+
+/// Extract while retaining at most `max_findings` distinct flags.
+#[must_use]
+pub fn extract_feature_flags_with_limit(source: &str, max_findings: usize) -> FeatureFlagResult {
+    extract_feature_flags_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn extract_feature_flags_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> FeatureFlagResult {
     // Flag evaluation calls: variation/variationDetail and the typed
     // helpers (boolVariation/stringVariation/numberVariation/jsonVariation).
     // Group 1 = flag key, group 2 = default value (optional).
@@ -69,27 +86,35 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
     static IDENTIFY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:ldclient|LDClient)\.identify\(").unwrap());
 
     // Ticket/date pattern from flag name
-    static TICKET_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:EMOST|Emost)-(\d{6})").unwrap());
+    static TICKET_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"((?:EMOST|Emost)-\d{6})").unwrap());
 
     static DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_(\d{8})$").unwrap());
 
     let mut flags = Vec::new();
-    let total_evaluations = VARIATION_RE.find_iter(source).count();
+    let total_evaluations = VARIATION_RE
+        .find_iter(source)
+        .take(max_findings.saturating_add(1))
+        .count();
 
     // Extract variation() calls
     for caps in VARIATION_RE.captures_iter(source) {
-        let key = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let default_str = caps.get(2).map(|m| m.as_str().trim().to_string());
+        if flags.len() >= max_findings {
+            break;
+        }
+        let Some(key) = caps.get(1).and_then(|matched| budget.take_str(matched.as_str())) else {
+            break;
+        };
+        let default_str = caps.get(2).and_then(|matched| budget.take_str(matched.as_str().trim()));
 
         let ticket = TICKET_RE
             .captures(&key)
             .and_then(|c| c.get(1))
-            .map(|m| format!("EMOST-{}", m.as_str()));
+            .and_then(|matched| budget.take_str(matched.as_str()));
 
         let deploy_date = DATE_RE
             .captures(&key)
             .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string());
+            .and_then(|matched| budget.take_str(matched.as_str()));
 
         if !flags.iter().any(|f: &FeatureFlag| f.key == key) {
             flags.push(FeatureFlag {
@@ -118,7 +143,7 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
         SDK_KEY_RE
             .captures(source)
             .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
+            .and_then(|matched| budget.take_str(matched.as_str()))
     } else {
         None
     };
@@ -127,7 +152,7 @@ pub fn extract_feature_flags(source: &str) -> FeatureFlagResult {
     let environment = ENV_RE
         .captures(source)
         .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
+        .and_then(|matched| budget.take_str(matched.as_str()));
 
     let config = LdConfig { sdk_key, environment };
 

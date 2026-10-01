@@ -9,6 +9,7 @@
 //! For the Schwab SWS Gateway (webpack 5.94, moduleIds: 'deterministic'):
 //! Module IDs are stable across builds of the same code — same source = same ID.
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use std::hash::BuildHasher;
@@ -43,19 +44,37 @@ pub struct ModuleResolutionResult {
 /// Resolve webpack module IDs to package names from the bundled source.
 #[must_use]
 pub fn resolve_module_ids(source: &str) -> ModuleResolutionResult {
+    resolve_module_ids_with_limit(source, usize::MAX)
+}
+
+/// Resolve while retaining and inspecting at most `max_findings` modules.
+#[must_use]
+pub fn resolve_module_ids_with_limit(source: &str, max_findings: usize) -> ModuleResolutionResult {
+    resolve_module_ids_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn resolve_module_ids_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> ModuleResolutionResult {
     let mut resolved: FxHashMap<u32, ResolvedModule> = FxHashMap::default();
-    // Split source into module regions and analyze each
-    let module_regions = extract_module_regions(source);
+    // Split source into module regions and analyze each.
+    let module_regions = extract_module_regions(source, max_findings, budget);
     let total_modules = module_regions.len();
 
     for (id, region) in &module_regions {
-        if let Some(package) = identify_module_package(region) {
+        if let Some((package, confidence)) = identify_module_package(region) {
+            let Some(package) = budget.take_str(package) else {
+                break;
+            };
             resolved.insert(
                 *id,
                 ResolvedModule {
                     id: *id,
-                    package: package.0,
-                    confidence: package.1,
+                    package,
+                    confidence,
                 },
             );
         }
@@ -71,7 +90,7 @@ pub fn resolve_module_ids(source: &str) -> ModuleResolutionResult {
 }
 
 /// Extract module ID → source region map from webpack bundle.
-fn extract_module_regions(source: &str) -> Vec<(u32, String)> {
+fn extract_module_regions(source: &str, max_findings: usize, budget: &mut ReconBudget) -> Vec<(u32, String)> {
     // Match module definitions at the start of object properties
     static MODULE_START_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?m)^\s*(\d{1,5}):\s*\([^)]*\)\s*=>\s*\{").unwrap());
@@ -80,6 +99,7 @@ fn extract_module_regions(source: &str) -> Vec<(u32, String)> {
 
     let starts: Vec<(u32, usize)> = MODULE_START_RE
         .captures_iter(source)
+        .take(max_findings)
         .filter_map(|caps| {
             let id: u32 = caps.get(1)?.as_str().parse().ok()?;
             let start = caps.get(0)?.start();
@@ -96,14 +116,17 @@ fn extract_module_regions(source: &str) -> Vec<(u32, String)> {
         };
         // Take first 1000 chars of each module for analysis (enough to identify)
         let region_end = (start + 1000).min(end).min(source.len());
-        regions.push((id, source[start..region_end].to_string()));
+        let Some(region) = budget.take_str(&source[start..region_end]) else {
+            break;
+        };
+        regions.push((id, region));
     }
 
     regions
 }
 
 /// Identify what package a module region belongs to based on content.
-fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
+fn identify_module_package(region: &str) -> Option<(&'static str, Confidence)> {
     // Angular Core (has ɵɵ instruction definitions or references)
     if region.contains("ɵɵdefineComponent")
         || region.contains("ɵɵdefineDirective")
@@ -111,7 +134,7 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
         || region.contains("ɵɵdefinePipe")
         || region.contains("ɵɵdefineNgModule")
     {
-        return Some(("@angular/core".into(), Confidence::High));
+        return Some(("@angular/core", Confidence::High));
     }
 
     // Angular Router
@@ -120,7 +143,7 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
         || region.contains("routerLink")
         || region.contains("NavigationEnd")
     {
-        return Some(("@angular/router".into(), Confidence::High));
+        return Some(("@angular/router", Confidence::High));
     }
 
     // Angular Forms
@@ -129,17 +152,17 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
         || region.contains("Validators")
         || region.contains("ngModel")
     {
-        return Some(("@angular/forms".into(), Confidence::High));
+        return Some(("@angular/forms", Confidence::High));
     }
 
     // Angular Common/HTTP
     if region.contains("HttpClient") || region.contains("HttpHeaders") || region.contains("HttpInterceptor") {
-        return Some(("@angular/common/http".into(), Confidence::High));
+        return Some(("@angular/common/http", Confidence::High));
     }
 
     // Angular CDK
     if region.contains("CdkOverlay") || region.contains("cdkConnectedOverlay") || region.contains("A11yModule") {
-        return Some(("@angular/cdk".into(), Confidence::Medium));
+        return Some(("@angular/cdk", Confidence::Medium));
     }
 
     // RxJS
@@ -148,7 +171,7 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
         || region.contains("BehaviorSubject")
         || region.contains("ReplaySubject")
     {
-        return Some(("rxjs".into(), Confidence::Medium));
+        return Some(("rxjs", Confidence::Medium));
     }
 
     // NgRx Store
@@ -158,27 +181,27 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
         || region.contains("createSelector")
         || region.contains("@ngrx")
     {
-        return Some(("@ngrx/store".into(), Confidence::High));
+        return Some(("@ngrx/store", Confidence::High));
     }
 
     // NgRx Effects
     if region.contains("createEffect") || region.contains("ofType") {
-        return Some(("@ngrx/effects".into(), Confidence::Medium));
+        return Some(("@ngrx/effects", Confidence::Medium));
     }
 
     // Transmit Security SDK
     if region.contains("XmSdk") || region.contains("xmsdk") || region.contains("riskid") {
-        return Some(("@anthropic/transmit-security".into(), Confidence::High));
+        return Some(("@anthropic/transmit-security", Confidence::High));
     }
 
     // LaunchDarkly
     if region.contains("LDClient") || region.contains("ldclient") || region.contains("variation(") {
-        return Some(("launchdarkly-js-client-sdk".into(), Confidence::High));
+        return Some(("launchdarkly-js-client-sdk", Confidence::High));
     }
 
     // Zone.js
     if region.contains("Zone.__symbol__") || region.contains("__zone_symbol__") {
-        return Some(("zone.js".into(), Confidence::High));
+        return Some(("zone.js", Confidence::High));
     }
 
     // tslib helpers
@@ -187,7 +210,7 @@ fn identify_module_package(region: &str) -> Option<(String, Confidence)> {
         || region.contains("__awaiter")
         || region.contains("__generator")
     {
-        return Some(("tslib".into(), Confidence::Medium));
+        return Some(("tslib", Confidence::Medium));
     }
 
     None

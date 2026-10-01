@@ -15,6 +15,7 @@
 //!
 //! This module extracts action type strings and maps them to their minified variable names.
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
@@ -77,20 +78,34 @@ pub struct NgrxExtractionResult {
 /// Extract `NgRx` patterns from beautified source.
 #[must_use]
 pub fn extract_ngrx_patterns(source: &str) -> NgrxExtractionResult {
+    extract_ngrx_patterns_with_limit(source, usize::MAX)
+}
+
+/// Extract while retaining at most `max_findings` in each result collection.
+#[must_use]
+pub fn extract_ngrx_patterns_with_limit(source: &str, max_findings: usize) -> NgrxExtractionResult {
+    extract_ngrx_patterns_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn extract_ngrx_patterns_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> NgrxExtractionResult {
     let mut actions = Vec::new();
     let mut effects = Vec::new();
     let mut store_dispatches = Vec::new();
 
     // Extract actions with type strings
-    for caps in ACTION_RE.captures_iter(source) {
-        let action_type = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map_or("", |m| m.as_str())
-            .to_string();
+    for caps in ACTION_RE.captures_iter(source).take(max_findings) {
+        let action_type = caps.get(1).or_else(|| caps.get(2)).map_or("", |m| m.as_str());
         let has_props = caps.get(0).map_or("", |m| m.as_str()).contains("props");
 
         if !action_type.is_empty() {
+            let Some(action_type) = budget.take_str(action_type) else {
+                break;
+            };
             actions.push(NgrxAction {
                 action_type,
                 minified_name: None,
@@ -101,15 +116,28 @@ pub fn extract_ngrx_patterns(source: &str) -> NgrxExtractionResult {
 
     // Extract actions with their variable names
     for caps in ACTION_VAR_RE.captures_iter(source) {
-        let var_name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let action_type = caps.get(2).map_or("", |m| m.as_str()).to_string();
+        if actions.len() >= max_findings {
+            break;
+        }
+        let var_name = caps.get(1).map_or("", |m| m.as_str());
+        let action_type = caps.get(2).map_or("", |m| m.as_str());
         let has_props = caps.get(0).map_or("", |m| m.as_str()).contains("props");
 
-        // Update existing or add new
-        let existing = actions.iter_mut().find(|a| a.action_type == action_type);
-        if let Some(entry) = existing {
-            entry.minified_name = Some(var_name);
+        // Update existing or add new. Reserve every source-derived string
+        // before mutating the finding so an exhausted budget cannot leave it partial.
+        let existing = actions.iter().position(|a| a.action_type == action_type);
+        if let Some(index) = existing {
+            let Some(var_name) = budget.take_str(var_name) else {
+                break;
+            };
+            actions[index].minified_name = Some(var_name);
         } else {
+            let Some(action_type) = budget.take_str(action_type) else {
+                break;
+            };
+            let Some(var_name) = budget.take_str(var_name) else {
+                break;
+            };
             actions.push(NgrxAction {
                 action_type,
                 minified_name: Some(var_name),
@@ -119,24 +147,35 @@ pub fn extract_ngrx_patterns(source: &str) -> NgrxExtractionResult {
     }
 
     // Extract store dispatches
-    for caps in DISPATCH_RE.captures_iter(source) {
-        let action_name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+    for caps in DISPATCH_RE.captures_iter(source).take(max_findings) {
+        let action_name = caps.get(1).map_or("", |m| m.as_str());
+        let Some(action_name) = budget.take_str(action_name) else {
+            break;
+        };
         store_dispatches.push(action_name);
     }
 
     // Extract effects
-    for caps in EFFECT_RE.captures_iter(source) {
+    'effects: for caps in EFFECT_RE.captures_iter(source).take(max_findings) {
         let oftype_args = caps.get(1).map_or("", |m| m.as_str());
         let mut trigger_actions = Vec::new();
 
-        // Parse the ofType arguments — could be string literals or variable refs
+        // Parse the ofType arguments — could be string literals or variable refs.
+        // Do not retain the effect unless all of its trigger strings fit.
         for string_cap in OFTYPE_STRING_RE.captures_iter(oftype_args) {
-            trigger_actions.push(string_cap.get(1).map_or("", |m| m.as_str()).to_string());
+            let trigger = string_cap.get(1).map_or("", |m| m.as_str());
+            let Some(trigger) = budget.take_str(trigger) else {
+                break 'effects;
+            };
+            trigger_actions.push(trigger);
         }
 
         if trigger_actions.is_empty() {
             // Just capture the raw argument text
-            trigger_actions.push(oftype_args.trim().to_string());
+            let Some(trigger) = budget.take_str(oftype_args.trim()) else {
+                break;
+            };
+            trigger_actions.push(trigger);
         }
 
         effects.push(NgrxEffect {
@@ -145,8 +184,8 @@ pub fn extract_ngrx_patterns(source: &str) -> NgrxExtractionResult {
         });
     }
 
-    // Deduplicate actions
-    actions.sort_by_key(|action| action.action_type.clone());
+    // Deduplicate actions without cloning their source-derived keys.
+    actions.sort_by(|a, b| a.action_type.cmp(&b.action_type));
     actions.dedup_by(|a, b| a.action_type == b.action_type);
 
     NgrxExtractionResult {

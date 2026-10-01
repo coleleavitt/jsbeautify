@@ -19,6 +19,7 @@ pub mod bun_extract;
 pub mod cross_version;
 pub mod llm;
 pub mod oxc_opts;
+pub(crate) mod recon_budget;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;

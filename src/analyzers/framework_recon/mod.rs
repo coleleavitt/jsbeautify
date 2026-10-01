@@ -10,11 +10,13 @@ use crate::ast_deobfuscate::{
     mfe_registry_extractor, ngrx_extractor, rxjs_annotator, transmit_sdk_decoder, webpack_module_resolver,
     webpack_runtime_decoder,
 };
+use crate::recon_budget::ReconBudget;
 
 /// Hostile-input limits for framework reconnaissance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnalysisLimits {
     pub max_source_bytes: usize,
+    pub max_scan_bytes_per_extractor: usize,
     pub max_findings_per_section: usize,
     pub max_report_bytes: usize,
 }
@@ -23,6 +25,7 @@ impl Default for AnalysisLimits {
     fn default() -> Self {
         Self {
             max_source_bytes: 32 * 1024 * 1024,
+            max_scan_bytes_per_extractor: 8 * 1024 * 1024,
             max_findings_per_section: 10_000,
             max_report_bytes: 8 * 1024 * 1024,
         }
@@ -158,6 +161,7 @@ pub fn analyze(source: &str) -> FrameworkReconReport {
 
 /// Analyze source without evaluating or transforming it.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkReconReport {
     if source.len() > limits.max_source_bytes {
         return FrameworkReconReport {
@@ -171,14 +175,54 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkRec
         };
     }
 
-    let angular = angular_metadata::extract_angular_metadata(source);
-    let routes = angular_route_extractor::extract_routes(source);
-    let http = http_interceptor_extractor::analyze_interceptor_chain(source);
-    let flags = launchdarkly_extractor::extract_feature_flags(source);
-    let mfe = mfe_registry_extractor::analyze_mfe_registry(source);
-    let ngrx = ngrx_extractor::extract_ngrx_patterns(source);
-    let transmit = transmit_sdk_decoder::analyze_transmit_sdk(source);
-    let webpack = webpack_module_resolver::resolve_module_ids(source);
+    let scan_bytes = limits.max_scan_bytes_per_extractor.min(source.len());
+    let mut scan_end = scan_bytes;
+    while !source.is_char_boundary(scan_end) {
+        scan_end -= 1;
+    }
+    let bounded_source = &source[..scan_end];
+
+    let mut recon_budget = ReconBudget::new(limits.max_report_bytes);
+    let angular = angular_metadata::extract_angular_metadata_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let routes = angular_route_extractor::extract_routes_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let http = http_interceptor_extractor::analyze_interceptor_chain_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let flags = launchdarkly_extractor::extract_feature_flags_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let mfe = mfe_registry_extractor::analyze_mfe_registry_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let ngrx = ngrx_extractor::extract_ngrx_patterns_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let transmit = transmit_sdk_decoder::analyze_transmit_sdk_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
+    let webpack = webpack_module_resolver::resolve_module_ids_with_budget(
+        bounded_source,
+        limits.max_findings_per_section,
+        &mut recon_budget,
+    );
 
     let angular_report = build_angular_report(angular, routes);
 
@@ -259,13 +303,17 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkRec
                 .collect(),
             store_dispatches: ngrx.store_dispatches,
         },
-        rxjs_operators: rxjs_annotator::extract_operator_usage(source)
-            .into_iter()
-            .map(|(name, count)| NamedFinding {
-                name,
-                detail: Some(count.to_string()),
-            })
-            .collect(),
+        rxjs_operators: rxjs_annotator::extract_operator_usage_with_budget(
+            bounded_source,
+            limits.max_findings_per_section,
+            &mut recon_budget,
+        )
+        .into_iter()
+        .map(|(name, count)| NamedFinding {
+            name,
+            detail: Some(count.to_string()),
+        })
+        .collect(),
         transmit: TransmitReport {
             sdk_version: transmit.sdk_version,
             api_calls: transmit
@@ -290,7 +338,10 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkRec
             risk_session: transmit.capabilities.risk_session_detected(),
         },
         webpack: WebpackReport {
-            require_variable: webpack_runtime_decoder::detect_require_var(source),
+            require_variable: webpack_runtime_decoder::detect_require_var_with_budget(
+                bounded_source,
+                &mut recon_budget,
+            ),
             modules: webpack
                 .resolved
                 .into_values()
@@ -306,6 +357,21 @@ pub fn analyze_with_limits(source: &str, limits: AnalysisLimits) -> FrameworkRec
         ..FrameworkReconReport::default()
     };
 
+    if recon_budget.exhausted() {
+        report.truncated = true;
+        report
+            .diagnostics
+            .push("framework reconnaissance payload budget exhausted".to_owned());
+    }
+    if bounded_source.len() < source.len() {
+        report.truncated = true;
+        report.diagnostics.push(format!(
+            "framework reconnaissance scanned {} of {} source bytes",
+            bounded_source.len(),
+            source.len()
+        ));
+    }
+    constrain_payload_allocations(&mut report, limits.max_report_bytes);
     sort_report(&mut report);
     enforce_limits(&mut report, limits);
     report
@@ -345,6 +411,96 @@ fn build_angular_report(
     report
 }
 
+fn constrain_payload_allocations(report: &mut FrameworkReconReport, max_bytes: usize) {
+    fn constrain(value: &mut String, remaining: &mut usize) {
+        if value.len() > *remaining {
+            let mut end = *remaining;
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            value.truncate(end);
+        }
+        *remaining = remaining.saturating_sub(value.len());
+        value.shrink_to_fit();
+    }
+
+    fn constrain_optional(value: &mut Option<String>, remaining: &mut usize) {
+        if let Some(value) = value {
+            constrain(value, remaining);
+        }
+    }
+
+    fn constrain_named(findings: &mut [NamedFinding], remaining: &mut usize) {
+        for finding in findings {
+            constrain(&mut finding.name, remaining);
+            constrain_optional(&mut finding.detail, remaining);
+        }
+    }
+
+    let mut remaining = max_bytes;
+    constrain_optional(&mut report.angular.version, &mut remaining);
+    for findings in [
+        &mut report.angular.components,
+        &mut report.angular.directives,
+        &mut report.angular.pipes,
+        &mut report.angular.injectables,
+        &mut report.angular.modules,
+        &mut report.http.headers,
+        &mut report.http.token_storage,
+        &mut report.feature_flags.flags,
+        &mut report.micro_frontends.registrations,
+        &mut report.micro_frontends.script_injections,
+        &mut report.ngrx.actions,
+        &mut report.ngrx.effects,
+        &mut report.rxjs_operators,
+        &mut report.transmit.api_calls,
+        &mut report.transmit.fingerprint_fields,
+    ] {
+        constrain_named(findings, &mut remaining);
+    }
+    for route in &mut report.angular.routes {
+        constrain(&mut route.path, &mut remaining);
+        constrain_optional(&mut route.module_name, &mut remaining);
+    }
+    for value in [
+        &mut report.feature_flags.sdk_key,
+        &mut report.feature_flags.environment,
+        &mut report.transmit.sdk_version,
+        &mut report.webpack.require_variable,
+    ] {
+        constrain_optional(value, &mut remaining);
+    }
+    for values in [
+        &mut report.http.policy_bypass_flags,
+        &mut report.micro_frontends.config_endpoints,
+        &mut report.ngrx.store_dispatches,
+    ] {
+        for value in values {
+            constrain(value, &mut remaining);
+        }
+    }
+    for module in &mut report.webpack.modules {
+        constrain(&mut module.package, &mut remaining);
+        constrain(&mut module.confidence, &mut remaining);
+    }
+}
+
+#[cfg(test)]
+fn retained_payload_bytes(report: &FrameworkReconReport) -> usize {
+    fn strings(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::String(value) => value.len(),
+            serde_json::Value::Array(values) => values.iter().map(strings).sum(),
+            serde_json::Value::Object(values) => values.values().map(strings).sum(),
+            _ => 0,
+        }
+    }
+    let mut report = report.clone();
+    report.diagnostics.clear();
+    let json = serde_json::to_value(report).expect("report serializes");
+    strings(&json)
+}
+
 fn sort_report(report: &mut FrameworkReconReport) {
     for findings in [
         &mut report.angular.components,
@@ -376,7 +532,7 @@ fn enforce_limits(report: &mut FrameworkReconReport, limits: AnalysisLimits) {
     let mut truncated = false;
     macro_rules! cap {
         ($items:expr) => {
-            if $items.len() > limits.max_findings_per_section {
+            if $items.len() >= limits.max_findings_per_section {
                 $items.truncate(limits.max_findings_per_section);
                 truncated = true;
             }
@@ -456,5 +612,73 @@ mod tests {
         let source = "({20:function(e){e.exports='react'},3:function(e){e.exports='lodash'}})";
         let report = analyze(source);
         assert!(report.webpack.modules.windows(2).all(|pair| pair[0].id <= pair[1].id));
+    }
+    #[test]
+    fn hostile_repeated_findings_are_bounded_during_extraction() {
+        use std::fmt::Write as _;
+        let source = (0..200).fold(String::new(), |mut source, index| {
+            write!(source, r#"client.variation("flag-{index}", false);"#).expect("write string");
+            source
+        });
+        let limits = AnalysisLimits {
+            max_findings_per_section: 3,
+            max_report_bytes: usize::MAX,
+            ..AnalysisLimits::default()
+        };
+
+        let extracted =
+            launchdarkly_extractor::extract_feature_flags_with_limit(&source, limits.max_findings_per_section);
+        assert_eq!(extracted.flags.len(), limits.max_findings_per_section);
+
+        let report = analyze_with_limits(&source, limits);
+        assert_eq!(report.feature_flags.flags.len(), limits.max_findings_per_section);
+        assert!(report.truncated);
+    }
+
+    #[test]
+    fn zero_finding_limit_allocates_no_intermediate_findings() {
+        let source = r#"client.variation("one", false); client.variation("two", true);"#;
+        let extracted = launchdarkly_extractor::extract_feature_flags_with_budget(source, 0, &mut ReconBudget::new(0));
+        assert!(extracted.flags.is_empty());
+
+        let report = analyze_with_limits(
+            source,
+            AnalysisLimits {
+                max_findings_per_section: 0,
+                max_report_bytes: usize::MAX,
+                ..AnalysisLimits::default()
+            },
+        );
+        assert_eq!(report.feature_flags.flags, []);
+        assert!(report.truncated);
+    }
+    #[test]
+    fn large_repeated_payload_is_bounded_before_serialization() {
+        let large_key = "🦀".repeat(4_096);
+        let source = format!(r#"client.variation("{large_key}", false);"#);
+        let max_report_bytes = 64;
+        let extracted = launchdarkly_extractor::extract_feature_flags_with_budget(
+            &source,
+            4,
+            &mut ReconBudget::new(max_report_bytes),
+        );
+        let mut report = FrameworkReconReport {
+            feature_flags: FeatureFlagReport {
+                flags: extracted
+                    .flags
+                    .into_iter()
+                    .map(|flag| NamedFinding {
+                        name: flag.key,
+                        detail: flag.default_value,
+                    })
+                    .collect(),
+                ..FeatureFlagReport::default()
+            },
+            ..FrameworkReconReport::default()
+        };
+        constrain_payload_allocations(&mut report, max_report_bytes);
+
+        assert!(retained_payload_bytes(&report) <= max_report_bytes);
+        assert_eq!(report.feature_flags.flags, []);
     }
 }

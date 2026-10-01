@@ -5,43 +5,55 @@ use oxc_ast::ast::{
 use super::extractor::AngularMetadataExtractor;
 use super::naming::generate_class_name;
 use super::types::{AngularComponentInfo, AngularDefKind};
+use crate::recon_budget::ReconBudget;
 
 impl AngularMetadataExtractor {
-    pub(super) fn check_variable_declarator(&mut self, decl: &VariableDeclarator<'_>) {
+    pub(super) fn check_variable_declarator(&mut self, decl: &VariableDeclarator<'_>, budget: &mut ReconBudget) {
         // Pattern: let Ss = ((l = d).ɵfac = ..., l.ɵcmp = ɵɵdefineComponent({...}), d)
-        let export_name = decl.id.get_identifier_name().map(|a| a.to_string());
+        let export_name = decl.id.get_identifier_name();
 
         if let Some(init) = &decl.init {
-            self.check_expression_for_define(init, export_name.as_deref());
+            self.check_expression_for_define(init, export_name.map(|name| name.as_str()), budget);
         }
     }
 
-    pub(super) fn check_expression_for_define(&mut self, expr: &Expression<'_>, export_name: Option<&str>) {
+    pub(super) fn check_expression_for_define(
+        &mut self,
+        expr: &Expression<'_>,
+        export_name: Option<&str>,
+        budget: &mut ReconBudget,
+    ) {
         match expr {
             Expression::SequenceExpression(seq) => {
                 for sub_expr in &seq.expressions {
-                    self.check_expression_for_define(sub_expr, export_name);
+                    self.check_expression_for_define(sub_expr, export_name, budget);
                 }
             }
             Expression::AssignmentExpression(assign) => {
                 // l.ɵcmp = ɵɵdefineComponent({...})
-                self.check_expression_for_define(&assign.right, export_name);
+                self.check_expression_for_define(&assign.right, export_name, budget);
             }
             Expression::CallExpression(call) => {
-                self.check_call_for_define(call, export_name);
+                self.check_call_for_define(call, export_name, budget);
             }
             Expression::ParenthesizedExpression(paren) => {
-                self.check_expression_for_define(&paren.expression, export_name);
+                self.check_expression_for_define(&paren.expression, export_name, budget);
             }
             _ => {}
         }
     }
 
-    fn check_call_for_define(&mut self, call: &CallExpression<'_>, export_name: Option<&str>) {
-        let callee_name = self.get_callee_name(call);
-        let Some(callee) = callee_name else { return };
+    fn check_call_for_define(
+        &mut self,
+        call: &CallExpression<'_>,
+        export_name: Option<&str>,
+        budget: &mut ReconBudget,
+    ) {
+        let Some(callee) = self.get_callee_name(call) else {
+            return;
+        };
 
-        let kind = match callee.as_str() {
+        let kind = match callee {
             name if name.contains("defineComponent") => AngularDefKind::Component,
             name if name.contains("defineDirective") => AngularDefKind::Directive,
             name if name.contains("definePipe") => AngularDefKind::Pipe,
@@ -73,26 +85,38 @@ impl AngularMetadataExtractor {
             };
 
             let key_name = match &prop.key {
-                PropertyKey::StaticIdentifier(ident) => ident.name.as_str().to_string(),
-                PropertyKey::StringLiteral(lit) => lit.value.to_string(),
+                PropertyKey::StaticIdentifier(ident) => ident.name.as_str(),
+                PropertyKey::StringLiteral(lit) => lit.value.as_str(),
                 _ => continue,
             };
 
-            match key_name.as_str() {
+            match key_name {
                 "selectors" => {
                     // selectors: [["my-component"]] or selectors: [["", "myDirective", ""]]
-                    selector = self.extract_selector(&prop.value);
+                    let Some(value) = self.extract_selector(&prop.value, budget) else {
+                        return;
+                    };
+                    selector = value;
                 }
                 "inputs" => {
-                    inputs = self.extract_string_map_keys(&prop.value);
+                    let Some(value) = self.extract_string_map_keys(&prop.value, budget) else {
+                        return;
+                    };
+                    inputs = value;
                 }
                 "outputs" => {
-                    outputs = self.extract_string_map_keys(&prop.value);
+                    let Some(value) = self.extract_string_map_keys(&prop.value, budget) else {
+                        return;
+                    };
+                    outputs = value;
                 }
                 "name" if kind == AngularDefKind::Pipe => {
                     // Pipe name is in `name: "myPipe"`
                     if let Expression::StringLiteral(lit) = &prop.value {
-                        pipe_name = lit.value.to_string();
+                        let Some(value) = budget.take_str(lit.value.as_str()) else {
+                            return;
+                        };
+                        pipe_name = value;
                     }
                 }
                 _ => {}
@@ -105,6 +129,18 @@ impl AngularMetadataExtractor {
         }
 
         let class_name = generate_class_name(&selector, kind);
+        if !budget.try_reserve(class_name.len()) {
+            return;
+        }
+        let minified_export_name = match export_name {
+            Some(name) => {
+                let Some(name) = budget.take_str(name) else {
+                    return;
+                };
+                Some(name)
+            }
+            None => None,
+        };
 
         let info = AngularComponentInfo {
             selector,
@@ -112,53 +148,58 @@ impl AngularMetadataExtractor {
             kind,
             inputs,
             outputs,
-            minified_export_name: export_name.map(String::from),
+            minified_export_name,
             minified_class_name: None,
         };
 
-        self.definitions.push(info);
+        self.push_definition(info);
     }
 
-    fn get_callee_name(&self, call: &CallExpression<'_>) -> Option<String> {
+    fn get_callee_name<'a>(&self, call: &'a CallExpression<'_>) -> Option<&'a str> {
         match &call.callee {
-            Expression::Identifier(ident) => Some(ident.name.to_string()),
-            Expression::StaticMemberExpression(member) => Some(member.property.name.to_string()),
+            Expression::Identifier(ident) => Some(ident.name.as_str()),
+            Expression::StaticMemberExpression(member) => Some(member.property.name.as_str()),
             _ => None,
         }
     }
 
     /// Extract selector string from `selectors: [["my-comp"]]` or `selectors: [["", "dir", ""]]`
-    fn extract_selector(&self, expr: &Expression<'_>) -> String {
+    fn extract_selector(&self, expr: &Expression<'_>, budget: &mut ReconBudget) -> Option<String> {
         let Expression::ArrayExpression(outer) = expr else {
-            return String::new();
+            return Some(String::new());
         };
 
         // First element is the selector array
         let Some(first) = outer.elements.first() else {
-            return String::new();
+            return Some(String::new());
         };
 
         let ArrayExpressionElement::ArrayExpression(inner) = first else {
-            return String::new();
+            return Some(String::new());
         };
 
         // Collect non-empty strings from the inner array
         let mut parts: Vec<String> = Vec::new();
         for elem in &inner.elements {
             if let ArrayExpressionElement::StringLiteral(lit) = elem {
-                let s = lit.value.to_string();
-                if !s.is_empty() {
-                    parts.push(s);
+                let value = lit.value.as_str();
+                if !value.is_empty() {
+                    let value = budget.take_str(value)?;
+                    parts.push(value);
                 }
             }
         }
 
-        parts.join("")
+        let joined_len = parts.iter().map(String::len).sum();
+        if !budget.try_reserve(joined_len) {
+            return None;
+        }
+        Some(parts.join(""))
     }
 
     /// Extract keys from an inputs/outputs object like `{foo: "foo", bar: "bar"}`
     /// or an array like `["foo", "bar"]`
-    fn extract_string_map_keys(&self, expr: &Expression<'_>) -> Vec<String> {
+    fn extract_string_map_keys(&self, expr: &Expression<'_>, budget: &mut ReconBudget) -> Option<Vec<String>> {
         let mut keys = Vec::new();
 
         match expr {
@@ -167,10 +208,12 @@ impl AngularMetadataExtractor {
                     if let ObjectPropertyKind::ObjectProperty(p) = prop {
                         match &p.key {
                             PropertyKey::StaticIdentifier(ident) => {
-                                keys.push(ident.name.to_string());
+                                let value = budget.take_str(ident.name.as_str())?;
+                                keys.push(value);
                             }
                             PropertyKey::StringLiteral(lit) => {
-                                keys.push(lit.value.to_string());
+                                let value = budget.take_str(lit.value.as_str())?;
+                                keys.push(value);
                             }
                             _ => {}
                         }
@@ -180,13 +223,14 @@ impl AngularMetadataExtractor {
             Expression::ArrayExpression(arr) => {
                 for elem in &arr.elements {
                     if let ArrayExpressionElement::StringLiteral(lit) = elem {
-                        keys.push(lit.value.to_string());
+                        let value = budget.take_str(lit.value.as_str())?;
+                        keys.push(value);
                     }
                 }
             }
             _ => {}
         }
 
-        keys
+        Some(keys)
     }
 }

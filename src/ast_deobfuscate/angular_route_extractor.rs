@@ -11,6 +11,7 @@
 //! - `/mfa-enrollment` → chunk 7794 (`MfaEnrollmentModule`)
 //! - `/update-password` → chunk 6848 (`UpdatePasswordModule`)
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
@@ -55,16 +56,40 @@ pub struct RouteExtractionResult {
 /// Parses `path:` + `loadChildren`/`loadComponent` patterns to build the route table.
 #[must_use]
 pub fn extract_routes(source: &str) -> RouteExtractionResult {
+    extract_routes_with_limit(source, usize::MAX)
+}
+
+/// Extract while retaining at most `max_findings` routes and chunk mappings.
+#[must_use]
+pub fn extract_routes_with_limit(source: &str, max_findings: usize) -> RouteExtractionResult {
+    let mut budget = ReconBudget::new(usize::MAX);
+    extract_routes_with_budget(source, max_findings, &mut budget)
+}
+
+#[must_use]
+pub fn extract_routes_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> RouteExtractionResult {
     let mut routes = Vec::new();
     let mut chunk_to_route: Vec<(u32, String)> = Vec::new();
 
     // First pass: ensureChunk patterns
-    for caps in ROUTE_ENSURE_RE.captures_iter(source) {
-        let path = caps.get(1).map_or("", |m| m.as_str()).to_string();
+    for caps in ROUTE_ENSURE_RE.captures_iter(source).take(max_findings) {
+        let path_capture = caps.get(1).map_or("", |m| m.as_str());
+        let Some(path) = budget.take_str(path_capture) else {
+            break;
+        };
         let chunk_id: Option<u32> = caps.get(2).and_then(|m| m.as_str().parse().ok());
 
-        if let Some(id) = chunk_id {
-            chunk_to_route.push((id, path.clone()));
+        if let Some(id) = chunk_id
+            && chunk_to_route.len() < max_findings
+        {
+            let Some(mapping_path) = budget.take_str(path_capture) else {
+                break;
+            };
+            chunk_to_route.push((id, mapping_path));
         }
 
         routes.push(RouteEntry {
@@ -77,14 +102,37 @@ pub fn extract_routes(source: &str) -> RouteExtractionResult {
 
     // Second pass: import().then(m => m.Module) patterns
     for caps in ROUTE_IMPORT_RE.captures_iter(source) {
-        let path = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let module_name = caps.get(2).map(|m| m.as_str().to_string());
+        if routes.len() >= max_findings {
+            break;
+        }
+        let path_capture = caps.get(1).map_or("", |m| m.as_str());
+        let module_capture = caps.get(2).map(|m| m.as_str());
 
-        // Check if we already have this route from the first pass
-        let existing = routes.iter_mut().find(|r| r.path == path);
-        if let Some(entry) = existing {
+        // Check if we already have this route from the first pass.
+        if let Some(entry) = routes.iter_mut().find(|r| r.path == path_capture) {
+            let module_name = match module_capture {
+                Some(name) => {
+                    let Some(name) = budget.take_str(name) else {
+                        break;
+                    };
+                    Some(name)
+                }
+                None => None,
+            };
             entry.module_name = module_name;
         } else {
+            let Some(path) = budget.take_str(path_capture) else {
+                break;
+            };
+            let module_name = match module_capture {
+                Some(name) => {
+                    let Some(name) = budget.take_str(name) else {
+                        break;
+                    };
+                    Some(name)
+                }
+                None => None,
+            };
             routes.push(RouteEntry {
                 path,
                 chunk_id: None,
@@ -96,12 +144,20 @@ pub fn extract_routes(source: &str) -> RouteExtractionResult {
 
     // Third pass: fallback for simpler path patterns
     if routes.is_empty() {
-        for caps in PATH_CHUNK_RE.captures_iter(source) {
-            let path = caps.get(1).map_or("", |m| m.as_str()).to_string();
+        for caps in PATH_CHUNK_RE.captures_iter(source).take(max_findings) {
+            let path_capture = caps.get(1).map_or("", |m| m.as_str());
+            let Some(path) = budget.take_str(path_capture) else {
+                break;
+            };
             let chunk_id: Option<u32> = caps.get(2).and_then(|m| m.as_str().parse().ok());
 
-            if let Some(id) = chunk_id {
-                chunk_to_route.push((id, path.clone()));
+            if let Some(id) = chunk_id
+                && chunk_to_route.len() < max_findings
+            {
+                let Some(mapping_path) = budget.take_str(path_capture) else {
+                    break;
+                };
+                chunk_to_route.push((id, mapping_path));
             }
 
             routes.push(RouteEntry {

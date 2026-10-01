@@ -14,6 +14,7 @@
 //! - `Schwab-Client-Channel` / `Schwab-Client-Scope` — routing metadata
 //! - `web-crypto-enabled` — feature flag for crypto auth
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
@@ -76,17 +77,38 @@ pub struct InterceptorAnalysisResult {
 /// Extract HTTP interceptor patterns from beautified source.
 #[must_use]
 pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
+    analyze_interceptor_chain_with_limit(source, usize::MAX)
+}
+
+/// Analyze while retaining at most `max_findings` in each result collection.
+#[must_use]
+pub fn analyze_interceptor_chain_with_limit(source: &str, max_findings: usize) -> InterceptorAnalysisResult {
+    analyze_interceptor_chain_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn analyze_interceptor_chain_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> InterceptorAnalysisResult {
     let mut headers = Vec::new();
     let mut token_storage = Vec::new();
     let mut policy_bypass_flags = Vec::new();
 
     // Extract header assignments
-    for caps in HEADER_ASSIGN_RE.captures_iter(source) {
-        let header = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let value_expr = caps.get(2).map_or("", |m| m.as_str()).trim().to_string();
-
-        let value_source = classify_value_source(&value_expr);
-        let security_note = classify_header_security(&header);
+    for caps in HEADER_ASSIGN_RE.captures_iter(source).take(max_findings) {
+        let header_match = caps.get(1).map_or("", |m| m.as_str());
+        let value_expr = caps.get(2).map_or("", |m| m.as_str()).trim();
+        let Some(header) = budget.take_str(header_match) else {
+            break;
+        };
+        let Some(value_source) = classify_value_source(value_expr, budget) else {
+            break;
+        };
+        let Ok(security_note) = classify_header_security(&header, budget) else {
+            break;
+        };
 
         headers.push(HeaderInjection {
             header,
@@ -98,10 +120,19 @@ pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
 
     // Extract sessionStorage tokens
     for caps in SESSION_STORAGE_RE.captures_iter(source) {
-        let key = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !token_storage.iter().any(|t: &TokenStorage| t.key == key) {
+        if token_storage.len() >= max_findings {
+            break;
+        }
+        let key_match = caps.get(1).map_or("", |m| m.as_str());
+        if !token_storage.iter().any(|t: &TokenStorage| t.key == key_match) {
+            let Some(token_name) = budget.take_str(key_match) else {
+                break;
+            };
+            let Some(key) = budget.take_str(key_match) else {
+                break;
+            };
             token_storage.push(TokenStorage {
-                token_name: key.clone(),
+                token_name,
                 storage_type: "sessionStorage",
                 key,
             });
@@ -110,10 +141,19 @@ pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
 
     // Extract localStorage tokens
     for caps in LOCAL_STORAGE_RE.captures_iter(source) {
-        let key = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !token_storage.iter().any(|t: &TokenStorage| t.key == key) {
+        if token_storage.len() >= max_findings {
+            break;
+        }
+        let key_match = caps.get(1).map_or("", |m| m.as_str());
+        if !token_storage.iter().any(|t: &TokenStorage| t.key == key_match) {
+            let Some(token_name) = budget.take_str(key_match) else {
+                break;
+            };
+            let Some(key) = budget.take_str(key_match) else {
+                break;
+            };
             token_storage.push(TokenStorage {
-                token_name: key.clone(),
+                token_name,
                 storage_type: "localStorage",
                 key,
             });
@@ -122,10 +162,19 @@ pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
 
     // Extract cookie-based tokens
     for caps in COOKIE_RE.captures_iter(source) {
-        let key = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !token_storage.iter().any(|t: &TokenStorage| t.key == key) {
+        if token_storage.len() >= max_findings {
+            break;
+        }
+        let key_match = caps.get(1).map_or("", |m| m.as_str());
+        if !token_storage.iter().any(|t: &TokenStorage| t.key == key_match) {
+            let Some(token_name) = budget.take_str(key_match) else {
+                break;
+            };
+            let Some(key) = budget.take_str(key_match) else {
+                break;
+            };
             token_storage.push(TokenStorage {
-                token_name: key.clone(),
+                token_name,
                 storage_type: "cookie",
                 key,
             });
@@ -134,8 +183,14 @@ pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
 
     // Extract policy bypass flags
     for caps in POLICY_BYPASS_RE.captures_iter(source) {
-        let flag = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !policy_bypass_flags.contains(&flag) {
+        if policy_bypass_flags.len() >= max_findings {
+            break;
+        }
+        let flag_match = caps.get(1).map_or("", |m| m.as_str());
+        if !policy_bypass_flags.iter().any(|flag| flag == flag_match) {
+            let Some(flag) = budget.take_str(flag_match) else {
+                break;
+            };
             policy_bypass_flags.push(flag);
         }
     }
@@ -156,36 +211,46 @@ pub fn analyze_interceptor_chain(source: &str) -> InterceptorAnalysisResult {
     }
 }
 
-fn classify_value_source(expr: &str) -> String {
+fn classify_value_source(expr: &str, budget: &mut ReconBudget) -> Option<String> {
     if expr.contains("sessionStorage") {
-        "sessionStorage".to_string()
+        budget.take_str("sessionStorage")
     } else if expr.contains("localStorage") {
-        "localStorage".to_string()
+        budget.take_str("localStorage")
     } else if expr.contains("cookie") {
-        "cookie".to_string()
+        budget.take_str("cookie")
     } else if expr.contains("this.") {
-        format!("instance property ({})", expr.split('.').nth(1).unwrap_or("?"))
+        let property = expr.split('.').nth(1).unwrap_or("?");
+        let prefix = budget.take_str("instance property (")?;
+        let property = budget.take_str(property)?;
+        let suffix = budget.take_str(")")?;
+        Some(format!("{prefix}{property}{suffix}"))
     } else if expr.starts_with('"') || expr.starts_with('\'') {
-        format!("literal: {expr}")
+        let prefix = budget.take_str("literal: ")?;
+        let expr = budget.take_str(expr)?;
+        Some(format!("{prefix}{expr}"))
     } else {
-        format!("variable: {}", expr.chars().take(40).collect::<String>())
+        let prefix = budget.take_str("variable: ")?;
+        let value: &str = &expr[..expr.char_indices().nth(40).map_or(expr.len(), |(index, _)| index)];
+        let value = budget.take_str(value)?;
+        Some(format!("{prefix}{value}"))
     }
 }
 
-fn classify_header_security(header: &str) -> Option<String> {
-    match header {
-        "Schwab-Skip-Policy-Zero" => Some("POLICY BYPASS: skips initial auth policy — test if spoofable".into()),
-        "Schwab-Skip-Status" => Some("STATUS BYPASS: skips status check — test if spoofable".into()),
-        "Schwab-Skip-Level-Zero" => Some("LEVEL BYPASS: skips level-zero policy — test if spoofable".into()),
-        "X-Authorization" => Some("Secondary auth token — test for token replay".into()),
-        "DRS-Session-Token" => Some("Risk engine session — test for session fixation".into()),
-        "swscrypto-signature" => Some("Web Crypto signature — verify server validates".into()),
-        "swscrypto-public-key" => Some("Client public key — test for key substitution".into()),
-        "web-crypto-enabled" => Some("Feature flag header — test if disabling weakens auth".into()),
-        "Schwab-Passkey-Login" => Some("Passkey flow indicator — test for flow confusion".into()),
-        h if h.contains("Migration") => Some("Migration flag — may enable legacy (weaker) paths".into()),
+fn classify_header_security(header: &str, budget: &mut ReconBudget) -> Result<Option<String>, ()> {
+    let note = match header {
+        "Schwab-Skip-Policy-Zero" => Some("POLICY BYPASS: skips initial auth policy — test if spoofable"),
+        "Schwab-Skip-Status" => Some("STATUS BYPASS: skips status check — test if spoofable"),
+        "Schwab-Skip-Level-Zero" => Some("LEVEL BYPASS: skips level-zero policy — test if spoofable"),
+        "X-Authorization" => Some("Secondary auth token — test for token replay"),
+        "DRS-Session-Token" => Some("Risk engine session — test for session fixation"),
+        "swscrypto-signature" => Some("Web Crypto signature — verify server validates"),
+        "swscrypto-public-key" => Some("Client public key — test for key substitution"),
+        "web-crypto-enabled" => Some("Feature flag header — test if disabling weakens auth"),
+        "Schwab-Passkey-Login" => Some("Passkey flow indicator — test for flow confusion"),
+        h if h.contains("Migration") => Some("Migration flag — may enable legacy (weaker) paths"),
         _ => None,
-    }
+    };
+    note.map_or(Ok(None), |note| budget.take_str(note).map(Some).ok_or(()))
 }
 
 /// Format as annotation block.

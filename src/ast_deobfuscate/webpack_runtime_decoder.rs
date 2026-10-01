@@ -26,6 +26,7 @@
 //! | `t.O.j`  | `__webpack_require__.onChunksLoaded.isReady` | Chunk ready check |
 //! | `t.miniCssF` | `__webpack_require__.miniCssFilename` | CSS chunk filename |
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use std::sync::LazyLock;
@@ -60,6 +61,11 @@ fn build_webpack_runtime_map() -> FxHashMap<&'static str, &'static str> {
 /// or property assignments like `X.m = m;...X.O = ...`
 #[must_use]
 pub fn detect_require_var(source: &str) -> Option<String> {
+    detect_require_var_with_budget(source, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn detect_require_var_with_budget(source: &str, budget: &mut ReconBudget) -> Option<String> {
     // Pattern: single-char function with .exports somewhere after it
     static REQUIRE_FUNC_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"function\s+(\w)\([^)]*\)\s*\{.{0,200}\.exports").unwrap());
@@ -74,7 +80,7 @@ pub fn detect_require_var(source: &str) -> Option<String> {
         // Verify this var has .m property assigned (the module registry)
         let check_m = format!("{var_name}.m");
         if source.contains(&check_m) {
-            return Some(var_name.to_string());
+            return budget.take_str(var_name);
         }
     }
 
@@ -84,7 +90,7 @@ pub fn detect_require_var(source: &str) -> Option<String> {
         let check_o = format!("{var_name}.O");
         let check_d = format!("{var_name}.d");
         if source.contains(&check_o) || source.contains(&check_d) {
-            return Some(var_name.to_string());
+            return budget.take_str(var_name);
         }
     }
 

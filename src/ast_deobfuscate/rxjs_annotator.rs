@@ -20,6 +20,7 @@
 //! Error: catchError, retry, retryWhen
 //! Combine: withLatestFrom, combineLatestWith, startWith, pairwise
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::LazyLock;
@@ -128,6 +129,15 @@ const RXJS_OPERATORS: &[&str] = &[
 /// Returns (`annotated_source`, `operator_count`).
 #[must_use]
 pub fn annotate_rxjs_operators(source: &str) -> (String, usize) {
+    annotate_rxjs_operators_with_budget(source, usize::MAX, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn annotate_rxjs_operators_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> (String, usize) {
     // Matches: (0, n.operatorName)( or n.operatorName( where operatorName is known
     static OPERATOR_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
@@ -140,31 +150,43 @@ pub fn annotate_rxjs_operators(source: &str) -> (String, usize) {
     let mut op_count = 0usize;
 
     for line in source.lines() {
-        // NOTE: previously this bailed out on any line containing `.pipe(`,
-        // which skipped annotation on exactly the lines that carry the operator
-        // chain (single-line `x.pipe(map(a), filter(b))` is the common minified
-        // shape). Operator detection now runs on every line.
-
-        // Look for operator calls in the line
-        let mut annotated_line = line.to_string();
+        // Charge the complete source-derived region before copying or formatting
+        // it into the returned source. On exhaustion, do not return partial output.
+        let Some(owned_line) = budget.take_str(line) else {
+            return (String::new(), 0);
+        };
         let mut found_in_line = false;
+        let mut operator_name = None;
 
-        for caps in OPERATOR_CALL_RE.captures_iter(line) {
-            let op_name = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
-            if let Some(name) = op_name
-                && known_ops.contains(name)
-                && !found_in_line
-            {
-                // Add annotation comment before this operator usage
-                let indent = line.len() - line.trim_start().len();
-                let pad = " ".repeat(indent);
-                annotated_line = format!("{pad}/* rxjs:{name} */ {}", line.trim_start());
-                found_in_line = true;
-                op_count += 1;
+        if op_count < max_findings {
+            for caps in OPERATOR_CALL_RE.captures_iter(line) {
+                let op_name = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
+                if let Some(name) = op_name
+                    && known_ops.contains(name)
+                {
+                    operator_name = Some(name);
+                    found_in_line = true;
+                    break;
+                }
             }
         }
 
-        result.push_str(&annotated_line);
+        if found_in_line {
+            let name = operator_name.expect("operator name set with found flag");
+            let Some(name) = budget.take_str(name) else {
+                return (String::new(), 0);
+            };
+            let indent = line.len() - line.trim_start().len();
+            let pad = " ".repeat(indent);
+            result.push_str(&pad);
+            result.push_str("/* rxjs:");
+            result.push_str(&name);
+            result.push_str(" */ ");
+            result.push_str(owned_line.trim_start());
+            op_count += 1;
+        } else {
+            result.push_str(&owned_line);
+        }
         result.push('\n');
     }
 
@@ -174,6 +196,21 @@ pub fn annotate_rxjs_operators(source: &str) -> (String, usize) {
 /// Extract a summary of all `RxJS` operators used in the source.
 #[must_use]
 pub fn extract_operator_usage(source: &str) -> Vec<(String, usize)> {
+    extract_operator_usage_with_limit(source, usize::MAX)
+}
+
+/// Count operators while retaining at most `max_findings` distinct names.
+#[must_use]
+pub fn extract_operator_usage_with_limit(source: &str, max_findings: usize) -> Vec<(String, usize)> {
+    extract_operator_usage_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn extract_operator_usage_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> Vec<(String, usize)> {
     // Matches an operator call in both the bare member form `n.map(` and the
     // minified interop form `(0,n.map)(` (note the `)` between the operator
     // name and the call paren). Group 1 = operator name.
@@ -182,14 +219,19 @@ pub fn extract_operator_usage(source: &str) -> Vec<(String, usize)> {
     let known_ops: FxHashSet<&str> = RXJS_OPERATORS.iter().copied().collect();
 
     // Count actual operator *call* sites (`n.map(`, `(0,n.map)(`), not bare
-    // substring occurrences of the name: operator names like `of`/`map`/`share`
-    // are common substrings (`offset`, `mapping`, `shareReplay`) and a raw
-    // `source.matches(name)` grossly over-counts them.
+    // substring occurrences of the name.
     let mut counts: FxHashMap<String, usize> = FxHashMap::default();
     for caps in ALL_OPS_RE.captures_iter(source) {
         let name = caps.get(1).map_or("", |m| m.as_str());
         if known_ops.contains(name) {
-            *counts.entry(name.to_string()).or_insert(0) += 1;
+            if let Some(count) = counts.get_mut(name) {
+                *count += 1;
+            } else if counts.len() < max_findings {
+                let Some(name) = budget.take_str(name) else {
+                    break;
+                };
+                counts.insert(name, 1);
+            }
         }
     }
 

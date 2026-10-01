@@ -25,6 +25,7 @@
 //! | `auth/approve` | Transaction approval |
 //! | `auth/create_debug_token` | Debug/test token (SHOULD NOT BE IN PROD) |
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
@@ -90,6 +91,21 @@ impl TransmitCapabilities {
 /// Extract Transmit Security SDK patterns from source.
 #[must_use]
 pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
+    analyze_transmit_sdk_with_limit(source, usize::MAX)
+}
+
+/// Analyze while retaining at most `max_findings` in each result collection.
+#[must_use]
+pub fn analyze_transmit_sdk_with_limit(source: &str, max_findings: usize) -> TransmitAnalysisResult {
+    analyze_transmit_sdk_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn analyze_transmit_sdk_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> TransmitAnalysisResult {
     static AUTH_ENDPOINT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["'](auth/[a-z_/]+)["']"#).unwrap());
 
     static WEBAUTHN_RE: LazyLock<Regex> =
@@ -112,8 +128,26 @@ pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
 
     // Extract auth endpoints
     for caps in AUTH_ENDPOINT_RE.captures_iter(source) {
-        let endpoint = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let (purpose, security_note) = classify_auth_endpoint(&endpoint);
+        if api_calls.len() >= max_findings {
+            break;
+        }
+        let endpoint = caps.get(1).map_or("", |matched| matched.as_str());
+        let (purpose, security_note) = classify_auth_endpoint(endpoint);
+        let Some(endpoint) = budget.take_str(endpoint) else {
+            break;
+        };
+        let Some(purpose) = budget.take_str(purpose) else {
+            break;
+        };
+        let security_note = match security_note {
+            Some(note) => {
+                let Some(note) = budget.take_str(note) else {
+                    break;
+                };
+                Some(note)
+            }
+            None => None,
+        };
         api_calls.push(TransmitApiCall {
             endpoint,
             purpose,
@@ -123,11 +157,20 @@ pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
 
     // Extract WebAuthn endpoints
     for caps in WEBAUTHN_RE.captures_iter(source) {
-        let endpoint = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !api_calls.iter().any(|c| c.endpoint == endpoint) {
+        if api_calls.len() >= max_findings {
+            break;
+        }
+        let endpoint = caps.get(1).map_or("", |matched| matched.as_str());
+        if !api_calls.iter().any(|call| call.endpoint == endpoint) {
+            let Some(endpoint) = budget.take_str(endpoint) else {
+                break;
+            };
+            let Some(purpose) = budget.take_str("WebAuthn/FIDO2 operation") else {
+                break;
+            };
             api_calls.push(TransmitApiCall {
                 endpoint,
-                purpose: "WebAuthn/FIDO2 operation".to_string(),
+                purpose,
                 security_note: None,
             });
         }
@@ -135,24 +178,27 @@ pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
 
     // Extract fingerprint fields
     for caps in FINGERPRINT_RE.captures_iter(source) {
-        let field = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let category = classify_fingerprint_field(&field);
+        if fingerprint_fields.len() >= max_findings {
+            break;
+        }
+        let field = caps.get(1).map_or("", |matched| matched.as_str());
+        let category = classify_fingerprint_field(field);
         if !fingerprint_fields
             .iter()
-            .any(|f: &FingerprintField| f.field_name == field)
+            .any(|fingerprint: &FingerprintField| fingerprint.field_name == field)
         {
-            fingerprint_fields.push(FingerprintField {
-                field_name: field,
-                category,
-            });
+            let Some(field_name) = budget.take_str(field) else {
+                break;
+            };
+            fingerprint_fields.push(FingerprintField { field_name, category });
         }
     }
 
     // Detect SDK version
     let sdk_version = VERSION_RE
         .captures(source)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
+        .and_then(|captures| captures.get(1))
+        .and_then(|matched| budget.take_str(matched.as_str()));
 
     let mut capabilities = TransmitCapabilities::default();
     if source.contains("webauthn/authenticate") || source.contains("webauthn/register") {
@@ -180,43 +226,40 @@ pub fn analyze_transmit_sdk(source: &str) -> TransmitAnalysisResult {
     }
 }
 
-fn classify_auth_endpoint(endpoint: &str) -> (String, Option<String>) {
+fn classify_auth_endpoint(endpoint: &str) -> (&'static str, Option<&'static str>) {
     match endpoint {
-        "auth/login" => ("Initial authentication".into(), None),
-        "auth/logout" => ("Session termination".into(), None),
-        "auth/poll" => ("Async authentication status polling".into(), None),
-        "auth/bind" => ("Device-to-session binding".into(), None),
-        "auth/assert" => ("Authentication assertion verification".into(), None),
-        "auth/sso" => ("Single sign-on federation".into(), None),
+        "auth/login" => ("Initial authentication", None),
+        "auth/logout" => ("Session termination", None),
+        "auth/poll" => ("Async authentication status polling", None),
+        "auth/bind" => ("Device-to-session binding", None),
+        "auth/assert" => ("Authentication assertion verification", None),
+        "auth/sso" => ("Single sign-on federation", None),
         "auth/key_exchange" => (
-            "Cryptographic key exchange (DH/ECDH)".into(),
-            Some("Key material exchanged — verify forward secrecy".into()),
+            "Cryptographic key exchange (DH/ECDH)",
+            Some("Key material exchanged — verify forward secrecy"),
         ),
         "auth/anonymous_invoke" => (
-            "Unauthenticated policy invocation".into(),
-            Some("Can be called without auth — test for info disclosure".into()),
+            "Unauthenticated policy invocation",
+            Some("Can be called without auth — test for info disclosure"),
         ),
-        "auth/authenticator/config_menu" => ("MFA method configuration listing".into(), None),
+        "auth/authenticator/config_menu" => ("MFA method configuration listing", None),
         "auth/authenticator/register" => (
-            "New authenticator enrollment".into(),
-            Some("Test for enrollment without verification".into()),
+            "New authenticator enrollment",
+            Some("Test for enrollment without verification"),
         ),
-        "auth/authenticator/unregister" => (
-            "Authenticator removal".into(),
-            Some("Test for unauthenticated removal".into()),
-        ),
-        "auth/approve" => ("Transaction/action approval".into(), None),
+        "auth/authenticator/unregister" => ("Authenticator removal", Some("Test for unauthenticated removal")),
+        "auth/approve" => ("Transaction/action approval", None),
         "auth/create_debug_token" => (
-            "Debug token creation".into(),
-            Some("CRITICAL: debug endpoint in production code!".into()),
+            "Debug token creation",
+            Some("CRITICAL: debug endpoint in production code!"),
         ),
-        e if e.contains("webauthn/authenticate") => ("WebAuthn login (FIDO2 assertion)".into(), None),
-        e if e.contains("webauthn/register") => ("WebAuthn credential creation (FIDO2 attestation)".into(), None),
+        e if e.contains("webauthn/authenticate") => ("WebAuthn login (FIDO2 assertion)", None),
+        e if e.contains("webauthn/register") => ("WebAuthn credential creation (FIDO2 attestation)", None),
         e if e.contains("cross-device") || e.contains("cross_device") => (
-            "Cross-device authentication flow".into(),
-            Some("Ticket-based — test for ticket enumeration".into()),
+            "Cross-device authentication flow",
+            Some("Ticket-based — test for ticket enumeration"),
         ),
-        _ => (format!("Unknown Transmit endpoint: {endpoint}"), None),
+        _ => ("Unknown Transmit endpoint", None),
     }
 }
 

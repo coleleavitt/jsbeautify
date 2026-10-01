@@ -30,7 +30,7 @@ mod regex_fallback;
 mod types;
 mod version;
 
-pub use api::extract_angular_metadata;
+pub use api::{extract_angular_metadata, extract_angular_metadata_with_budget, extract_angular_metadata_with_limit};
 pub use extractor::AngularMetadataExtractor;
 pub use types::{AngularComponentInfo, AngularDefKind, AngularExtractionResult};
 pub use version::{AngularVersionRange, detect_angular_version};

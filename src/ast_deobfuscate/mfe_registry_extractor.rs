@@ -12,6 +12,7 @@
 //! - Cross-origin script injection from CDN without pinning
 //! - Shared cookie/token scope between all MFEs
 
+use crate::recon_budget::ReconBudget;
 use regex::Regex;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
@@ -56,6 +57,21 @@ pub struct MfeAnalysisResult {
 /// Extract MFE registry patterns from source.
 #[must_use]
 pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
+    analyze_mfe_registry_with_limit(source, usize::MAX)
+}
+
+/// Analyze while retaining at most `max_findings` in each result collection.
+#[must_use]
+pub fn analyze_mfe_registry_with_limit(source: &str, max_findings: usize) -> MfeAnalysisResult {
+    analyze_mfe_registry_with_budget(source, max_findings, &mut ReconBudget::new(usize::MAX))
+}
+
+#[must_use]
+pub fn analyze_mfe_registry_with_budget(
+    source: &str,
+    max_findings: usize,
+    budget: &mut ReconBudget,
+) -> MfeAnalysisResult {
     // single-spa registerApplication
     static REGISTER_APP_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"registerApplication\(\s*["']([^"']+)["']"#).unwrap());
@@ -84,8 +100,10 @@ pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
     let mut config_endpoints = Vec::new();
 
     // Extract MFE registrations
-    for caps in REGISTER_APP_RE.captures_iter(source) {
-        let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+    for caps in REGISTER_APP_RE.captures_iter(source).take(max_findings) {
+        let Some(name) = caps.get(1).and_then(|matched| budget.take_str(matched.as_str())) else {
+            break;
+        };
         registrations.push(MfeRegistration {
             name,
             route_pattern: None,
@@ -96,8 +114,14 @@ pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
 
     // Extract MFE names from string literals
     for caps in MFE_NAME_RE.captures_iter(source) {
-        let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !registrations.iter().any(|r| r.name == name) {
+        if registrations.len() >= max_findings {
+            break;
+        }
+        let name_match = caps.get(1).map_or("", |m| m.as_str());
+        if !registrations.iter().any(|r| r.name == name_match) {
+            let Some(name) = budget.take_str(name_match) else {
+                break;
+            };
             registrations.push(MfeRegistration {
                 name,
                 route_pattern: None,
@@ -110,19 +134,31 @@ pub fn analyze_mfe_registry(source: &str) -> MfeAnalysisResult {
     // Dynamic script injections — record each site's offset so callers can
     // position the finding on the actual `createElement("script")` rather than
     // a synthetic placeholder.
-    for m in SCRIPT_CREATE_RE.find_iter(source).take(10) {
+    for m in SCRIPT_CREATE_RE.find_iter(source).take(max_findings.min(10)) {
+        let Some(url_pattern) = budget.take_str("dynamic") else {
+            break;
+        };
+        let Some(method) = budget.take_str("createElement('script')") else {
+            break;
+        };
         script_injections.push(ScriptInjection {
-            url_pattern: "dynamic".to_string(),
+            url_pattern,
             has_security_attrs: NONCE_RE.is_match(source),
-            method: "createElement('script')".to_string(),
+            method,
             offset: m.start(),
         });
     }
 
     // Extract config endpoints
     for caps in CONFIG_RE.captures_iter(source) {
-        let endpoint = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        if !config_endpoints.contains(&endpoint) {
+        if config_endpoints.len() >= max_findings {
+            break;
+        }
+        let endpoint_match = caps.get(1).map_or("", |m| m.as_str());
+        if !config_endpoints.iter().any(|endpoint| endpoint == endpoint_match) {
+            let Some(endpoint) = budget.take_str(endpoint_match) else {
+                break;
+            };
             config_endpoints.push(endpoint);
         }
     }
