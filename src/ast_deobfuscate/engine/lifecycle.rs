@@ -6,6 +6,7 @@ use super::{
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
     SourceType, StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
     TernaryToIfElse, TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval,
+    semantic_baseline,
 };
 
 /// Maximum accepted delimiter nesting.
@@ -161,8 +162,11 @@ impl AstDeobfuscator {
 
         let source_type = SourceType::mjs();
         let (intermediate, bun_helper_map, source_type) = self.run_structural_half(&code, source_type);
+        // Measured against the source type the structural half settled on, so
+        // the final checkpoints compare like with like.
+        let baseline = semantic_baseline(&code, source_type);
         let intermediate2 = self.run_cosmetic_a(&intermediate, source_type)?;
-        self.run_cosmetic_b_and_final_output(&intermediate2, source_type, &bun_helper_map)
+        self.run_cosmetic_b_and_final_output(&intermediate2, source_type, &bun_helper_map, baseline)
     }
 }
 impl Default for AstDeobfuscator {

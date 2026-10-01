@@ -44,7 +44,7 @@ use super::{
     flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards, resolve_compound_transitions,
 };
 use annotations::annotate_webpack_modules;
-use checkpoint::{checkpoint_error_context, log_output_validity};
+use checkpoint::{SemanticBaseline, checkpoint_error_context, log_output_validity, semantic_baseline};
 use trace::{TraceSpan, mem_ck};
 
 pub use trace::{ast_trace_enabled, deob_trace_enabled};

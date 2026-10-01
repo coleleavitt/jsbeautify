@@ -1,7 +1,7 @@
 use super::{
     AstDeobfuscator, BunHelper, BunHelperMap, Codegen, EsbuildHelperCollector, EsbuildHelperKind, Program, Result,
-    SourceType, annotate_bun_modules, annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums,
-    annotate_webpack_modules, expand_arrow_sequences, log_output_validity, mem_ck,
+    SemanticBaseline, SourceType, annotate_bun_modules, annotate_esbuild_modules, annotate_namespace_modules,
+    annotate_ts_enums, annotate_webpack_modules, expand_arrow_sequences, log_output_validity, mem_ck,
 };
 
 impl AstDeobfuscator {
@@ -11,6 +11,7 @@ impl AstDeobfuscator {
         source_type: SourceType,
         esbuild_collector: &EsbuildHelperCollector,
         bun_helper_map: &BunHelperMap,
+        baseline: SemanticBaseline,
     ) -> Result<String> {
         mem_ck("before codegen (peak structural)");
         eprintln!("[DEOBFUSCATE] Generating output code");
@@ -19,9 +20,9 @@ impl AstDeobfuscator {
         // Consistency with the arena-split checkpoints: an AST -> codegen boundary
         // that emits unparseable JS indicates a real defect in a prior pass, so
         // surface it rather than returning invalid output as success.
-        if !log_output_validity("Phase 19.6", &output, source_type) {
+        if !log_output_validity("Phase 19.6", &output, source_type, baseline) {
             return Err(crate::BeautifyError::BeautificationFailed(
-                "Phase 19.6 final codegen produced unparseable JavaScript".to_string(),
+                "Phase 19.6 final codegen produced invalid JavaScript".to_string(),
             ));
         }
 
@@ -75,7 +76,7 @@ impl AstDeobfuscator {
         // expansion) rewrite the output string, so the final result is held to
         // the same parse-validity bar as the AST checkpoints: invalid JS is a
         // real defect and is surfaced rather than returned as success.
-        if !log_output_validity("Phase 21.5", &output, source_type) {
+        if !log_output_validity("Phase 21.5", &output, source_type, baseline) {
             return Err(crate::BeautifyError::BeautificationFailed(
                 "Phase 21.5 post-annotation output is invalid JavaScript".to_string(),
             ));

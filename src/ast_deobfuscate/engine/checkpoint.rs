@@ -39,12 +39,41 @@ pub(super) fn checkpoint_error_context(label: &str, code: &str, errors: &[OxcDia
     )
 }
 
-/// Logs validity of generated output and returns whether it re-parses cleanly.
+/// Semantic-error budget a generated output is held to.
 ///
-/// Returns `false` only on a *parse* error (the output is not valid JS);
-/// semantic errors are logged but still return `true`, matching the
-/// parse-only policy the arena-split checkpoints enforce on their own codegen.
-pub(super) fn log_output_validity(label: &str, code: &str, source_type: SourceType) -> bool {
+/// Inputs can already carry early errors oxc reports semantically (e.g. sloppy
+/// redeclarations), and the deobfuscator must not reject what it was given.
+/// Errors *beyond* the input's own count were introduced by a pass and make
+/// the output invalid JavaScript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SemanticBaseline {
+    /// The input parsed cleanly and had this many semantic errors.
+    Errors(usize),
+    /// The input did not parse cleanly, so no budget can be derived and
+    /// semantic errors are only logged.
+    Unknown,
+}
+
+/// Measures the semantic-error baseline of the original input.
+pub(super) fn semantic_baseline(code: &str, source_type: SourceType) -> SemanticBaseline {
+    let allocator = Allocator::default();
+    let parse_result = Parser::new(&allocator, code, source_type).parse();
+    if !parse_result.diagnostics.is_empty() {
+        return SemanticBaseline::Unknown;
+    }
+    SemanticBaseline::Errors(SemanticBuilder::new().build(&parse_result.program).diagnostics.len())
+}
+
+/// Logs validity of generated output and returns whether it is valid.
+///
+/// Returns `false` on any *parse* error, or when the output has more semantic
+/// errors than the input `baseline` (a pass introduced e.g. a redeclaration).
+pub(super) fn log_output_validity(
+    label: &str,
+    code: &str,
+    source_type: SourceType,
+    baseline: SemanticBaseline,
+) -> bool {
     let allocator = Allocator::default();
     let parse_result = Parser::new(&allocator, code, source_type).parse();
     if !parse_result.diagnostics.is_empty() {
@@ -60,14 +89,17 @@ pub(super) fn log_output_validity(label: &str, code: &str, source_type: SourceTy
 
     let semantic_result = SemanticBuilder::new().build(&parse_result.program);
     if !semantic_result.diagnostics.is_empty() {
+        let found = semantic_result.diagnostics.len();
         eprintln!(
-            "[DEOBFUSCATE] {label}: GENERATED OUTPUT HAS {} SEMANTIC ERROR(S)",
-            semantic_result.diagnostics.len()
+            "[DEOBFUSCATE] {label}: GENERATED OUTPUT HAS {found} SEMANTIC ERROR(S) (input baseline: {baseline:?})"
         );
         for (idx, error) in semantic_result.diagnostics.iter().enumerate().take(5) {
             eprintln!("[DEOBFUSCATE] {label}: semantic error {idx}: {error:?}");
         }
-        return true;
+        return match baseline {
+            SemanticBaseline::Errors(allowed) => found <= allowed,
+            SemanticBaseline::Unknown => true,
+        };
     }
 
     eprintln!("[DEOBFUSCATE] {label}: Generated output re-parse succeeded");
@@ -159,5 +191,50 @@ mod tests {
             ctx.contains("output len=0"),
             "should clamp offset/window to empty code: {ctx}"
         );
+    }
+
+    #[test]
+    fn introduced_semantic_errors_are_rejected() {
+        let clean = semantic_baseline("const a = 1; f(a);", SourceType::mjs());
+        assert_eq!(clean, SemanticBaseline::Errors(0));
+        assert!(!log_output_validity(
+            "TEST",
+            "const a = 1; var a = 2;",
+            SourceType::mjs(),
+            clean
+        ));
+        assert!(log_output_validity(
+            "TEST",
+            "const a = 1; f(a);",
+            SourceType::mjs(),
+            clean
+        ));
+    }
+
+    #[test]
+    fn preexisting_semantic_errors_are_tolerated() {
+        let dup = "let a = 1; let a = 2;";
+        let baseline = semantic_baseline(dup, SourceType::mjs());
+        assert_eq!(baseline, SemanticBaseline::Errors(1));
+        assert!(log_output_validity("TEST", dup, SourceType::mjs(), baseline));
+        assert!(!log_output_validity(
+            "TEST",
+            "let a = 1; let a = 2; let b; let b;",
+            SourceType::mjs(),
+            baseline
+        ));
+    }
+
+    #[test]
+    fn unparseable_input_only_logs_semantic_errors() {
+        let baseline = semantic_baseline("(", SourceType::mjs());
+        assert_eq!(baseline, SemanticBaseline::Unknown);
+        assert!(log_output_validity(
+            "TEST",
+            "let a; let a;",
+            SourceType::mjs(),
+            baseline
+        ));
+        assert!(!log_output_validity("TEST", "(", SourceType::mjs(), baseline));
     }
 }

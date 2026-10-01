@@ -1,7 +1,7 @@
 use super::{
     Allocator, AstDeobfuscator, BunHelperMap, Codegen, DeobfuscateState, EsbuildHelperCollector, IfBodyCommaSplitter,
-    Parser, Result, ReturnSequenceSplitter, ReusableTraverseCtx, SemanticBuilder, SourceType, checkpoint_error_context,
-    eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
+    Parser, Result, ReturnSequenceSplitter, ReusableTraverseCtx, SemanticBaseline, SemanticBuilder, SourceType,
+    checkpoint_error_context, eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
 };
 
 impl AstDeobfuscator {
@@ -105,6 +105,7 @@ impl AstDeobfuscator {
         intermediate2: &str,
         source_type: SourceType,
         bun_helper_map: &BunHelperMap,
+        baseline: SemanticBaseline,
     ) -> Result<String> {
         // ── Cosmetic-B half (Phases 16–21): fresh arena, re-parse Cosmetic-A output.
         let allocator = Allocator::default();
@@ -211,6 +212,6 @@ impl AstDeobfuscator {
             result.was_rejected()
         );
 
-        self.generate_final_output(&program, source_type, &esbuild_collector, bun_helper_map)
+        self.generate_final_output(&program, source_type, &esbuild_collector, bun_helper_map, baseline)
     }
 }
