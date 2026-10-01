@@ -90,3 +90,68 @@ fn test_preserve_non_iife_arrow() {
     assert_eq!(count, 0, "Should NOT unwrap non-IIFE arrow, got: {count}");
     assert!(output.contains("=>"), "Should still contain '=>', got: {output}");
 }
+
+fn has_semantic_errors(code: &str) -> bool {
+    let allocator = Allocator::default();
+    let program = Parser::new(&allocator, code, SourceType::mjs()).parse().program;
+    !SemanticBuilder::new().build(&program).diagnostics.is_empty()
+}
+
+#[test]
+fn test_preserve_sibling_iifes_with_colliding_names() {
+    // Webpack-runtime shape: two arrow IIFEs each own a `var v2`; splicing
+    // both would merge them into one shared binding.
+    let src = "(() => { var v2 = 1; f(v2); })(); (() => { var v2 = 2; g(v2); })();";
+    let (output, count) = run_unwrap(src);
+    assert_eq!(count, 0, "colliding siblings must stay wrapped: {output}");
+}
+
+#[test]
+fn test_preserve_iife_colliding_with_outer_lexical_binding() {
+    let src = "(() => { var obj2 = {}; use(obj2); })(); const obj2 = { a: 1 };";
+    let (output, count) = run_unwrap(src);
+    assert_eq!(count, 0, "must not redeclare an outer const: {output}");
+    assert!(!has_semantic_errors(&output), "output must stay valid: {output}");
+}
+
+#[test]
+fn test_preserve_iife_shadowing_outer_reference() {
+    // Hoisting `x` would capture the sibling statement's reference to the
+    // outer/global `x`.
+    let (output, count) = run_unwrap("(() => { let x = 1; f(x); })(); g(x);");
+    assert_eq!(count, 0, "must not capture an outer reference: {output}");
+}
+
+#[test]
+fn test_preserve_iife_shadowing_parameter() {
+    let (output, count) = run_unwrap("function h(p) { (() => { let p = 1; f(p); })(); }");
+    assert_eq!(count, 0, "must not redeclare a parameter: {output}");
+}
+
+#[test]
+fn test_preserve_var_iife_inside_block() {
+    // `var` would escape the loop block and be shared across iterations.
+    let src = "for (const i of xs) { (() => { var v = i; fns.push(() => v); })(); }";
+    let (output, count) = run_unwrap(src);
+    assert_eq!(count, 0, "var must not escape a block: {output}");
+}
+
+#[test]
+fn test_preserve_iife_name_in_assigned_pattern() {
+    let src = "const { a = q } = (() => { let q = 1; return o; })();";
+    let (output, count) = run_unwrap(src);
+    assert_eq!(count, 0, "pattern default must not capture a hoisted name: {output}");
+}
+
+#[test]
+fn test_unwrap_non_colliding_iife_with_locals() {
+    let (output, count) = run_unwrap("(() => { let fresh = 1; f(fresh); })(); g(other);");
+    assert_eq!(count, 1, "non-colliding IIFE should unwrap: {output}");
+    assert!(!output.contains("=>"), "Should NOT contain '=>', got: {output}");
+}
+
+#[test]
+fn test_preserve_iife_with_direct_eval() {
+    let (output, count) = run_unwrap("(() => { eval(\"var leak = 1\"); })();");
+    assert_eq!(count, 0, "direct eval must keep its scope: {output}");
+}

@@ -37,19 +37,21 @@ fn arrow_function_body<'a, 'b>(arrow: &'b ArrowFunctionExpression<'a>) -> &'b ox
 }
 
 pub(super) fn has_iife_candidate(stmt: &Statement<'_>) -> bool {
-    if let Statement::ExpressionStatement(expr_stmt) = stmt
-        && extract_zero_arg_arrow_iife(&expr_stmt.expression).is_some()
-    {
-        return true;
-    }
-    if let Statement::VariableDeclaration(var_decl) = stmt
-        && var_decl.declarations.len() == 1
-        && let Some(init) = &var_decl.declarations[0].init
-        && extract_zero_arg_arrow_iife(init).is_some()
-    {
-        return true;
-    }
-    false
+    iife_body(stmt).is_some()
+}
+
+/// Body of the zero-arg arrow IIFE `stmt` is (`(() => {…})();`) or initializes
+/// (`let x = (() => {…})();`), if any.
+pub(super) fn iife_body<'a, 'b>(stmt: &'b Statement<'a>) -> Option<&'b oxc_ast::ast::FunctionBody<'a>> {
+    let arrow = match stmt {
+        Statement::ExpressionStatement(expr_stmt) => extract_zero_arg_arrow_iife(&expr_stmt.expression),
+        Statement::VariableDeclaration(var_decl) if var_decl.declarations.len() == 1 => var_decl.declarations[0]
+            .init
+            .as_ref()
+            .and_then(extract_zero_arg_arrow_iife),
+        _ => None,
+    }?;
+    Some(arrow_function_body(arrow))
 }
 
 pub(super) fn try_unwrap_standalone<'a>(
