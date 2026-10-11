@@ -72,6 +72,9 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 21: {enum_count} enum annotations, {ns_count} namespace annotations, {arrow_count} arrow expansions"
         );
+        let (output, template_count) =
+            crate::ast_deobfuscate::angular::annotate_angular_templates(&output, source_type);
+        eprintln!("[DEOBFUSCATE] Phase 21: {template_count} Angular template annotations");
         // The Phase 20/21 post-codegen transforms (module annotations, arrow
         // expansion) rewrite the output string, so the final result is held to
         // the same parse-validity bar as the AST checkpoints: invalid JS is a

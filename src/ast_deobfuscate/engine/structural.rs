@@ -45,6 +45,8 @@ impl AstDeobfuscator {
 
         self.run_structural_preamble(&allocator, &mut program);
         let bun_helper_map = self.run_bun_naming_phases(&allocator, &mut program);
+        let angular_renamed = crate::ast_deobfuscate::angular::rename_angular_symbols(&allocator, &mut program);
+        eprintln!("[DEOBFUSCATE] Phase 0.995: Angular class/action naming renamed {angular_renamed} identifiers");
         self.run_structural_mid(&allocator, &mut program);
         self.run_structural_late(&allocator, &mut program);
 
