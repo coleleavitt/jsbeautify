@@ -4,6 +4,7 @@ use oxc_span::SPAN;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::rename_guards::{binds_global, is_annex_b_function};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -72,6 +73,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for MethodCallForwarderInliner {
         if let Statement::FunctionDeclaration(func) = stmt
             && let Some(id) = &func.id
             && self.forwarders.contains_key(id.name.as_str())
+            && !binds_global(ctx, id)
+            && !is_annex_b_function(ctx, func)
         {
             eprintln!("[AST/method-fwd] remove function {}", id.name.as_str());
             *stmt = Statement::new_empty_statement(SPAN, ctx);
@@ -86,7 +89,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MethodCallForwarderInliner {
                     let Some(Expression::FunctionExpression(_)) = &d.init else {
                         return false;
                     };
-                    self.forwarders.contains_key(id.name.as_str())
+                    self.forwarders.contains_key(id.name.as_str()) && !binds_global(ctx, id)
                 });
             if all_are_forwarders {
                 eprintln!("[AST/method-fwd] remove var declaration");
