@@ -1,9 +1,9 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_super_get_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_super_get_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -22,7 +22,7 @@ impl EsbuildHelperCollector {
         false
     }
 
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_super_set_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_super_set_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 3 {
             return false;
@@ -42,7 +42,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__pow`: `Math.pow(base, exp)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_pow_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_pow_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -62,7 +62,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__propKey`: `typeof x === "symbol" ? x : "".concat(x)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_prop_key_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_prop_key_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 || body.statements.len() != 1 {
             return false;
@@ -81,7 +81,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__toBinary` / `__toBinaryNode`: Base64 to `Uint8Array` conversion
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_to_binary_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_to_binary_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::VariableDeclaration(var_decl) = stmt {
@@ -107,7 +107,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__earlyAccess`: `throw new ReferenceError("...")`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_early_access_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_early_access_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ThrowStatement(throw_stmt) = stmt
@@ -122,7 +122,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__async`: `Promise.resolve().then(...)` async lowering (esbuild)
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_async_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_async_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ReturnStatement(ret) = stmt

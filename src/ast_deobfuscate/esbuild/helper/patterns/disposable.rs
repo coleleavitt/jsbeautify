@@ -1,8 +1,8 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
-pub(in crate::ast_deobfuscate::esbuild_helper) fn contains_symbol_dispose(expr: &Expression<'_>) -> bool {
+pub(in crate::ast_deobfuscate::esbuild::helper) fn contains_symbol_dispose(expr: &Expression<'_>) -> bool {
     match expr {
         Expression::StaticMemberExpression(member) => {
             if let Expression::Identifier(obj) = &member.object
@@ -31,7 +31,7 @@ pub(in crate::ast_deobfuscate::esbuild_helper) fn contains_symbol_dispose(expr: 
 }
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_add_disposable_resource_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_add_disposable_resource_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -62,7 +62,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__disposeResources`: `SuppressedError` constructor, resource stack
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_dispose_resources_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_dispose_resources_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;

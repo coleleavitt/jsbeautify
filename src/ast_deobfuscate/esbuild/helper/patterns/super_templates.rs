@@ -1,9 +1,9 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_super_wrapper_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_super_wrapper_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ReturnStatement(ret) = stmt
@@ -31,7 +31,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__makeTemplateObject`: tslib template object creation
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_make_template_object_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_make_template_object_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -56,7 +56,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__setFunctionName`: Set function name property
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_set_function_name_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_set_function_name_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;

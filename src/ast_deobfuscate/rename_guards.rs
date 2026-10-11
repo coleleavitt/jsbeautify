@@ -1,5 +1,5 @@
 //! Soundness guards shared by the by-`SymbolId` renaming passes
-//! ([`super::bun_local_renamer`], [`super::bun_export_renamer`]).
+//! ([`super::bun::local_renamer`], [`super::bun::export_renamer`]).
 //!
 //! Renaming a binding's text is only sound when no *other* mechanism observes
 //! its old name. Two such mechanisms survive a `SymbolId`-keyed rename and would

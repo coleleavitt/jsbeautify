@@ -1,9 +1,9 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_rest_key_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_rest_key_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 || body.statements.len() != 1 {
             return false;
@@ -19,7 +19,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__objRest`: Object rest extraction
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_obj_rest_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_obj_rest_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -40,7 +40,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__spreadValues`: Spread with symbol support
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_spread_values_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_spread_values_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -63,7 +63,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__spreadProps`: Spread via defineProperties
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_spread_props_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_spread_props_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ReturnStatement(ret) = stmt

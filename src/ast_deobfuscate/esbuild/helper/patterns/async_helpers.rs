@@ -1,8 +1,8 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
-pub(in crate::ast_deobfuscate::esbuild_helper) fn contains_promise_pattern(expr: &Expression<'_>) -> bool {
+pub(in crate::ast_deobfuscate::esbuild::helper) fn contains_promise_pattern(expr: &Expression<'_>) -> bool {
     match expr {
         Expression::NewExpression(new_expr) => {
             let callee = match &new_expr.callee {
@@ -37,7 +37,7 @@ pub(in crate::ast_deobfuscate::esbuild_helper) fn contains_promise_pattern(expr:
     }
 }
 
-pub(in crate::ast_deobfuscate::esbuild_helper) fn check_for_async_iterator(stmts: &[Statement<'_>]) -> bool {
+pub(in crate::ast_deobfuscate::esbuild::helper) fn check_for_async_iterator(stmts: &[Statement<'_>]) -> bool {
     for stmt in stmts {
         if let Statement::ExpressionStatement(expr_stmt) = stmt
             && let Expression::AssignmentExpression(assign) = &expr_stmt.expression
@@ -54,7 +54,7 @@ pub(in crate::ast_deobfuscate::esbuild_helper) fn check_for_async_iterator(stmts
 }
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_awaiter_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_awaiter_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 3 {
             return false;
@@ -71,7 +71,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__generator`: `{ label: 0, sent: function() {}, trys: [], ops: [] }`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_generator_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_generator_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -129,7 +129,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__asyncGenerator`: `Symbol.asyncIterator` with queue management
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_async_generator_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_async_generator_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         check_for_async_iterator(&body.statements)
     }

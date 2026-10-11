@@ -1,8 +1,8 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
-pub(in crate::ast_deobfuscate::esbuild_helper) fn check_for_set_module_default(stmts: &[Statement<'_>]) -> bool {
+pub(in crate::ast_deobfuscate::esbuild::helper) fn check_for_set_module_default(stmts: &[Statement<'_>]) -> bool {
     for stmt in stmts {
         if let Statement::ExpressionStatement(expr_stmt) = stmt
             && let Expression::CallExpression(call) = &expr_stmt.expression
@@ -16,7 +16,7 @@ pub(in crate::ast_deobfuscate::esbuild_helper) fn check_for_set_module_default(s
 }
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_import_default_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_import_default_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 || body.statements.len() != 1 {
             return false;
@@ -53,7 +53,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__importStar`: checks `mod.__esModule`, calls `__setModuleDefault`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_import_star_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_import_star_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 || body.statements.len() < 2 {
             return false;
@@ -75,7 +75,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__createBinding`: `Object.defineProperty(o, k2, { enumerable: true, get: ... })`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_create_binding_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_create_binding_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 3 {
             return false;
@@ -106,7 +106,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__exportStar`: `for (var p in m) if (p !== "default") __createBinding(...)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_export_star_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_export_star_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;

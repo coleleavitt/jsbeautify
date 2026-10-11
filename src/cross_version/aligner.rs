@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ast_deobfuscate::bun_alphabet::extract_alphabet_from_source;
+use crate::ast_deobfuscate::bun::alphabet::extract_alphabet_from_source;
 use crate::{Result, bun_extract};
 
 use super::ast_matcher::{StatementInfo, StatementMatcher};

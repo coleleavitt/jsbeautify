@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use super::alphabet::{DEFAULT_HEAD, DEFAULT_TAIL};
+use super::charset::{DEFAULT_HEAD, DEFAULT_TAIL};
 
 /// Checks if a character is valid for HEAD (identifier start)
 pub(super) const fn is_valid_head_char(c: char) -> bool {

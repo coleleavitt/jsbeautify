@@ -35,7 +35,7 @@ single-file executable.
 
 ## Why this matters for js-beautify-rs
 
-`EsbuildHelperCollector` (in `src/ast_deobfuscate/esbuild_helper.rs`) already
+`EsbuildHelperCollector` (in `src/ast_deobfuscate/esbuild/helper/`) already
 detects all of these by AST shape. **It returns 0 helpers on the Bun bundle**
 because Bun wraps the entire program in a single CJS-style IIFE:
 

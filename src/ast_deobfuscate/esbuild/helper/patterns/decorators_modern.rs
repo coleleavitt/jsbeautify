@@ -1,9 +1,9 @@
 use oxc_ast::ast::{BindingPattern, Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_es_decorate_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_es_decorate_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 3 {
             return false;
@@ -28,7 +28,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__decorateClass`: esbuild class decorator application
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_decorate_class_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_decorate_class_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -54,7 +54,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__decorateParam`: esbuild parameter decorator wrapper
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_decorate_param_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_decorate_param_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -77,7 +77,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__decoratorStart`: Decorator metadata initialization
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_decorator_start_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_decorator_start_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ReturnStatement(ret) = stmt
@@ -91,7 +91,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__decoratorMetadata`: Attach metadata to decorated element
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_decorator_metadata_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_decorator_metadata_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
@@ -113,7 +113,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__runInitializers`: Execute decorator initializers
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_run_initializers_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_run_initializers_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -143,7 +143,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__decorateElement`: JS decorator element processing
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_decorate_element_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_decorate_element_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 3 {
             return false;
@@ -159,7 +159,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__copyProps`: Property copier for re-exports
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_copy_props_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_copy_props_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -177,7 +177,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__reExport`: export * from handler
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_re_export_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_re_export_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;

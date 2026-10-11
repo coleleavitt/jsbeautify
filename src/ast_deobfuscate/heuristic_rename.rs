@@ -1,6 +1,6 @@
 //! Heuristic readable-name inference for minified locals.
 //!
-//! The slot renamer ([`super::bun_local_renamer`]) already rewrites minified
+//! The slot renamer ([`super::bun::local_renamer`]) already rewrites minified
 //! locals scope-safely — but to opaque `v0`/`v1` slots. This pass *proposes* a
 //! readable name per binding, which the slot renamer then applies (falling back
 //! to a slot when a proposal collides or is blocked). Names are inferred

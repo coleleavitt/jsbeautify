@@ -4,7 +4,7 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
-use crate::ast_deobfuscate::esbuild_helper::*;
+use crate::ast_deobfuscate::esbuild::helper::*;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 mod annotations_and_core;

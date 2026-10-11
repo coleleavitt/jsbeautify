@@ -2,7 +2,7 @@ use oxc_ast::ast::{BindingPattern, Class, ClassElement, Expression, MethodDefini
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
-use crate::ast_deobfuscate::bun_export_renamer::names::{is_valid_identifier, sanitize_identifier};
+use crate::ast_deobfuscate::bun::export_renamer::names::{is_valid_identifier, sanitize_identifier};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::util::{find_this_name_assignment, is_xml_name};

@@ -1,9 +1,9 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_private_get_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_private_get_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 3 {
             return false;
@@ -27,7 +27,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__privateSet`: `if (kind === "m") throw new TypeError("Private method is not writable")`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_private_set_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_private_set_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 4 {
             return false;
@@ -50,7 +50,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__privateAdd`: `if (state.has(obj)) throw new TypeError(...); state.add(obj)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_private_add_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_private_add_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -80,7 +80,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__privateIn`: `typeof state === "function" ? receiver === state : state.has(receiver)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_private_in_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_private_in_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 || body.statements.is_empty() {
             return false;

@@ -186,8 +186,7 @@ pub fn plan_local_renames_with_stats(
         // Candidates in this scope, deterministic order for stable output.
         let mut cands: Vec<(String, SymbolId)> = scope_names
             .get(&scope)
-            .map(|names| names.iter().filter(|(n, s)| is_candidate(n, *s)).cloned().collect())
-            .unwrap_or_default();
+            .map_or_default(|names| names.iter().filter(|(n, s)| is_candidate(n, *s)).cloned().collect());
         stats.candidate_symbols += cands.len();
         stats.max_candidates_in_scope = stats.max_candidates_in_scope.max(cands.len());
         cands.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.index().cmp(&b.1.index())));

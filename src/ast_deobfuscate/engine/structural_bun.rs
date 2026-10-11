@@ -1,8 +1,8 @@
 use super::{
     Allocator, AstDeobfuscator, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector,
     BunRuntimeRenamer, ClassNameCollector, ClassNameRenamer, DeobfuscateState, DisplayNameCollector,
-    ExportNameCollector, ExportNameRenamer, ParamHeuristicRenamer, Program, ReusableTraverseCtx, SemanticBuilder,
-    bun_export_renamer, flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
+    ExportNameCollector, ExportNameRenamer, ParamHeuristicRenamer, Program, ReusableTraverseCtx, SemanticBuilder, bun,
+    flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 
 impl AstDeobfuscator {
@@ -78,7 +78,7 @@ impl AstDeobfuscator {
                 let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
                 // Make assigned names legal + unique-per-scope to avoid invalid JS
                 // (reserved words like `instanceof`, duplicate `ZodType`/`Client`).
-                let export_map = bun_export_renamer::make_names_unique(export_map, &scoping);
+                let export_map = bun::export_renamer::make_names_unique(export_map, &scoping);
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
                 let mut renamer = ExportNameRenamer::new(export_map);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
