@@ -1,19 +1,17 @@
 use crate::ast_deobfuscate::AstDeobfuscator;
 use crate::chunk_detector::ChunkDetector;
 use crate::chunk_splitter::ChunkSplitter;
-use crate::options::Options;
+use crate::options::{Options, ParseGoal};
 use crate::tokenizer::Tokenizer;
 use crate::{BeautifyError, Result};
 
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_span::SourceType;
 
-fn oxc_beautify(code: &str) -> Result<String> {
+fn oxc_beautify(code: &str, goal: ParseGoal) -> Result<String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs();
-    let parse_result = Parser::new(&allocator, code, source_type).parse();
+    let parse_result = Parser::new(&allocator, code, goal.source_type()).parse();
 
     // oxc performs error recovery and still produces a usable (partial) AST
     // even when `errors` is non-empty. Rather than bail — which left huge or
@@ -42,7 +40,9 @@ pub fn beautify(code: &str, options: &Options) -> Result<String> {
     if options.deobfuscate {
         let mut deobfuscator = AstDeobfuscator::new()
             .with_skip_annotations(options.skip_annotations)
-            .with_readable_names(options.readable_names);
+            .with_readable_names(options.readable_names)
+            .with_parse_goal(options.parse_goal)
+            .with_isolated(options.isolated);
         return deobfuscator.deobfuscate(code);
     }
 
@@ -113,7 +113,7 @@ pub fn beautify(code: &str, options: &Options) -> Result<String> {
         }
     }
 
-    oxc_beautify(code)
+    oxc_beautify(code, options.parse_goal)
 }
 
 #[cfg(test)]

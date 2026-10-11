@@ -4,10 +4,11 @@ use super::{
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
     JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
-    SourceType, StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
+    StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
     TernaryToIfElse, TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval,
     semantic_baseline,
 };
+use crate::ParseGoal;
 
 /// Maximum accepted delimiter nesting.
 ///
@@ -83,6 +84,8 @@ impl AstDeobfuscator {
             worker_stack_bytes: DEFAULT_WORKER_STACK_BYTES,
             skip_annotations: false,
             readable_names: false,
+            parse_goal: ParseGoal::Auto,
+            isolated: false,
         }
     }
 
@@ -96,6 +99,20 @@ impl AstDeobfuscator {
     #[must_use]
     pub const fn with_readable_names(mut self, readable: bool) -> Self {
         self.readable_names = readable;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_parse_goal(mut self, goal: ParseGoal) -> Self {
+        self.parse_goal = goal;
+        self
+    }
+
+    /// Treat a classic script's top-level bindings as private (see
+    /// [`crate::Options::isolated`]).
+    #[must_use]
+    pub const fn with_isolated(mut self, isolated: bool) -> Self {
+        self.isolated = isolated;
         self
     }
 
@@ -160,8 +177,7 @@ impl AstDeobfuscator {
             },
         );
 
-        let source_type = SourceType::mjs();
-        let (intermediate, bun_helper_map, source_type) = self.run_structural_half(&code, source_type);
+        let (intermediate, bun_helper_map, source_type) = self.run_structural_half(&code);
         // Measured against the source type the structural half settled on, so
         // the final checkpoints compare like with like.
         let baseline = semantic_baseline(&code, source_type);

@@ -1,4 +1,5 @@
 use super::{InspectError, Inspection, Position, Positions, parse, render};
+use crate::ParseGoal;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_cfg::graph::visit::EdgeRef;
@@ -53,11 +54,12 @@ pub struct Edge {
 /// Panics only if `oxc_semantic` returns no CFG despite `with_cfg(true)`.
 pub fn control_flow(
     source: &str,
+    goal: ParseGoal,
     typescript: bool,
     function: Option<&str>,
 ) -> Result<Inspection<ControlFlow>, InspectError> {
     let allocator = Allocator::default();
-    let (program, mut diagnostics) = parse(&allocator, source, typescript)?;
+    let (program, mut diagnostics) = parse(&allocator, source, goal, typescript)?;
     let ret = SemanticBuilder::new()
         .with_build_nodes(true)
         .with_check_syntax_error(true)

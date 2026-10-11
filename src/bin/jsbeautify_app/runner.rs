@@ -32,15 +32,20 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
-        Some(Command::Ast(a)) => run_inspect(a, |source| inspect::ast::estree(source, a.ts), Clone::clone),
+        Some(Command::Ast(a)) => run_inspect(a, |source| inspect::ast::estree(source, a.goal.source_type.into(), a.ts), Clone::clone),
         Some(Command::Scope(a)) => run_inspect(
             a,
-            |source| inspect::scope::symbol_table(source, a.ts),
+            |source| inspect::scope::symbol_table(source, a.goal.source_type.into(), a.ts),
             |report| serde_json::to_string_pretty(report).expect("scope report serializes"),
         ),
         Some(Command::Cfg(a)) => run_inspect(
             &a.inspect,
-            |source| inspect::cfg::control_flow(source, a.inspect.ts, a.function.as_deref()),
+            |source| inspect::cfg::control_flow(
+                    source,
+                    a.inspect.goal.source_type.into(),
+                    a.inspect.ts,
+                    a.function.as_deref(),
+                ),
             |graph| match a.format {
                 CfgFormat::Dot => graph.to_dot(),
                 CfgFormat::Json => serde_json::to_string_pretty(graph).expect("CFG serializes"),
@@ -150,6 +155,8 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
         deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm,
         readable_names: b.rename_vars || b.rename_llm,
         indent_with_tabs: b.tabs,
+        parse_goal: b.goal.source_type.into(),
+        isolated: b.isolated,
         ..Options::default()
     };
     if let Some(size) = b.indent {

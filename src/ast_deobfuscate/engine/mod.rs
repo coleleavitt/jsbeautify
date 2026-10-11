@@ -87,4 +87,6 @@ pub struct AstDeobfuscator {
     /// When set, Phase 12.5 infers readable names for minified locals
     /// (`heuristic_rename`) instead of opaque `v{n}` slots.
     readable_names: bool,
+    parse_goal: crate::ParseGoal,
+    isolated: bool,
 }

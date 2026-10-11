@@ -39,6 +39,8 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
         let flattened_statements = flatten_top_level_cjs_wrapper(program, allocator);
         if flattened_statements > 0 {
+            // The statements now run as the wrapper's function body.
+            program.source_type = program.source_type.with_commonjs(true);
             eprintln!(
                 "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({flattened_statements} statements)"
             );

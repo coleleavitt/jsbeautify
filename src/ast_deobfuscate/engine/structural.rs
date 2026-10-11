@@ -1,11 +1,11 @@
 use super::{Allocator, AstDeobfuscator, BunHelperMap, Codegen, Parser, SourceType, mem_ck};
 
 impl AstDeobfuscator {
-    pub(super) fn run_structural_half(
-        &mut self,
-        code: &str,
-        source_type: SourceType,
-    ) -> (String, BunHelperMap, SourceType) {
+    /// Returns the structural checkpoint output, the Bun helpers, and the
+    /// source type every later parse must use: the parse goal resolved by the
+    /// parser, made CommonJS when the input is declared isolated or its Bun
+    /// CJS wrapper was flattened.
+    pub(super) fn run_structural_half(&mut self, code: &str) -> (String, BunHelperMap, SourceType) {
         // ── Structural half (Phases 0–12.5) runs in its own arena that is freed
         // before the cosmetic half re-parses. The transform passes accumulate a
         // large volume of dead intermediate AST in oxc's bump arena (which never
@@ -14,7 +14,7 @@ impl AstDeobfuscator {
         // halves peak RSS. `bun_helper_map` is the only state that must cross.
         let allocator = Allocator::default();
 
-        let mut source_type = source_type;
+        let source_type = self.parse_goal.source_type();
         let mut parse_result = Parser::new(&allocator, code, source_type).parse();
 
         // oxc recovers from syntax errors and still yields a usable partial
@@ -26,13 +26,11 @@ impl AstDeobfuscator {
         if !parse_result.diagnostics.is_empty() {
             let diagnostic_count = parse_result.diagnostics.len();
             let first_diagnostic = parse_result.diagnostics.first().map(ToString::to_string);
-            if let Some((fallback_source_type, fallback_parse_result)) =
-                Self::parse_with_source_type_fallback(&allocator, code, source_type)
-            {
+            if let Some(fallback_parse_result) = Self::parse_with_source_type_fallback(&allocator, code, source_type) {
                 eprintln!(
-                    "[DEOBFUSCATE] {diagnostic_count} parse diagnostic(s) with {source_type:?}; retrying as {fallback_source_type:?} (first: {first_diagnostic:?})",
+                    "[DEOBFUSCATE] {diagnostic_count} parse diagnostic(s) with {source_type:?}; retrying as {:?} (first: {first_diagnostic:?})",
+                    fallback_parse_result.program.source_type,
                 );
-                source_type = fallback_source_type;
                 parse_result = fallback_parse_result;
             } else {
                 eprintln!(
@@ -42,6 +40,10 @@ impl AstDeobfuscator {
         }
 
         let mut program = parse_result.program;
+        if self.isolated && program.source_type.is_script() {
+            program.source_type = program.source_type.with_commonjs(true);
+        }
+        eprintln!("[DEOBFUSCATE] Parsed as {:?}", program.source_type);
 
         self.run_structural_preamble(&allocator, &mut program);
         crate::ast_deobfuscate::webpack::rename_webpack_bindings(&allocator, &mut program);
@@ -56,25 +58,32 @@ impl AstDeobfuscator {
         // dead intermediate AST accumulated by Phases 0–12.5.
         mem_ck("Phase 12.6: structural checkpoint codegen");
         eprintln!("[DEOBFUSCATE] Phase 12.6: structural checkpoint (codegen + arena reset)");
-        (Codegen::new().build(&program).code, bun_helper_map, source_type)
+        (Codegen::new().build(&program).code, bun_helper_map, program.source_type)
     }
 
     fn parse_with_source_type_fallback<'a>(
         allocator: &'a Allocator,
         code: &'a str,
         source_type: SourceType,
-    ) -> Option<(SourceType, oxc_parser::ParserReturn<'a>)> {
+    ) -> Option<oxc_parser::ParserReturn<'a>> {
+        // A classic script that fails only on a top-level `return` is a
+        // CommonJS body; only `Auto` may reinterpret it that way.
+        let commonjs = source_type.is_unambiguous().then(SourceType::cjs);
         for candidate in [
-            source_type.with_typescript(true),
-            source_type.with_jsx(true),
-            source_type.with_typescript(true).with_jsx(true),
-        ] {
+            Some(source_type.with_typescript(true)),
+            Some(source_type.with_jsx(true)),
+            Some(source_type.with_typescript(true).with_jsx(true)),
+            commonjs,
+        ]
+        .into_iter()
+        .flatten()
+        {
             if candidate == source_type {
                 continue;
             }
             let parse_result = Parser::new(allocator, code, candidate).parse();
             if parse_result.diagnostics.is_empty() && !parse_result.panicked {
-                return Some((candidate, parse_result));
+                return Some(parse_result);
             }
         }
         None

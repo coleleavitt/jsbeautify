@@ -1,4 +1,5 @@
 use super::{InspectError, Inspection, Position, Positions, parse, render};
+use crate::ParseGoal;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_semantic::{AstNodes, Reference, ScopeId, Scoping, SemanticBuilder, SymbolFlags, SymbolId};
@@ -56,9 +57,9 @@ pub struct UnresolvedEntry {
 ///
 /// # Errors
 /// Returns [`InspectError::Parse`] when the parser cannot recover.
-pub fn symbol_table(source: &str, typescript: bool) -> Result<Inspection<ScopeReport>, InspectError> {
+pub fn symbol_table(source: &str, goal: ParseGoal, typescript: bool) -> Result<Inspection<ScopeReport>, InspectError> {
     let allocator = Allocator::default();
-    let (program, mut diagnostics) = parse(&allocator, source, typescript)?;
+    let (program, mut diagnostics) = parse(&allocator, source, goal, typescript)?;
     let ret = SemanticBuilder::new()
         .with_build_nodes(true)
         .with_check_syntax_error(true)
