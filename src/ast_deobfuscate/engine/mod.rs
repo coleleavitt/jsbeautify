@@ -37,11 +37,11 @@ use super::{
     OperatorProxyCollector, OperatorProxyInliner, OptionalChainingNormalizer, ParamHeuristicRenamer,
     ReturnSequenceSplitter, SelfDefendingStringArray, SelfInitAccessorFlattener, SequenceExpressionSplitter,
     ShortCircuitToIf, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
-    TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, UnicodeNormalizer,
-    VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator, annotate_bun_modules,
-    annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums, bun, collect_case_bodies,
-    collect_constants, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences, flatten_top_level_cjs_wrapper,
-    heuristic_rename, rename_guards, resolve_compound_transitions,
+    TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, VariableRenamer,
+    VoidReplacer, WindowAliasCollector, WindowAliasPropagator, annotate_bun_modules, annotate_esbuild_modules,
+    annotate_namespace_modules, annotate_ts_enums, bun, collect_case_bodies, collect_constants, eliminate_dead_vars,
+    encrypted_eval, expand_arrow_sequences, flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards,
+    resolve_compound_transitions,
 };
 use annotations::annotate_webpack_modules;
 use checkpoint::{SemanticBaseline, checkpoint_error_context, log_output_validity, semantic_baseline};
@@ -66,7 +66,6 @@ pub struct AstDeobfuscator {
     dynamic_property_converter: DynamicPropertyConverter,
     ternary_simplifier: TernarySimplifier,
     try_catch_remover: TryCatchRemover,
-    unicode_normalizer: UnicodeNormalizer,
     boolean_literal_converter: BooleanLiteralConverter,
     void_replacer: VoidReplacer,
     object_sparsing_consolidator: ObjectSparsingConsolidator,
