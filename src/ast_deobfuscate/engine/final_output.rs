@@ -35,7 +35,7 @@ impl AstDeobfuscator {
 
         if self.skip_annotations {
             eprintln!("[DEOBFUSCATE] Skipping module annotations (alignment mode)");
-            return Ok(output);
+            return self.lay_out(output, source_type);
         }
 
         eprintln!("[DEOBFUSCATE] Phase 20: Annotating modules");
@@ -92,6 +92,13 @@ impl AstDeobfuscator {
             ));
         }
 
-        Ok(output)
+        self.lay_out(output, source_type)
+    }
+
+    fn lay_out(&self, output: String, source_type: SourceType) -> Result<String> {
+        match &self.layout {
+            Some(layout) => layout.apply(&output, source_type, &[]),
+            None => Ok(output),
+        }
     }
 }

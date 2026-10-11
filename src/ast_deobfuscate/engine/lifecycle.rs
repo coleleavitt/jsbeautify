@@ -2,7 +2,7 @@ use super::{
     AlgebraicSimplifier, ArrayCoerceFold, ArrayUnpacker, AstDeobfuscator, BeautifyError, BooleanLiteralConverter,
     CommaReturnSimplifier, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DecoderInliner,
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
-    JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
+    JsonParseEvaluator, Layout, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
     StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover,
     VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
@@ -81,9 +81,18 @@ impl AstDeobfuscator {
             worker_stack_bytes: DEFAULT_WORKER_STACK_BYTES,
             skip_annotations: false,
             readable_names: false,
+            layout: None,
             parse_goal: ParseGoal::Auto,
             isolated: false,
         }
+    }
+
+    /// Lay out the final output (indentation, `eol`, brace style, …);
+    /// without a layout the output is raw tab-indented codegen text.
+    #[must_use]
+    pub fn with_layout(mut self, layout: Layout) -> Self {
+        self.layout = Some(layout);
+        self
     }
 
     #[must_use]

@@ -9,6 +9,7 @@ use js_beautify_rs::ParseGoal;
 use std::path::PathBuf;
 
 mod align;
+mod config;
 mod runner;
 mod sources;
 
@@ -20,6 +21,10 @@ mod sources;
 #[derive(Parser, Debug)]
 #[command(name = "jsbeautify", version, about, long_about = None)]
 struct Cli {
+    /// Print version.
+    #[arg(short = 'v', action = clap::ArgAction::Version, hide = true)]
+    version_short: (),
+
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -31,13 +36,26 @@ struct Cli {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(clap::Args, Debug)]
 struct BeautifyArgs {
-    /// Input JavaScript file, or "-" for stdin.
-    #[arg(value_name = "FILE", default_value = "-")]
-    input: String,
+    /// Input JavaScript files, or "-" for stdin [default: -]. Several files
+    /// are beautified in place, as with --replace.
+    #[arg(value_name = "FILE")]
+    inputs: Vec<String>,
+
+    /// Input file; may be repeated (same as a positional FILE).
+    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    files: Vec<String>,
 
     /// Write output to a file instead of stdout.
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(short, long, value_name = "FILE", alias = "outfile")]
     output: Option<String>,
+
+    /// Write output in place, replacing each input file.
+    #[arg(short, long)]
+    replace: bool,
+
+    /// Do not report written files on stderr.
+    #[arg(short, long)]
+    quiet: bool,
 
     /// Enable AST-based deobfuscation (multi-phase pipeline).
     #[arg(short, long)]
@@ -56,13 +74,8 @@ struct BeautifyArgs {
     #[arg(long)]
     rename_llm: bool,
 
-    /// Indentation size in spaces [default: 4].
-    #[arg(short, long, value_name = "N")]
-    indent: Option<usize>,
-
-    /// Use tabs for indentation instead of spaces.
-    #[arg(long)]
-    tabs: bool,
+    #[command(flatten)]
+    format: config::FormatArgs,
 
     /// Apply original variable names from a sourcemap (.map) file.
     #[arg(long, value_name = "FILE")]

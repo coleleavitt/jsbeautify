@@ -156,19 +156,41 @@ fn run_inspect<T>(
 }
 
 fn run_beautify(b: &BeautifyArgs) -> Fallible {
-    let mut code = read_input(&b.input)?;
-    let mut options = Options {
-        deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm,
-        readable_names: b.rename_vars || b.rename_llm,
-        indent_with_tabs: b.tabs,
-        parse_goal: b.goal.parse_goal(&b.input),
-        isolated: b.isolated,
-        ..Options::default()
-    };
-    if let Some(size) = b.indent {
-        options.indent_size = size;
+    let mut inputs: Vec<&str> = b.files.iter().chain(&b.inputs).map(String::as_str).collect();
+    if inputs.is_empty() {
+        inputs.push("-");
     }
+    let replace = b.replace || inputs.len() > 1;
+    if inputs.len() > 1 && (b.sourcemap.is_some() || b.names_json.is_some() || b.bun_extract) {
+        return Err("--sourcemap, --names-json and --bun-extract take a single input file".into());
+    }
+    let config = b.format.load_config()?;
+    for input in inputs {
+        let output = if replace && input != "-" {
+            Some(input.to_string())
+        } else {
+            b.output.clone()
+        };
+        let editorconfig_target = PathBuf::from(match (input, &output) {
+            ("-", Some(path)) => path.as_str(),
+            ("-", None) => "stdin.js",
+            (path, _) => path,
+        });
+        let base = Options {
+            deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm,
+            readable_names: b.rename_vars || b.rename_llm,
+            parse_goal: b.goal.parse_goal(input),
+            isolated: b.isolated,
+            ..Options::default()
+        };
+        let options = b.format.options(&config, base, &editorconfig_target)?;
+        beautify_input(b, input, output.as_deref(), options)?;
+    }
+    Ok(())
+}
 
+fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut options: Options) -> Fallible {
+    let mut code = read_input(input)?;
     let sourcemap_rename = (b.rename_vars || b.rename_llm) && b.sourcemap.is_some();
     if sourcemap_rename {
         let sm = fs::read_to_string(b.sourcemap.as_ref().expect("sourcemap present"))?;
@@ -181,12 +203,13 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
     }
     if !sourcemap_rename && (b.sourcemap.is_some() || b.names_json.is_some() || b.bun_extract) {
         options.skip_annotations = true;
+        let output = output.map(str::to_string);
         return align::run_cross_version_align(
             b.sourcemap.as_ref(),
             b.names_json.as_ref(),
             None,
             None,
-            b.output.as_ref(),
+            output.as_ref(),
             &code,
             &options,
             false,
@@ -210,7 +233,21 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
             ),
         }
     }
-    write_output(b.output.as_ref(), &beautified)
+    let Some(path) = output else {
+        io::stdout().write_all(beautified.as_bytes())?;
+        return Ok(());
+    };
+    if fs::read_to_string(path).is_ok_and(|existing| existing == beautified) {
+        if !b.quiet {
+            eprintln!("beautified {path} - unchanged");
+        }
+        return Ok(());
+    }
+    fs::write(path, &beautified)?;
+    if !b.quiet {
+        eprintln!("beautified {path}");
+    }
+    Ok(())
 }
 
 fn run_extract_modules(a: &ExtractModulesArgs) -> Fallible {

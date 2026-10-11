@@ -1,17 +1,22 @@
+mod blank_lines;
+mod layout;
+
+pub use layout::Layout;
+
 use crate::ast_deobfuscate::AstDeobfuscator;
 use crate::chunk_detector::ChunkDetector;
 use crate::chunk_splitter::ChunkSplitter;
-use crate::options::{Options, ParseGoal};
+use crate::options::Options;
 use crate::tokenizer::Tokenizer;
 use crate::{BeautifyError, Result};
 
 use oxc_allocator::Allocator;
-use oxc_codegen::Codegen;
+use oxc_codegen::{Codegen, CodegenOptions};
 use oxc_parser::Parser;
 
-fn oxc_beautify(code: &str, goal: ParseGoal) -> Result<String> {
+fn oxc_beautify(code: &str, options: &Options) -> Result<String> {
     let allocator = Allocator::default();
-    let parse_result = Parser::new(&allocator, code, goal.resolve(code, false)).parse();
+    let parse_result = Parser::new(&allocator, code, options.parse_goal.resolve(code, false)).parse();
 
     // oxc performs error recovery and still produces a usable (partial) AST
     // even when `errors` is non-empty. Rather than bail — which left huge or
@@ -25,13 +30,35 @@ fn oxc_beautify(code: &str, goal: ParseGoal) -> Result<String> {
         );
     }
 
-    let out = Codegen::new().build(&parse_result.program).code;
+    let preserve = options.preserve_newlines && options.max_preserve_newlines != 1 && has_blank_line(code);
+    let codegen_options = CodegenOptions {
+        source_map_path: preserve.then(|| "input.js".into()),
+        ..CodegenOptions::default()
+    };
+    let generated = Codegen::new()
+        .with_options(codegen_options)
+        .build(&parse_result.program);
+    let out = generated.code;
     if out.trim().is_empty() && !code.trim().is_empty() {
         return Err(BeautifyError::BeautificationFailed(
             "codegen produced empty output from recovered AST".to_string(),
         ));
     }
-    Ok(out)
+    let blank_lines = generated.map.map_or_else(Vec::new, |map| {
+        blank_lines::blank_lines(
+            code,
+            &parse_result.program,
+            &out,
+            map.get_tokens()
+                .map(|t| (t.get_dst_line(), t.get_dst_col(), t.get_src_line(), t.get_src_col())),
+            options.max_preserve_newlines,
+        )
+    });
+    Layout::new(options, code).apply(&out, parse_result.program.source_type, &blank_lines)
+}
+
+fn has_blank_line(code: &str) -> bool {
+    code.lines().skip(1).any(|line| line.trim().is_empty())
 }
 
 /// # Errors
@@ -42,7 +69,8 @@ pub fn beautify(code: &str, options: &Options) -> Result<String> {
             .with_skip_annotations(options.skip_annotations)
             .with_readable_names(options.readable_names)
             .with_parse_goal(options.parse_goal)
-            .with_isolated(options.isolated);
+            .with_isolated(options.isolated)
+            .with_layout(Layout::new(options, code));
         return deobfuscator.deobfuscate(code);
     }
 
@@ -113,7 +141,7 @@ pub fn beautify(code: &str, options: &Options) -> Result<String> {
         }
     }
 
-    oxc_beautify(code, options.parse_goal)
+    oxc_beautify(code, options)
 }
 
 #[cfg(test)]
