@@ -112,8 +112,6 @@ pub(crate) mod trampoline;
 pub(crate) mod try_catch;
 pub(crate) mod unary_proxy;
 #[allow(dead_code)]
-pub(crate) mod unicode_mangling;
-#[allow(dead_code)]
 pub(crate) mod variable_rename;
 #[allow(dead_code)]
 pub(crate) mod void_replacer;
@@ -188,7 +186,6 @@ pub(crate) use ternary_to_if_else::TernaryToIfElse;
 pub(crate) use trampoline::{TrampolineCollector, TrampolineInliner};
 pub(crate) use try_catch::TryCatchRemover;
 pub(crate) use unary_proxy::{UnaryProxyCollector, UnaryProxyInliner};
-pub(crate) use unicode_mangling::UnicodeNormalizer;
 pub(crate) use variable_rename::VariableRenamer;
 pub(crate) use void_replacer::VoidReplacer;
 pub(crate) use window_alias_propagator::{WindowAliasCollector, WindowAliasPropagator};

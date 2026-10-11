@@ -158,25 +158,13 @@ impl AstDeobfuscator {
     }
 
     fn run_dyn_concat<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
-        mem_ck("enter Phase 5d.5 (dyn-concat fixed-point)");
-        eprintln!("[DEOBFUSCATE] Phase 5d.5: dyn-concat resolver (string-var inlining, fixed-point)");
+        mem_ck("enter Phase 5d.5 (dyn-concat)");
+        eprintln!("[DEOBFUSCATE] Phase 5d.5: dyn-concat resolver (string-var inlining)");
         let mut dyn_resolver = DynConcatResolver::new();
-        let mut iter = 0u32;
-        loop {
-            dyn_resolver.reset_changed();
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            traverse_mut_with_ctx(&mut dyn_resolver, program, &mut ctx);
-            iter += 1;
-            if !dyn_resolver.changed() || iter >= 8 {
-                break;
-            }
-        }
-        eprintln!(
-            "[DEOBFUSCATE] Phase 5d.5: {} rewrites over {} iteration(s)",
-            dyn_resolver.rewrites(),
-            iter
-        );
+        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+        traverse_mut_with_ctx(&mut dyn_resolver, program, &mut ctx);
+        eprintln!("[DEOBFUSCATE] Phase 5d.5: {} rewrites", dyn_resolver.rewrites());
     }
 
     fn run_expression_cluster<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {

@@ -23,7 +23,7 @@ pub struct FromCharCodeFolder {
 
 counter_pass!(FromCharCodeFolder, folded, folded);
 
-fn is_string_from_charcode(expr: &Expression<'_>) -> bool {
+fn is_string_from_charcode(expr: &Expression<'_>, ctx: &Ctx<'_>) -> bool {
     let Expression::StaticMemberExpression(sme) = expr else {
         return false;
     };
@@ -33,7 +33,7 @@ fn is_string_from_charcode(expr: &Expression<'_>) -> bool {
     let Expression::Identifier(obj) = &sme.object else {
         return false;
     };
-    obj.name.as_str() == "String"
+    obj.name.as_str() == "String" && ctx.scoping().get_reference(obj.reference_id()).symbol_id().is_none()
 }
 
 fn extract_codepoint(expr: &Expression<'_>) -> Option<u32> {
@@ -59,7 +59,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for FromCharCodeFolder {
         let Expression::CallExpression(call) = expr else {
             return;
         };
-        if !is_string_from_charcode(&call.callee) {
+        if !is_string_from_charcode(&call.callee, ctx) {
             return;
         }
         if call.arguments.is_empty() {
@@ -136,5 +136,11 @@ mod tests {
     fn folds_single_char() {
         let out = run("var x = String.fromCharCode(65);");
         assert!(out.contains("\"A\""), "got: {out}");
+    }
+
+    #[test]
+    fn leaves_shadowed_string_alone() {
+        let out = run("function f(String) { return String.fromCharCode(65); }");
+        assert!(out.contains("fromCharCode"), "got: {out}");
     }
 }
