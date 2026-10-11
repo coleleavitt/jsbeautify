@@ -39,6 +39,10 @@ impl StatementMatcher {
 
     #[must_use]
     pub fn extract_statements(&self, source: &str) -> Vec<StatementInfo> {
+        crate::stack::run_on_sized_stack(source.len(), || self.extract_statements_on_current_stack(source))
+    }
+
+    fn extract_statements_on_current_stack(&self, source: &str) -> Vec<StatementInfo> {
         let allocator = Allocator::default();
         let source_type = SourceType::mjs();
 

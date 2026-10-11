@@ -70,6 +70,17 @@ impl Layout {
     /// Returns an error when the laid-out text does not re-parse to the same
     /// program as `code` (an edit changed tokens or triggered ASI).
     pub fn apply(&self, code: &str, source_type: SourceType, blank_lines: &[(usize, usize)]) -> Result<String> {
+        crate::stack::run_on_sized_stack(code.len(), || {
+            self.apply_on_current_stack(code, source_type, blank_lines)
+        })
+    }
+
+    fn apply_on_current_stack(
+        &self,
+        code: &str,
+        source_type: SourceType,
+        blank_lines: &[(usize, usize)],
+    ) -> Result<String> {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, code, source_type).parse();
         let expected = minified(&parsed.program);

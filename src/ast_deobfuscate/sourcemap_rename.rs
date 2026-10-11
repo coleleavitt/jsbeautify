@@ -100,7 +100,17 @@ impl<'a, S: BuildHasher> Traverse<'a, DeobfuscateState> for SourcemapNameCollect
 /// The map is keyed by the binding's `(1-based line, 0-based UTF-16 col)`. Bindings
 /// with no mapping are left untouched so the heuristic pass can name them later.
 #[must_use]
-pub fn apply_names_by_position<S: BuildHasher>(
+pub fn apply_names_by_position<S: BuildHasher + Sync>(
+    code: &str,
+    source_type: SourceType,
+    by_pos: &std::collections::HashMap<(u32, u32), String, S>,
+) -> String {
+    crate::stack::run_on_sized_stack(code.len(), || {
+        apply_names_by_position_on_current_stack(code, source_type, by_pos)
+    })
+}
+
+fn apply_names_by_position_on_current_stack<S: BuildHasher>(
     code: &str,
     source_type: SourceType,
     by_pos: &std::collections::HashMap<(u32, u32), String, S>,

@@ -8,15 +8,7 @@ use super::{
     VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
 };
 use crate::ParseGoal;
-
-/// Maximum accepted delimiter nesting.
-///
-/// This is intentionally conservative: the full parse/semantic/codegen pipeline
-/// completes at this boundary on the minimum supported 2 `MiB` worker stack.
-const MAX_BRACKET_DEPTH: usize = 256;
-const MIN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
-const DEFAULT_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
-const MAX_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
     payload
@@ -24,24 +16,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("non-string panic payload")
-}
-
-fn run_worker<T, F>(stack_bytes: usize, work: F) -> Result<T>
-where
-    T: Send,
-    F: FnOnce() -> Result<T> + Send,
-{
-    std::thread::scope(|scope| {
-        let worker = std::thread::Builder::new()
-            .name("ast-deobfuscator".into())
-            .stack_size(stack_bytes)
-            .spawn_scoped(scope, work)
-            .map_err(|error| BeautifyError::DeobfuscationWorkerSpawnFailed(error.to_string()))?;
-
-        worker.join().map_err(|payload| {
-            BeautifyError::DeobfuscationWorkerPanicked(panic_message(payload.as_ref()).to_string())
-        })?
-    })
 }
 
 impl AstDeobfuscator {
@@ -78,7 +52,6 @@ impl AstDeobfuscator {
             json_parse_evaluator: JsonParseEvaluator::new(),
             optional_chaining_normalizer: OptionalChainingNormalizer::new(),
             nullish_coalescing_simplifier: NullishCoalescingSimplifier::new(),
-            worker_stack_bytes: DEFAULT_WORKER_STACK_BYTES,
             skip_annotations: false,
             readable_names: false,
             layout: None,
@@ -122,53 +95,21 @@ impl AstDeobfuscator {
         self
     }
 
-    /// Set the deobfuscation worker stack size in bytes.
-    ///
-    /// Values are clamped to a safe range so one call cannot reserve an
-    /// unbounded amount of virtual address space.
-    #[must_use]
-    pub fn with_worker_stack_bytes(mut self, bytes: usize) -> Self {
-        self.worker_stack_bytes = bytes.clamp(MIN_WORKER_STACK_BYTES, MAX_WORKER_STACK_BYTES);
-        self
-    }
-
     /// Deobfuscate `code`, returning the transformed source.
     ///
-    /// Parse and transform work runs on a bounded-stack worker because some
-    /// parser paths recurse in proportion to input nesting depth.
+    /// Runs on a worker whose stack is sized from the input length, so input
+    /// of any nesting depth is processed.
     ///
     /// # Errors
-    /// Returns an error for pathological nesting, worker-spawn failure, worker
-    /// panic, parse/checkpoint failure, or transform failure.
+    /// Returns an error for a panic in the pipeline, parse/checkpoint failure,
+    /// or transform failure.
     pub fn deobfuscate(&mut self, code: &str) -> Result<String> {
-        let depth = Self::max_bracket_depth(code);
-        if depth > MAX_BRACKET_DEPTH {
-            return Err(BeautifyError::InvalidInput(format!(
-                "input bracket-nesting depth {depth} exceeds cap {MAX_BRACKET_DEPTH}"
-            )));
-        }
-
-        let stack_bytes = self.worker_stack_bytes;
-        run_worker(stack_bytes, || self.deobfuscate_inner(code))
+        crate::stack::run_on_sized_stack(code.len(), || {
+            catch_unwind(AssertUnwindSafe(|| self.deobfuscate_inner(code)))
+        })
+        .map_err(|payload| BeautifyError::DeobfuscationWorkerPanicked(panic_message(payload.as_ref()).to_string()))?
     }
 
-    /// Maximum bracket-nesting depth of the raw source — a cheap `O(n)` scan used
-    /// as a `DoS` safety valve. Not string/comment aware, which is fine: the cap
-    /// it feeds is far above any real code.
-    fn max_bracket_depth(s: &str) -> usize {
-        let (mut depth, mut max) = (0usize, 0usize);
-        for b in s.bytes() {
-            match b {
-                b'(' | b'[' | b'{' => {
-                    depth += 1;
-                    max = max.max(depth);
-                }
-                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-        max
-    }
     /// # Errors
     /// Returns an error if the operation fails.
     fn deobfuscate_inner(&mut self, code: &str) -> Result<String> {
@@ -202,55 +143,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_panic_is_a_distinct_error() {
-        let error = run_worker(DEFAULT_WORKER_STACK_BYTES, || -> Result<()> {
-            panic!("worker panic sentinel")
-        })
-        .expect_err("worker panic must not become successful unchanged input");
-
-        assert!(matches!(
-            error,
-            BeautifyError::DeobfuscationWorkerPanicked(message)
-                if message == "worker panic sentinel"
-        ));
-    }
-
-    #[test]
-    fn worker_spawn_failure_is_a_distinct_error() {
-        let error = run_worker(usize::MAX, || Ok(())).expect_err("an impossible stack reservation must fail to spawn");
-
-        assert!(matches!(error, BeautifyError::DeobfuscationWorkerSpawnFailed(_)));
-    }
-
-    #[test]
-    fn worker_preserves_inner_errors() {
-        let error = run_worker(DEFAULT_WORKER_STACK_BYTES, || -> Result<()> {
-            Err(BeautifyError::InvalidInput("parse sentinel".into()))
-        })
-        .expect_err("inner errors must remain errors");
-
-        assert!(matches!(
-            error,
-            BeautifyError::InvalidInput(message) if message == "parse sentinel"
-        ));
-    }
-
-    #[test]
-    fn configured_worker_stack_is_bounded() {
-        assert_eq!(
-            AstDeobfuscator::new().with_worker_stack_bytes(0).worker_stack_bytes,
-            MIN_WORKER_STACK_BYTES
-        );
-        assert_eq!(
-            AstDeobfuscator::new()
-                .with_worker_stack_bytes(usize::MAX)
-                .worker_stack_bytes,
-            MAX_WORKER_STACK_BYTES
-        );
-        assert_eq!(AstDeobfuscator::new().worker_stack_bytes, DEFAULT_WORKER_STACK_BYTES);
-    }
-
-    #[test]
     fn top_level_return_is_parsed_as_commonjs() {
         let output = AstDeobfuscator::new()
             .deobfuscate("x(); return; y();")
@@ -276,48 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn pathological_nesting_returns_an_error() {
-        let code = "(".repeat(MAX_BRACKET_DEPTH + 1);
-        let error = AstDeobfuscator::new()
-            .deobfuscate(&code)
-            .expect_err("nesting cap must fail closed");
-
-        assert!(matches!(error, BeautifyError::InvalidInput(_)));
-    }
-
-    fn nested_parentheses(depth: usize) -> String {
-        format!("globalThis.value = {}0{};", "(".repeat(depth), ")".repeat(depth))
-    }
-
-    #[test]
-    fn nesting_at_cap_runs_on_minimum_worker_stack() {
-        let output = AstDeobfuscator::new()
-            .with_worker_stack_bytes(MIN_WORKER_STACK_BYTES)
-            .deobfuscate(&nested_parentheses(MAX_BRACKET_DEPTH))
-            .expect("the nesting boundary must fit the minimum worker stack");
-
-        assert!(output.contains("value"));
-    }
-
-    #[test]
-    fn nesting_above_cap_returns_typed_error_before_worker_runs() {
-        let depth = MAX_BRACKET_DEPTH + 1;
-        let error = AstDeobfuscator::new()
-            .with_worker_stack_bytes(MIN_WORKER_STACK_BYTES)
-            .deobfuscate(&nested_parentheses(depth))
-            .expect_err("nesting above the tested boundary must fail closed");
-
-        assert!(matches!(
-            error,
-            BeautifyError::InvalidInput(message)
-                if message == format!(
-                    "input bracket-nesting depth {depth} exceeds cap {MAX_BRACKET_DEPTH}"
-                )
-        ));
-    }
-
-    #[test]
-    fn bounded_workers_can_run_concurrently() {
+    fn workers_can_run_concurrently() {
         std::thread::scope(|scope| {
             let workers: Vec<_> = (0..8)
                 .map(|_| {

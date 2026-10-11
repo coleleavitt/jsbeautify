@@ -55,7 +55,8 @@ impl SourcemapParser {
             .map_err(|e| BeautifyError::InvalidInput(format!("Invalid sourcemap JSON: {e}")))?;
 
         let mapping_index = self.build_mapping_index(&raw.mappings, raw.sources.len())?;
-        let bundle_identifiers = self.extract_identifiers_ast(bundle_source);
+        let bundle_identifiers =
+            crate::stack::run_on_sized_stack(bundle_source.len(), || self.extract_identifiers_ast(bundle_source));
 
         eprintln!(
             "[SOURCEMAP] {} identifiers, {} mapping lines",

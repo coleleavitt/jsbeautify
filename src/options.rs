@@ -86,6 +86,10 @@ impl ParseGoal {
     /// becomes `CommonJS`, whose top-level bindings are private.
     #[must_use]
     pub fn resolve(self, code: &str, isolated: bool) -> SourceType {
+        crate::stack::run_on_sized_stack(code.len(), || self.resolve_on_current_stack(code, isolated))
+    }
+
+    fn resolve_on_current_stack(self, code: &str, isolated: bool) -> SourceType {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, code, self.source_type()).parse();
         let mut source_type = parsed.program.source_type;

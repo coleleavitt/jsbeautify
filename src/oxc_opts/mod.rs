@@ -28,6 +28,10 @@ impl OxcOptimizer {
     /// # Errors
     /// Returns an error if the operation fails.
     pub fn optimize(&mut self, code: &str) -> Result<String, String> {
+        crate::stack::run_on_sized_stack(code.len(), || self.optimize_on_current_stack(code))
+    }
+
+    fn optimize_on_current_stack(&mut self, code: &str) -> Result<String, String> {
         let allocator = Allocator::default();
         let source_type = SourceType::mjs();
 

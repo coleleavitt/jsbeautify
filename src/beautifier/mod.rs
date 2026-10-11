@@ -61,9 +61,16 @@ fn has_blank_line(code: &str) -> bool {
     code.lines().skip(1).any(|line| line.trim().is_empty())
 }
 
+/// Runs on a worker whose stack is sized from the input length, so input of
+/// any nesting depth is processed.
+///
 /// # Errors
 /// Returns an error if the operation fails.
 pub fn beautify(code: &str, options: &Options) -> Result<String> {
+    crate::stack::run_on_sized_stack(code.len(), || beautify_on_current_stack(code, options))
+}
+
+fn beautify_on_current_stack(code: &str, options: &Options) -> Result<String> {
     if options.deobfuscate {
         let mut deobfuscator = AstDeobfuscator::new()
             .with_skip_annotations(options.skip_annotations)

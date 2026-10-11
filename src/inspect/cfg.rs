@@ -58,6 +58,17 @@ pub fn control_flow(
     typescript: bool,
     function: Option<&str>,
 ) -> Result<Inspection<ControlFlow>, InspectError> {
+    crate::stack::run_on_sized_stack(source.len(), || {
+        control_flow_on_current_stack(source, goal, typescript, function)
+    })
+}
+
+fn control_flow_on_current_stack(
+    source: &str,
+    goal: ParseGoal,
+    typescript: bool,
+    function: Option<&str>,
+) -> Result<Inspection<ControlFlow>, InspectError> {
     let allocator = Allocator::default();
     let (program, mut diagnostics) = parse(&allocator, source, goal, typescript)?;
     let ret = SemanticBuilder::new()

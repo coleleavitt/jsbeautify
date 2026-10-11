@@ -28,6 +28,7 @@ pub mod webpack_module_extractor;
 mod chunk_detector;
 mod chunk_splitter;
 mod options;
+mod stack;
 
 pub use ast_deobfuscate::AstDeobfuscator;
 pub use beautifier::beautify;
@@ -65,9 +66,6 @@ pub enum BeautifyError {
 
     #[error("JSON parsing failed: {0}")]
     JsonParsingFailed(#[from] serde_json::Error),
-
-    #[error("failed to spawn deobfuscation worker: {0}")]
-    DeobfuscationWorkerSpawnFailed(String),
 
     #[error("deobfuscation worker panicked: {0}")]
     DeobfuscationWorkerPanicked(String),

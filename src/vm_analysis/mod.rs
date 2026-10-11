@@ -52,6 +52,12 @@ pub fn analyze_artifact(source: &str) -> VmAnalysisArtifact {
 /// Produce one artifact under a single aggregate hostile-input budget.
 #[must_use]
 pub fn analyze_artifact_with_limits(source: &str, limits: AnalysisLimits) -> VmAnalysisArtifact {
+    crate::stack::run_on_sized_stack(source.len(), || {
+        analyze_artifact_with_limits_on_current_stack(source, limits)
+    })
+}
+
+fn analyze_artifact_with_limits_on_current_stack(source: &str, limits: AnalysisLimits) -> VmAnalysisArtifact {
     if source.len() > limits.max_source_bytes {
         return VmAnalysisArtifact {
             report: VmAnalysisReport {

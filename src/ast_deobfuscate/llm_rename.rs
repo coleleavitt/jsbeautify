@@ -164,7 +164,13 @@ fn context_window(source: &str, offset: u32) -> String {
 /// Rename residual minified bindings using `suggester`, scope-safely. Bindings
 /// the suggester declines or that the soundness guards exclude are left alone.
 #[must_use]
-pub fn apply_llm_names(code: &str, source_type: SourceType, suggester: &dyn NameSuggester) -> String {
+pub fn apply_llm_names(code: &str, source_type: SourceType, suggester: &(dyn NameSuggester + Sync)) -> String {
+    crate::stack::run_on_sized_stack(code.len(), || {
+        apply_llm_names_on_current_stack(code, source_type, suggester)
+    })
+}
+
+fn apply_llm_names_on_current_stack(code: &str, source_type: SourceType, suggester: &dyn NameSuggester) -> String {
     let alloc = Allocator::default();
     let mut prog = Parser::new(&alloc, code, source_type).parse().program;
 

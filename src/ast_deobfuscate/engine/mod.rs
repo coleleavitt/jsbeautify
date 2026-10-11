@@ -81,7 +81,6 @@ pub struct AstDeobfuscator {
     json_parse_evaluator: JsonParseEvaluator,
     optional_chaining_normalizer: OptionalChainingNormalizer,
     nullish_coalescing_simplifier: NullishCoalescingSimplifier,
-    worker_stack_bytes: usize,
     skip_annotations: bool,
     /// When set, Phase 12.5 infers readable names for minified locals
     /// (`heuristic_rename`) instead of opaque `v{n}` slots.

@@ -10,6 +10,14 @@ use oxc_allocator::Allocator;
 /// # Errors
 /// Returns [`InspectError::Parse`] when the parser cannot recover.
 pub fn estree(source: &str, goal: ParseGoal, typescript: bool) -> Result<Inspection<String>, InspectError> {
+    crate::stack::run_on_sized_stack(source.len(), || estree_on_current_stack(source, goal, typescript))
+}
+
+fn estree_on_current_stack(
+    source: &str,
+    goal: ParseGoal,
+    typescript: bool,
+) -> Result<Inspection<String>, InspectError> {
     let allocator = Allocator::default();
     let (program, diagnostics) = parse(&allocator, source, goal, typescript)?;
     Ok(Inspection {

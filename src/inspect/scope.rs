@@ -58,6 +58,14 @@ pub struct UnresolvedEntry {
 /// # Errors
 /// Returns [`InspectError::Parse`] when the parser cannot recover.
 pub fn symbol_table(source: &str, goal: ParseGoal, typescript: bool) -> Result<Inspection<ScopeReport>, InspectError> {
+    crate::stack::run_on_sized_stack(source.len(), || symbol_table_on_current_stack(source, goal, typescript))
+}
+
+fn symbol_table_on_current_stack(
+    source: &str,
+    goal: ParseGoal,
+    typescript: bool,
+) -> Result<Inspection<ScopeReport>, InspectError> {
     let allocator = Allocator::default();
     let (program, mut diagnostics) = parse(&allocator, source, goal, typescript)?;
     let ret = SemanticBuilder::new()
