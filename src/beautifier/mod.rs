@@ -56,7 +56,7 @@ fn oxc_beautify(code: &str, options: &Options) -> Result<String> {
             options.max_preserve_newlines,
         )
     });
-    Ok(Layout::new(options, code).apply(&out, source_type, &blank_lines))
+    Layout::new(options, code).apply(&out, source_type, &blank_lines)
 }
 
 fn has_blank_line(code: &str) -> bool {

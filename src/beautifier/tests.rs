@@ -373,6 +373,53 @@ mod layout {
     }
 
     #[test]
+    fn asi_sensitive_inputs_survive_every_layout() {
+        let cases = [
+            "function f(){return\nx}",
+            "a\n++b",
+            "x\n(y)",
+            "a\n[b]",
+            "x\n`t`",
+            "var a = b\n(function(){})()",
+            "function g(){if(a){return\n{b:1}}else{throw c}}",
+            "do{x()}while(y)\n[1].map(f)",
+            "label:{break label}\nlet\nz = 1",
+        ];
+        for code in cases {
+            for brace_style in [BraceStyle::Collapse, BraceStyle::Expand, BraceStyle::EndExpand] {
+                for preserve_newlines in [true, false] {
+                    let options = Options {
+                        brace_style,
+                        preserve_newlines,
+                        jslint_happy: true,
+                        space_after_named_function: true,
+                        ..Options::default()
+                    };
+                    let out = beautify(code, &options).unwrap_or_else(|e| panic!("{code:?} {options:?}: {e}"));
+                    let allocator = Allocator::default();
+                    let parsed = Parser::new(&allocator, code, SourceType::mjs()).parse();
+                    assert_eq!(
+                        minified(&out),
+                        minified(&Codegen::new().build(&parsed.program).code),
+                        "{code:?} {options:?}\n{out}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn layout_rejects_text_that_changes_the_program() {
+        let allocator = Allocator::default();
+        let original = Parser::new(&allocator, "function f() { return x; }", SourceType::mjs()).parse();
+        let expected = super::super::layout::minified(&original.program);
+        let verify = |text: &str| super::super::layout::verify(&expected, true, text, SourceType::mjs());
+        assert!(verify("function f() {\n    return x;\n}").is_ok());
+        assert!(verify("function f() {\n    return\n    x;\n}").is_err());
+        assert!(verify("function f() {\n    return x;\n").is_err());
+    }
+
+    #[test]
     fn deobfuscated_output_uses_the_layout() {
         let out = run(
             "function f(){if(a){return 1}}",

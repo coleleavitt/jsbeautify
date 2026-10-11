@@ -11,15 +11,17 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BlockStatement, ClassBody, CommentKind, DoWhileStatement, ExportNamedDeclaration, Function, FunctionBody,
     IfStatement, ImportDeclaration, ImportDeclarationSpecifier, JSXText, MethodDefinition, ObjectExpression,
-    ObjectPattern, ObjectProperty, PropertyKind, Statement, StringLiteral, SwitchCase, SwitchStatement,
+    ObjectPattern, ObjectProperty, Program, PropertyKind, Statement, StringLiteral, SwitchCase, SwitchStatement,
     TemplateElement, TryStatement, VariableDeclaration,
 };
 use oxc_ast_visit::{Visit, walk};
+use oxc_codegen::{Codegen, CodegenOptions};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::options::{BraceStyle, Options};
+use crate::{BeautifyError, Result};
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
@@ -63,10 +65,14 @@ impl Layout {
 
     /// Lays out codegen output (tab-indented, `\n`-separated). `blank_lines`
     /// lists `(line start offset, count)` pairs of empty lines to insert.
-    #[must_use]
-    pub fn apply(&self, code: &str, source_type: SourceType, blank_lines: &[(usize, usize)]) -> String {
+    ///
+    /// # Errors
+    /// Returns an error when the laid-out text does not re-parse to the same
+    /// program as `code` (an edit changed tokens or triggered ASI).
+    pub fn apply(&self, code: &str, source_type: SourceType, blank_lines: &[(usize, usize)]) -> Result<String> {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, code, source_type).parse();
+        let expected = minified(&parsed.program);
         let mut scan = Scan {
             code,
             layout: self,
@@ -102,7 +108,7 @@ impl Layout {
         edits.sort_by_key(|&(at, _)| at);
         blank_lines.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
         blank_lines.dedup_by_key(|&mut (at, _)| at);
-        Writer {
+        let laid_out = Writer {
             layout: self,
             code,
             verbatim: &verbatim,
@@ -115,8 +121,40 @@ impl Layout {
                 open: Vec::new(),
             },
         }
-        .write()
+        .write();
+        verify(&expected, parsed.diagnostics.is_empty(), &laid_out, source_type)?;
+        Ok(laid_out)
     }
+}
+
+/// Whitespace-free rendering of a program. Raw line breaks only survive
+/// minification inside template literals, where the spec normalizes `\r\n`
+/// and `\r` to `\n`, so they are normalized here too.
+pub(super) fn minified(program: &Program<'_>) -> String {
+    Codegen::new()
+        .with_options(CodegenOptions::minify())
+        .build(program)
+        .code
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+}
+
+/// The laid-out text must parse (when its input did) to the same program.
+pub(super) fn verify(expected: &str, input_was_clean: bool, laid_out: &str, source_type: SourceType) -> Result<()> {
+    let allocator = Allocator::default();
+    let reparsed = Parser::new(&allocator, laid_out, source_type).parse();
+    if input_was_clean && !reparsed.diagnostics.is_empty() {
+        return Err(BeautifyError::BeautificationFailed(format!(
+            "layout produced invalid JavaScript: {}",
+            reparsed.diagnostics[0]
+        )));
+    }
+    if minified(&reparsed.program) != expected {
+        return Err(BeautifyError::BeautificationFailed(
+            "layout changed the program".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
