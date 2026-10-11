@@ -31,6 +31,7 @@ pub(crate) mod apply_call_simplifier;
 pub(crate) mod array_coerce_fold;
 #[allow(dead_code)]
 pub(crate) mod array_unpack;
+pub(crate) mod body_block_wrap;
 #[allow(dead_code)]
 pub(crate) mod boolean_literals;
 pub(crate) mod bun;
@@ -73,12 +74,13 @@ pub(crate) mod fromcharcode_fold;
 #[allow(dead_code)]
 pub(crate) mod function_inline;
 pub(crate) mod heuristic_rename;
-pub(crate) mod if_body_comma_split;
 pub(crate) mod iife_unwrap;
 pub(crate) mod json_parse_eval;
+pub(crate) mod let_to_const;
 pub mod llm_rename;
 pub(crate) mod lookup_forwarder;
 pub(crate) mod method_call_forwarder;
+pub(crate) mod minifier_idioms;
 pub(crate) mod multi_var_split;
 pub(crate) mod nullish_coalescing_simplifier;
 #[allow(dead_code)]
@@ -127,6 +129,7 @@ pub(crate) use algebraic_simplify::AlgebraicSimplifier;
 pub(crate) use apply_call_simplifier::ApplyCallSimplifier;
 pub(crate) use array_coerce_fold::ArrayCoerceFold;
 pub(crate) use array_unpack::ArrayUnpacker;
+pub(crate) use body_block_wrap::BodyBlockWrapper;
 pub(crate) use boolean_literals::BooleanLiteralConverter;
 pub(crate) use bun::{
     BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector, BunRuntimeRenamer,
@@ -159,11 +162,12 @@ pub(crate) use esbuild::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esb
 pub(crate) use expression_simplify::ExpressionSimplifier;
 pub(crate) use fromcharcode_fold::FromCharCodeFolder;
 pub(crate) use function_inline::{FunctionCollector, FunctionInliner};
-pub(crate) use if_body_comma_split::IfBodyCommaSplitter;
 pub(crate) use iife_unwrap::IifeUnwrap;
 pub(crate) use json_parse_eval::JsonParseEvaluator;
+pub(crate) use let_to_const::LetToConst;
 pub(crate) use lookup_forwarder::{LookupForwarderCollector, LookupForwarderInliner};
 pub(crate) use method_call_forwarder::{MethodCallForwarderCollector, MethodCallForwarderInliner};
+pub(crate) use minifier_idioms::MinifierIdiomReverser;
 pub(crate) use multi_var_split::MultiVarSplitter;
 pub(crate) use nullish_coalescing_simplifier::NullishCoalescingSimplifier;
 pub(crate) use object_sparsing::ObjectSparsingConsolidator;

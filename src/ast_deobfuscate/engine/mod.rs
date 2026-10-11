@@ -23,7 +23,7 @@ use rustc_hash::FxHashMap;
 use crate::{BeautifyError, Result};
 
 use super::{
-    AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker,
+    AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker, BodyBlockWrapper,
     BooleanLiteralConverter, BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer,
     BunRuntimeCollector, BunRuntimeRenamer, BunSyntaxNormalizer, CallProxyCollector, CallProxyInliner,
     CallThisSimplifier, CffUnflattener, ClassNameCollector, ClassNameRenamer, CommaReturnSimplifier,
@@ -31,17 +31,17 @@ use super::{
     DispatchInlinerCollector, DispatchInlinerRewriter, DispatcherDetector, DispatcherInliner, DisplayNameCollector,
     DoWhileSwitchCleaner, DoWhileSwitchDetector, DynConcatResolver, DynamicPropertyConverter, EmptyStatementCleanup,
     EsbuildHelperCollector, EsbuildHelperKind, ExportNameCollector, ExportNameRenamer, ExpressionSimplifier,
-    FromCharCodeFolder, FunctionCollector, FunctionInliner, IfBodyCommaSplitter, IifeUnwrap, JsonParseEvaluator,
+    FromCharCodeFolder, FunctionCollector, FunctionInliner, IifeUnwrap, JsonParseEvaluator, LetToConst,
     LookupForwarderCollector, LookupForwarderInliner, MethodCallForwarderCollector, MethodCallForwarderInliner,
-    MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator, OperatorProxyCollector,
-    OperatorProxyInliner, OptionalChainingNormalizer, ParamHeuristicRenamer, ReturnSequenceSplitter,
-    SelfDefendingStringArray, SelfInitAccessorFlattener, SequenceExpressionSplitter, ShortCircuitToIf, StrengthReducer,
-    StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
-    TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, UnicodeNormalizer,
-    VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator, annotate_bun_modules,
-    annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums, bun, collect_case_bodies,
-    collect_constants, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences, flatten_top_level_cjs_wrapper,
-    heuristic_rename, rename_guards, resolve_compound_transitions,
+    MinifierIdiomReverser, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
+    OperatorProxyCollector, OperatorProxyInliner, OptionalChainingNormalizer, ParamHeuristicRenamer,
+    ReturnSequenceSplitter, SelfDefendingStringArray, SelfInitAccessorFlattener, SequenceExpressionSplitter,
+    ShortCircuitToIf, StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
+    TernaryToIfElse, TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner,
+    UnicodeNormalizer, VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator,
+    annotate_bun_modules, annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums, bun,
+    collect_case_bodies, collect_constants, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences,
+    flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards, resolve_compound_transitions,
 };
 use annotations::annotate_webpack_modules;
 use checkpoint::{SemanticBaseline, checkpoint_error_context, log_output_validity, semantic_baseline};

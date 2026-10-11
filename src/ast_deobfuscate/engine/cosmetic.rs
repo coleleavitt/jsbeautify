@@ -1,8 +1,11 @@
 use super::{
-    Allocator, AstDeobfuscator, BunHelperMap, Codegen, DeobfuscateState, EsbuildHelperCollector, IfBodyCommaSplitter,
-    Parser, Result, ReturnSequenceSplitter, ReusableTraverseCtx, SemanticBaseline, SemanticBuilder, SourceType,
-    checkpoint_error_context, eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, BodyBlockWrapper, BunHelperMap, Codegen, DeobfuscateState, EsbuildHelperCollector,
+    LetToConst, MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx,
+    SemanticBaseline, SemanticBuilder, SourceType, checkpoint_error_context, eliminate_dead_vars, mem_ck,
+    traverse_mut_with_ctx,
 };
+
+const STATEMENT_SPLIT_MAX_ROUNDS: usize = 8;
 
 impl AstDeobfuscator {
     pub(super) fn run_cosmetic_a(&mut self, intermediate: &str, source_type: SourceType) -> Result<String> {
@@ -65,18 +68,6 @@ impl AstDeobfuscator {
                 eprintln!(
                     "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
                     return_splitter.split_count()
-                );
-            }
-
-            eprintln!("[DEOBFUSCATE] Phase 14.7: If-body comma expression splitting");
-            {
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut if_splitter = IfBodyCommaSplitter::new();
-                traverse_mut_with_ctx(&mut if_splitter, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 14.7: Split {} if-body comma expressions",
-                    if_splitter.split_count()
                 );
             }
 
@@ -177,14 +168,28 @@ impl AstDeobfuscator {
             "[DEOBFUSCATE] Phase 17.1: Detected {} nullish coalescing chains",
             self.nullish_coalescing_simplifier.detected_count()
         );
-        eprintln!("[DEOBFUSCATE] Phase 17: SemanticBuilder for short_circuit_to_if");
+        mem_ck("enter Phase 17 (statement-split fixpoint)");
+        eprintln!("[DEOBFUSCATE] Phase 17: statement-split fixpoint");
+        self.run_statement_split_fixpoint(&allocator, &mut program);
+
+        eprintln!("[DEOBFUSCATE] Phase 17.5: SemanticBuilder for minifier idiom reversal");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        eprintln!("[DEOBFUSCATE] Phase 17: Running short_circuit_to_if");
-        traverse_mut_with_ctx(&mut self.short_circuit_to_if, &mut program, &mut ctx);
+        let mut idiom_reverser = MinifierIdiomReverser::new();
+        traverse_mut_with_ctx(&mut idiom_reverser, &mut program, &mut ctx);
         eprintln!(
-            "[DEOBFUSCATE] Phase 17: Converted {} short-circuit expressions to if statements",
-            self.short_circuit_to_if.converted_count()
+            "[DEOBFUSCATE] Phase 17.5: Reversed {} minifier idioms",
+            idiom_reverser.rewritten_count()
+        );
+
+        eprintln!("[DEOBFUSCATE] Phase 17.6: SemanticBuilder for let_to_const");
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut let_to_const = LetToConst::new();
+        traverse_mut_with_ctx(&mut let_to_const, &mut program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 17.6: Converted {} let declarations to const",
+            let_to_const.converted_count()
         );
 
         eprintln!("[DEOBFUSCATE] Phase 18: SemanticBuilder for iife_unwrap");
@@ -213,5 +218,37 @@ impl AstDeobfuscator {
         );
 
         self.generate_final_output(&program, source_type, &esbuild_collector, bun_helper_map, baseline)
+    }
+
+    /// Each statement-split pass rewrites only the statement lists it exits, so
+    /// a statement one pass creates (the `if` body `short_circuit_to_if` builds
+    /// from `x && (y ? f() : g())`) is only revisited by another round. The
+    /// passes only create scopes, never read bindings, so a round shares one
+    /// semantic build.
+    fn run_statement_split_fixpoint<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
+        let mut return_splitter = ReturnSequenceSplitter::new();
+        let mut body_wrapper = BodyBlockWrapper::new();
+        let total = |this: &Self, return_splitter: &ReturnSequenceSplitter, body_wrapper: &BodyBlockWrapper| {
+            this.short_circuit_to_if.converted_count()
+                + this.ternary_to_if_else.converted_count()
+                + this.sequence_expression_splitter.split_count()
+                + return_splitter.split_count()
+                + body_wrapper.wrapped_count()
+        };
+        for round in 1..=STATEMENT_SPLIT_MAX_ROUNDS {
+            let before = total(self, &return_splitter, &body_wrapper);
+            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+            traverse_mut_with_ctx(&mut body_wrapper, program, &mut ctx);
+            traverse_mut_with_ctx(&mut self.short_circuit_to_if, program, &mut ctx);
+            traverse_mut_with_ctx(&mut self.ternary_to_if_else, program, &mut ctx);
+            traverse_mut_with_ctx(&mut self.sequence_expression_splitter, program, &mut ctx);
+            traverse_mut_with_ctx(&mut return_splitter, program, &mut ctx);
+            let rewrites = total(self, &return_splitter, &body_wrapper) - before;
+            eprintln!("[DEOBFUSCATE] Phase 17: round {round}: {rewrites} statement rewrites");
+            if rewrites == 0 {
+                break;
+            }
+        }
     }
 }
