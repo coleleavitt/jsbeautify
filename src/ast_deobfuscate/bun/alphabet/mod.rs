@@ -11,11 +11,11 @@
 //! the frequency rank of each symbol. By normalizing names to slots, we get
 //! alphabet-independent comparisons.
 
-mod alphabet;
+mod charset;
 mod extract;
 mod util;
 
-pub use alphabet::{BunAlphabet, DEFAULT_HEAD, DEFAULT_TAIL};
+pub use charset::{BunAlphabet, DEFAULT_HEAD, DEFAULT_TAIL};
 pub use extract::{AlphabetExtractor, extract_alphabet_from_source};
 
 #[cfg(test)]

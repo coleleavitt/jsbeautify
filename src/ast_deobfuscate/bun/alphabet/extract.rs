@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use super::alphabet::BunAlphabet;
+use super::charset::BunAlphabet;
 use super::util::{build_sorted_alphabet, is_likely_keyword_or_common, is_valid_head_char, is_valid_tail_char};
 
 /// Extracts the Bun alphabet from source code by analyzing identifier frequencies

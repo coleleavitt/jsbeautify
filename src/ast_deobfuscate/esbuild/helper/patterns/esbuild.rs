@@ -1,6 +1,6 @@
 use oxc_ast::ast::{ArrowFunctionExpression, Expression, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 fn nested_arrow_expression<'a, 'b>(arrow: &'a ArrowFunctionExpression<'b>) -> Option<&'a Expression<'b>> {
     let Expression::ArrowFunctionExpression(inner) = arrow.body.as_expression()? else {
@@ -20,7 +20,9 @@ fn unwrap_parenthesized<'a, 'b>(expr: &'a Expression<'b>) -> &'a Expression<'b> 
 }
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_commonjs_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_commonjs_pattern(
+        arrow: &ArrowFunctionExpression<'_>,
+    ) -> bool {
         if arrow.params.items.len() != 2 {
             return false;
         }
@@ -34,7 +36,7 @@ impl EsbuildHelperCollector {
             && matches!(&seq.expressions[1], Expression::StaticMemberExpression(member) if member.property.name.as_str() == "exports")
     }
 
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_esm_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_esm_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
         if arrow.params.items.len() != 2 {
             return false;
         }
@@ -57,7 +59,7 @@ impl EsbuildHelperCollector {
             )
     }
 
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_export_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_export_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
         if arrow.params.items.len() != 2 {
             return false;
         }
@@ -68,7 +70,7 @@ impl EsbuildHelperCollector {
             .is_some_and(|stmt| matches!(stmt, Statement::ForInStatement(_)))
     }
 
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_toesm_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_toesm_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
         if arrow.params.items.len() < 2 || arrow.params.items.len() > 3 {
             return false;
         }
@@ -87,7 +89,7 @@ impl EsbuildHelperCollector {
             })
     }
 
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_tocommonjs_pattern(
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_tocommonjs_pattern(
         arrow: &ArrowFunctionExpression<'_>,
     ) -> bool {
         if arrow.params.items.len() != 1 {

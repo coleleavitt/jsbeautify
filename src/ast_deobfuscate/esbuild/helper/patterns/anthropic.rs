@@ -1,9 +1,11 @@
 use oxc_ast::ast::{ArrowFunctionExpression, BindingPattern, Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_identity_pattern(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_identity_pattern(
+        arrow: &ArrowFunctionExpression<'_>,
+    ) -> bool {
         if arrow.params.items.len() != 1 || !arrow.body.is_expression() {
             return false;
         }
@@ -24,7 +26,7 @@ impl EsbuildHelperCollector {
     }
 
     /// Detect getter bind pattern: `function(q) { return this[q] }`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_getter_bind_function(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_getter_bind_function(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else {
             return false;
         };
@@ -64,7 +66,7 @@ impl EsbuildHelperCollector {
     }
 
     /// Detect setter bind pattern: `function(q, K) { this[q] = ... }`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_setter_bind_function(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_setter_bind_function(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else {
             return false;
         };
@@ -101,7 +103,7 @@ impl EsbuildHelperCollector {
     }
 
     /// Detect Anthropic's modified __export with configurable:true and set: accessor
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn has_anthropic_export_modifications(
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn has_anthropic_export_modifications(
         arrow: &ArrowFunctionExpression<'_>,
     ) -> bool {
         if !Self::is_export_pattern(arrow) {

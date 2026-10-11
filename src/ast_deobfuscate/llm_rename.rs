@@ -3,7 +3,7 @@
 //! For minified bindings that the heuristic and sourcemap tiers couldn't name,
 //! ask a language model for a descriptive name. The model only *suggests* a
 //! string — the rename itself goes through the same scope-safe `SymbolId` path
-//! ([`super::bun_local_renamer::RenameMode::Sourcemap`]), so a bad suggestion
+//! ([`super::bun::local_renamer::RenameMode::Sourcemap`]), so a bad suggestion
 //! can never break the program: every name is validated, collisions are
 //! resolved, and unusable suggestions are dropped.
 //!
@@ -25,7 +25,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
 
-use crate::ast_deobfuscate::bun_local_renamer::{
+use crate::ast_deobfuscate::bun::local_renamer::{
     LocalRenameMap, LocalRenamer, RenameMode, is_likely_generated_alias, is_meaningful_short, is_usable_base,
     plan_local_renames,
 };

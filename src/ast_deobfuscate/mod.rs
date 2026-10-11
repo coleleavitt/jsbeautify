@@ -33,18 +33,7 @@ pub(crate) mod array_coerce_fold;
 pub(crate) mod array_unpack;
 #[allow(dead_code)]
 pub(crate) mod boolean_literals;
-#[allow(dead_code)]
-pub(crate) mod bun_alphabet;
-pub(crate) mod bun_cjs_flatten;
-#[allow(dead_code, clippy::redundant_pub_crate)]
-pub(crate) mod bun_export_renamer;
-#[allow(dead_code)]
-pub(crate) mod bun_local_renamer;
-pub(crate) mod bun_module_annotator;
-pub(crate) mod bun_module_handles;
-#[allow(dead_code, clippy::trivially_copy_pass_by_ref)]
-pub(crate) mod bun_runtime;
-pub(crate) mod bun_syntax_normalizer;
+pub(crate) mod bun;
 #[allow(dead_code)]
 pub(crate) mod call_proxy;
 pub(crate) mod call_this_simplifier;
@@ -77,8 +66,7 @@ pub(crate) mod dyn_concat_resolver;
 pub(crate) mod dynamic_property;
 pub(crate) mod empty_statement_cleanup;
 pub(crate) mod encrypted_eval;
-#[allow(dead_code, clippy::enum_variant_names)]
-pub(crate) mod esbuild_helper;
+pub(crate) mod esbuild;
 #[allow(dead_code)]
 pub(crate) mod expression_simplify;
 pub(crate) mod fromcharcode_fold;
@@ -131,7 +119,6 @@ pub(crate) mod void_replacer;
 pub(crate) mod webpack;
 pub(crate) mod window_alias_propagator;
 
-pub(crate) use self::bun_runtime::{BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer};
 pub use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,
     UndefinedPatternNormalizer,
@@ -141,11 +128,10 @@ pub(crate) use apply_call_simplifier::ApplyCallSimplifier;
 pub(crate) use array_coerce_fold::ArrayCoerceFold;
 pub(crate) use array_unpack::ArrayUnpacker;
 pub(crate) use boolean_literals::BooleanLiteralConverter;
-pub(crate) use bun_cjs_flatten::flatten_top_level_cjs_wrapper;
-pub(crate) use bun_export_renamer::{ExportNameCollector, ExportNameRenamer};
-pub(crate) use bun_module_annotator::annotate_bun_modules;
-pub(crate) use bun_module_handles::{BunModuleHandleCollector, BunModuleHandleRenamer};
-pub(crate) use bun_syntax_normalizer::BunSyntaxNormalizer;
+pub(crate) use bun::{
+    BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector, BunRuntimeRenamer,
+    BunSyntaxNormalizer, ExportNameCollector, ExportNameRenamer, annotate_bun_modules, flatten_top_level_cjs_wrapper,
+};
 pub(crate) use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub(crate) use call_this_simplifier::CallThisSimplifier;
 pub(crate) use cff_unflattener::{CffUnflattener, collect_case_bodies};
@@ -169,7 +155,7 @@ pub use dowhile_switch_detector::{
 pub(crate) use dyn_concat_resolver::DynConcatResolver;
 pub(crate) use dynamic_property::DynamicPropertyConverter;
 pub(crate) use empty_statement_cleanup::EmptyStatementCleanup;
-pub(crate) use esbuild_helper::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esbuild_modules};
+pub(crate) use esbuild::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esbuild_modules};
 pub(crate) use expression_simplify::ExpressionSimplifier;
 pub(crate) use fromcharcode_fold::FromCharCodeFolder;
 pub(crate) use function_inline::{FunctionCollector, FunctionInliner};

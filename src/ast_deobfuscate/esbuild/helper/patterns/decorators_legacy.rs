@@ -1,9 +1,9 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_decorate_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_decorate_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -32,7 +32,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__param`: `function(paramIndex, decorator) { return (target, key) => decorator(...) }`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_param_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_param_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 || body.statements.len() != 1 {
             return false;
@@ -46,7 +46,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__metadata`: `Reflect.metadata(metadataKey, metadataValue)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_metadata_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_metadata_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -76,7 +76,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__template`: `Object.defineProperty(cooked, "raw", { value: raw })`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_template_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_template_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -109,7 +109,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__name`: `Object.defineProperty(f, "name", { value: name, configurable: true })`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_name_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_name_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;

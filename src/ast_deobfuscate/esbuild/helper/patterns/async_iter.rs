@@ -1,9 +1,9 @@
 use oxc_ast::ast::{BindingPattern, Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_await_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_await_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 || body.statements.len() > 2 {
             return false;
@@ -21,7 +21,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__asyncDelegator`: yield* delegation wrapper
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_async_delegator_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_async_delegator_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 {
             return false;
@@ -57,7 +57,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__asyncValues`: Symbol.asyncIterator iteration
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_async_values_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_async_values_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::IfStatement(if_stmt) = stmt
@@ -88,7 +88,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__yieldStar`: yield* in async generators
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_yield_star_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_yield_star_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::VariableDeclaration(var_decl) = stmt {
@@ -112,7 +112,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__forAwait`: for-await loop lowering
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_for_await_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_for_await_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::TryStatement(try_stmt) = stmt {

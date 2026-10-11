@@ -7,7 +7,7 @@ use oxc_ast::ast::{BindingIdentifier, Function, Ident, IdentifierReference};
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ast_deobfuscate::bun_alphabet::{BunAlphabet, extract_alphabet_from_source};
+use crate::ast_deobfuscate::bun::alphabet::{BunAlphabet, extract_alphabet_from_source};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;

@@ -1,9 +1,9 @@
 use oxc_ast::ast::{BindingPattern, Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_private_method_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_private_method_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -27,7 +27,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__publicField`: `Object.defineProperty(obj, key, { value, ... })`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_public_field_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_public_field_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -57,7 +57,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__privateWrapper`: Private field getter/setter wrapper
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_private_wrapper_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_private_wrapper_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() < 2 {
             return false;
@@ -85,7 +85,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__require`: Fallback require with Proxy
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_require_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_require_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ReturnStatement(ret) = stmt
@@ -103,7 +103,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__glob`: `import.meta.glob` handler
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_glob_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_glob_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::VariableDeclaration(var_decl) = stmt {

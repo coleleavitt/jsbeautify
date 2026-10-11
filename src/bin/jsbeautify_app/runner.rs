@@ -1,6 +1,6 @@
 use super::{
-    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs,
-    SplitChunksArgs, SplitSourcesArgs, align, sources,
+    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs, SplitChunksArgs,
+    SplitSourcesArgs, align, sources,
 };
 use clap::Parser;
 use js_beautify_rs::tokenizer::Tokenizer;
@@ -86,7 +86,6 @@ fn write_output(output: Option<&String>, text: &str) -> Fallible {
     }
     Ok(())
 }
-
 
 fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
     let source = read_vm_input_bounded(&args.input)?;

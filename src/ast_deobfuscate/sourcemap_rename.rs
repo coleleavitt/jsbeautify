@@ -4,7 +4,7 @@
 //! REAL identifier names — strictly better than any heuristic guess. This pass
 //! resolves each binding's *position* to its original name and applies it
 //! through the same scope-safe rename path as the heuristic renamer
-//! ([`super::bun_local_renamer::RenameMode::Sourcemap`]).
+//! ([`super::bun::local_renamer::RenameMode::Sourcemap`]).
 //!
 //! Crucially it is **span-keyed**, not name-keyed: a minified name like `a` maps
 //! to dozens of distinct originals across scopes, so the flat
@@ -28,7 +28,7 @@ use rustc_hash::FxHashMap;
 use std::hash::BuildHasher;
 
 use crate::Result;
-use crate::ast_deobfuscate::bun_local_renamer::{LocalRenameMap, LocalRenamer, RenameMode, plan_local_renames};
+use crate::ast_deobfuscate::bun::local_renamer::{LocalRenameMap, LocalRenamer, RenameMode, plan_local_renames};
 use crate::ast_deobfuscate::heuristic_rename::HeuristicNameCollector;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::state::DeobfuscateState;

@@ -1,6 +1,6 @@
 use super::{
-    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, SemanticBuilder, TraceSpan,
-    bun_local_renamer, deob_trace_enabled, heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, SemanticBuilder, TraceSpan, bun,
+    deob_trace_enabled, heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
@@ -23,14 +23,14 @@ impl AstDeobfuscator {
             Default::default()
         };
         let mode = if self.readable_names {
-            bun_local_renamer::RenameMode::Readable
+            bun::local_renamer::RenameMode::Readable
         } else {
-            bun_local_renamer::RenameMode::Slot
+            bun::local_renamer::RenameMode::Slot
         };
         let (plan, plan_stats) = {
             let _trace = TraceSpan::new("Phase 12.5: plan local renames");
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-            bun_local_renamer::plan_local_renames_with_stats(&scoping, &guarded, mode, &desired, &free_names)
+            bun::local_renamer::plan_local_renames_with_stats(&scoping, &guarded, mode, &desired, &free_names)
         };
         if deob_trace_enabled() {
             eprintln!("[DEOBFUSCATE] Phase 12.5: plan stats {plan_stats:?}");
@@ -70,14 +70,14 @@ impl AstDeobfuscator {
         &mut self,
         allocator: &'a Allocator,
         program: &mut Program<'a>,
-        plan: bun_local_renamer::LocalRenameMap,
+        plan: bun::local_renamer::LocalRenameMap,
         guarded_len: usize,
     ) {
         let _trace = TraceSpan::new("Phase 12.5: apply local renames");
         let plan_len = plan.len();
         let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut renamer = bun_local_renamer::LocalRenamer::new(plan);
+        let mut renamer = bun::local_renamer::LocalRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names ({} refs, {} function ids, {} planned, {} guarded)",

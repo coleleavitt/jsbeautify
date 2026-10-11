@@ -1,9 +1,9 @@
 use oxc_ast::ast::{Expression, Function, Statement};
 
-use crate::ast_deobfuscate::esbuild_helper::EsbuildHelperCollector;
+use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
 impl EsbuildHelperCollector {
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_extends_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_extends_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -26,7 +26,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__assign`: `Object.assign || function(t) { for (var p in s) ... }`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_assign_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_assign_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.is_empty() {
             return false;
@@ -40,7 +40,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__rest`: `{ a, ...rest } = obj` rest extraction
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_rest_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_rest_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 2 {
             return false;
@@ -59,7 +59,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__spread` / `__spreadArrays` / `__spreadArray`: spread helper patterns
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_spread_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_spread_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         for stmt in &body.statements {
             if let Statement::ForStatement(for_stmt) = stmt
@@ -79,7 +79,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__values`: `Symbol.iterator` iteration
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_values_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_values_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.len() != 1 {
             return false;
@@ -103,7 +103,7 @@ impl EsbuildHelperCollector {
     }
 
     /// `__read`: `while ((n === void 0 || n-- > 0) && !(r = i.next()).done) ar.push(r.value)`
-    pub(in crate::ast_deobfuscate::esbuild_helper) fn is_read_pattern(func: &Function<'_>) -> bool {
+    pub(in crate::ast_deobfuscate::esbuild::helper) fn is_read_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
         if func.params.items.is_empty() {
             return false;
