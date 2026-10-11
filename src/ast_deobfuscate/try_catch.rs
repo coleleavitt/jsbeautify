@@ -1,6 +1,4 @@
-use oxc_allocator::Vec as OxcVec;
 use oxc_ast::ast::{CatchClause, Statement};
-use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -36,31 +34,13 @@ impl<'a> Traverse<'a, DeobfuscateState> for TryCatchRemover {
                 return;
             }
 
-            eprintln!(
-                "[TRY_CATCH] Removing empty try-catch, extracting try body ({} stmts)",
-                try_stmt.block.body.len()
-            );
-            self.changed = true;
-
-            let try_body_statements = std::mem::replace(&mut try_stmt.block.body, OxcVec::new_in(ctx));
-
-            if try_body_statements.is_empty() {
-                eprintln!("[TRY_CATCH] Empty try body -> EmptyStatement");
-                *stmt = Statement::new_empty_statement(SPAN, ctx);
-            } else if try_body_statements.len() == 1 {
-                eprintln!("[TRY_CATCH] Single stmt try body -> unwrapping");
-                let mut iter = try_body_statements.into_iter();
-                if let Some(first) = iter.next() {
-                    *stmt = first;
-                } else {
-                    eprintln!("[TRY_CATCH] ERROR: iterator was empty despite len() == 1");
-                    *stmt = Statement::new_empty_statement(SPAN, ctx);
-                }
-            } else {
-                let scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
-                eprintln!("[TRY_CATCH] Multi-stmt try body -> BlockStatement with scope_id: {scope_id:?}");
-                *stmt = Statement::new_block_statement_with_scope_id(SPAN, try_body_statements, scope_id, ctx);
+            // An empty catch still swallows whatever the try body throws, so
+            // only a statically empty try block can be dropped.
+            if !try_stmt.block.body.is_empty() {
+                return;
             }
+            self.changed = true;
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }
 }
@@ -93,14 +73,23 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_empty_catch() {
-        let output = run_try_catch_remover("try { var x = 1; } catch(e) {}");
-        eprintln!("Output: {output}");
-        assert!(!output.contains("try"), "Should remove try keyword, got: {output}");
-        assert!(!output.contains("catch"), "Should remove catch keyword, got: {output}");
+    fn test_remove_empty_try_and_catch() {
+        let output = run_try_catch_remover("try {} catch(e) {} f();");
+        assert!(!output.contains("try"), "Should remove empty try, got: {output}");
+        assert!(output.contains("f()"), "Should keep following code, got: {output}");
+    }
+
+    #[test]
+    fn test_preserve_empty_catch_that_swallows_throw() {
+        // lodash `getRawTag`: the assignment throws on frozen/read-only tags.
+        let output = run_try_catch_remover("try { t[k] = void 0; var n = true; } catch(e) {}");
         assert!(
-            output.contains("var x = 1") || output.contains("var x=1"),
-            "Should keep try body, got: {output}"
+            output.contains("try"),
+            "Empty catch still swallows throws, got: {output}"
+        );
+        assert!(
+            output.contains("catch"),
+            "Empty catch still swallows throws, got: {output}"
         );
     }
 

@@ -1,8 +1,8 @@
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, BindingPattern, CallExpression, Expression, VariableDeclarator, WithStatement,
 };
-use oxc_syntax::keyword::is_reserved_keyword_or_global_object;
 use oxc_syntax::identifier::is_identifier_name;
+use oxc_syntax::keyword::is_reserved_keyword_or_global_object;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
@@ -11,7 +11,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Runtime;
-use super::shapes::{Ctx, chunk_payload, function_params, getter_target, module_factories, resolve, resolve_expr, simple_params};
+use super::shapes::{
+    Ctx, chunk_payload, function_params, getter_target, module_factories, resolve, resolve_expr, simple_params,
+};
 
 const FACTORY_PARAMS: [&str; 3] = ["module", "exports", "__webpack_require__"];
 

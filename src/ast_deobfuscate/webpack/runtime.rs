@@ -76,7 +76,11 @@ fn factory_invocation(call: &CallExpression<'_>, ctx: &Ctx<'_>) -> Option<(Symbo
         return None;
     }
     let require = resolve_expr(arg_expr(args, 2)?, ctx)?;
-    Some((resolve_expr(&lookup.object, ctx)?, resolve_expr(&lookup.expression, ctx)?, require))
+    Some((
+        resolve_expr(&lookup.object, ctx)?,
+        resolve_expr(&lookup.expression, ctx)?,
+        require,
+    ))
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for RuntimeCollector {
@@ -127,9 +131,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for RuntimeCollector {
         let Expression::ObjectExpression(record) = &assign.right else {
             return;
         };
-        let has_exports = record.properties.iter().any(|prop| {
-            matches!(prop, ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("exports"))
-        });
+        let has_exports = record.properties.iter().any(
+            |prop| matches!(prop, ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("exports")),
+        );
         if has_exports
             && resolve_expr(&slot.expression, ctx) == Some(module_id)
             && let Some(cache) = resolve_expr(&slot.object, ctx)

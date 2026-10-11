@@ -1,5 +1,51 @@
+use js_beautify_rs::AstDeobfuscator;
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
+use oxc_allocator::Allocator;
+use oxc_parser::Parser;
+use oxc_span::SourceType;
+
+use crate::fixtures;
+
+fn deobfuscate_webpack_fixture(name: &str) -> String {
+    let src = fixtures::webpack(name);
+    let out = AstDeobfuscator::new()
+        .deobfuscate(&src)
+        .expect("deobfuscate webpack fixture");
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, &out, SourceType::cjs()).parse();
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "deobfuscated {name} must parse: {:?}",
+        parsed.diagnostics
+    );
+    out
+}
+
+#[test]
+fn names_real_webpack5_production_runtime() {
+    let out = deobfuscate_webpack_fixture("webpack5_prod_main.js");
+    assert!(out.contains("function __webpack_require__(moduleId)"), "{out}");
+    assert!(out.contains("__webpack_modules__[moduleId]("), "{out}");
+    assert!(out.contains("(module, exports, __webpack_require__)"), "{out}");
+    assert!(out.contains("(module, exports)"), "{out}");
+    assert!(out.contains("module.exports = {"), "{out}");
+    assert!(out.contains("var module_784 = __webpack_require__(784)"), "{out}");
+    assert!(
+        out.contains("__webpack_require__.d = ("),
+        "runtime property names stay: {out}"
+    );
+    assert!(out.contains("self.webpackChunkjsbwp"), "{out}");
+}
+
+#[test]
+fn names_real_webpack5_production_chunk() {
+    let out = deobfuscate_webpack_fixture("webpack5_prod_lazy.js");
+    assert!(out.contains("(module, exports, __webpack_require__)"), "{out}");
+    assert!(out.contains("function lazyValue()"), "{out}");
+    assert!(out.contains("function compute("), "{out}");
+    assert!(out.contains("lazyValue: () => lazyValue"), "{out}");
+}
 
 #[test]
 fn extracts_legacy_jsonp_modules_when_require_param_is_third_argument() {

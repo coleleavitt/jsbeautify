@@ -35,15 +35,16 @@ use oxc_semantic::SemanticBuilder;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
+use crate::ast_deobfuscate::ExportNameRenamer;
+use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::state::DeobfuscateState;
-use crate::ast_deobfuscate::{ExportNameRenamer, rename_guards::RenameGuardCollector};
 
 use collector::NameCollector;
 use runtime::RuntimeCollector;
 
 /// Rename webpack runtime, factory, export and import bindings in `program`.
-/// Returns the number of renamed identifiers; inert on non-webpack input.
-pub(crate) fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> usize {
+/// Inert on non-webpack input.
+pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
     eprintln!("[DEOBFUSCATE] Phase 0.85: Webpack module naming");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -54,14 +55,14 @@ pub(crate) fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mu
     let runtimes = runtime.into_runtimes();
     if runtimes.is_empty() && !has_chunk {
         eprintln!("[DEOBFUSCATE] Phase 0.85: No webpack runtime or chunk found");
-        return 0;
+        return;
     }
 
     let mut names = NameCollector::new(&runtimes);
     traverse_mut_with_ctx(&mut names, program, &mut ctx);
     let (plan, opaque_scopes) = names.into_plan();
     if plan.is_empty() {
-        return 0;
+        return;
     }
 
     let mut guard = RenameGuardCollector::new();
@@ -80,7 +81,6 @@ pub(crate) fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mu
         renamer.renamed_decls(),
         renamer.renamed_refs()
     );
-    renamer.total_renamed()
 }
 
 /// One detected webpack bootstrap.
