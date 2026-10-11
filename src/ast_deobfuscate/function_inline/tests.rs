@@ -21,7 +21,6 @@ fn run_inline(code: &str) -> String {
     traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
 
     let single_use = collector.get_single_use_functions();
-    eprintln!("Single use functions: {:?}", single_use.keys().collect::<Vec<_>>());
 
     if !single_use.is_empty() {
         let mut inliner = FunctionInliner::new(single_use);
@@ -79,4 +78,55 @@ fn test_inline_with_constant() {
         "Function should be removed, got: {output}"
     );
     assert!(output.contains("42"), "Should contain the constant, got: {output}");
+}
+
+fn assert_untouched(code: &str) {
+    let allocator = Allocator::default();
+    let program = Parser::new(&allocator, code, SourceType::mjs()).parse().program;
+    let expected = Codegen::new().build(&program).code;
+    assert_eq!(run_inline(code), expected, "must not inline: {code}");
+}
+
+#[test]
+fn test_inline_with_free_global_and_const_arg() {
+    let output = run_inline("const k = 3; function f(a) { return a * scale; } var y = f(k);");
+    assert!(output.contains("y = k * scale"), "got: {output}");
+    assert!(!output.contains("function f"), "got: {output}");
+}
+
+#[test]
+fn test_block_scoped_function_is_not_inlined_out_of_scope() {
+    assert_untouched("{ function f() { return f } } { function f() { return f } } console.log(typeof f());");
+}
+
+#[test]
+fn test_shadowed_free_identifier_blocks_inline() {
+    assert_untouched("var K = 1; function f(a) { return a + K; } function g() { var K = 2; return f(3); } g();");
+}
+
+#[test]
+fn test_impure_or_mutable_arguments_block_inline() {
+    assert_untouched("function f(a) { return a * 2; } f(g());");
+    assert_untouched("let x = 1; x = 2; function f(a) { return a + 1; } f(x);");
+    assert_untouched("function f(a) { return a + 1; } f(x);");
+}
+
+#[test]
+fn test_other_references_block_inline() {
+    assert_untouched("function f(a) { return a; } f(1); h(f);");
+    assert_untouched("function f(a) { return a + f; } f(1);");
+}
+
+#[test]
+fn test_named_function_expression_is_not_a_candidate() {
+    assert_untouched("var g = function f(a) { return a; }; f(1);");
+}
+
+#[test]
+fn test_unsupported_shapes_block_inline() {
+    assert_untouched("function f(a, b) { return a; } f(1, 2);");
+    assert_untouched("function f(a) { return a + arguments; } f(1);");
+    assert_untouched("function f(...a) { return a; } f(1);");
+    assert_untouched("function f(a = 1) { return a; } f(2);");
+    assert_untouched("function f(a) { return a; } f(1, 2);");
 }

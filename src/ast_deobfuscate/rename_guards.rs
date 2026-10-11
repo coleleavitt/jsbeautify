@@ -10,7 +10,7 @@
 //!    scope chain, not by `SymbolId`, so renaming `H` leaves a dangling
 //!    reference inside the eval string. Every binding a direct eval can observe
 //!    (its own scope and all ancestors) is therefore unsafe to rename. Only the
-//!    bare `eval(...)` callee form is a direct eval; indirect forms
+//!    bare `eval(...)` callee form (parenthesized or not) is a direct eval; indirect forms
 //!    (`(0,eval)(x)`, `window.eval(x)`, `new Function(...)`) run in global scope
 //!    and cannot see locals, so they are intentionally *not* flagged.
 //! 2. **Native ES `export <decl>` / `export { x }`** — `export function H(){}`,
@@ -82,8 +82,8 @@ impl RenameGuardCollector {
 
 impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
-        // Direct eval only: a bare `eval(...)` callee identifier.
-        if let Expression::Identifier(id) = &call.callee
+        // Direct eval only: a bare `eval(...)` or `(eval)(...)` callee identifier.
+        if let Expression::Identifier(id) = call.callee.without_parentheses()
             && id.name == "eval"
         {
             self.eval_scopes.push(ctx.current_scope_id());
@@ -159,6 +159,12 @@ mod tests {
         // Direct eval inside `f` can observe `f`'s param `H` and the outer `g`.
         let names = guarded_names("function g(){ function f(H){ return eval('H') } }");
         assert!(names.contains("H"), "eval-visible param must be guarded: {names:?}");
+    }
+
+    #[test]
+    fn flags_parenthesized_direct_eval() {
+        let names = guarded_names("function f(){ (eval)('x'); var x }");
+        assert!(names.contains("x"), "`(eval)(...)` is a direct eval: {names:?}");
     }
 
     #[test]

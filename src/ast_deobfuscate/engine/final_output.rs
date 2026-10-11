@@ -17,6 +17,13 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Generating output code");
         let output = Codegen::new().build(program).code;
         eprintln!("[DEOBFUSCATE] Output generated, {} bytes", output.len());
+        // A cleanly parsed program may legitimately deobfuscate to nothing; an
+        // unparseable input that recovers to nothing has no result to report.
+        if output.trim().is_empty() && baseline == SemanticBaseline::Unknown {
+            return Err(crate::BeautifyError::BeautificationFailed(
+                "deobfuscation produced empty output from a recovered AST".to_string(),
+            ));
+        }
         // Consistency with the arena-split checkpoints: an AST -> codegen boundary
         // that emits unparseable JS indicates a real defect in a prior pass, so
         // surface it rather than returning invalid output as success.

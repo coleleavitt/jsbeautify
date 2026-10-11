@@ -144,7 +144,10 @@ fn test_detect_spread() {
 fn test_detect_assign() {
     let code = r"
         function __assign(t) {
-            for (var p in arguments) t[p] = arguments[p];
+            for (var s, i = 1, n = arguments.length; i < n; i++) {
+                s = arguments[i];
+                for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p)) t[p] = s[p];
+            }
             return t;
         }
     ";
@@ -153,6 +156,20 @@ fn test_detect_assign() {
     assert_eq!(
         collector.helpers.get("__assign").unwrap().kind,
         EsbuildHelperKind::Assign
+    );
+}
+
+#[test]
+fn test_for_in_function_is_not_assign() {
+    let code = r"
+        async function f(y) { for (x in []) { if (x) { return; } } }
+        function g(t) { for (var p in t) use(p); return t; }
+    ";
+    let collector = run_collector(code);
+    assert!(
+        collector.helpers.is_empty(),
+        "{:?}",
+        collector.helpers.keys().collect::<Vec<_>>()
     );
 }
 

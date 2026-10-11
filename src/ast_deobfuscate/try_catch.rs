@@ -94,6 +94,15 @@ mod tests {
     }
 
     #[test]
+    fn test_preserve_empty_catch_around_throw() {
+        let output = run_try_catch_remover("try { throw 0; } catch {}");
+        assert!(
+            output.contains("catch"),
+            "Empty catch swallows the throw, got: {output}"
+        );
+    }
+
+    #[test]
     fn test_preserve_non_empty_catch() {
         let output = run_try_catch_remover("try { var x = 1; } catch(e) { console.log(e); }");
         eprintln!("Output: {output}");

@@ -1,7 +1,8 @@
-use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
-use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression, Statement, UnaryOperator};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{BinaryOperator, CallExpression, Expression, Statement, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_syntax::number::NumberBase;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
@@ -11,13 +12,13 @@ use super::Ctx;
 use super::types::{BinaryOp, InlinableFunction, ReturnExpr, UnaryOp};
 
 pub struct FunctionInliner {
-    functions: FxHashMap<String, InlinableFunction>,
+    functions: FxHashMap<SymbolId, InlinableFunction>,
     changed: bool,
 }
 
 impl FunctionInliner {
     #[must_use]
-    pub const fn new(functions: FxHashMap<String, InlinableFunction>) -> Self {
+    pub const fn new(functions: FxHashMap<SymbolId, InlinableFunction>) -> Self {
         Self {
             functions,
             changed: false,
@@ -30,42 +31,28 @@ impl FunctionInliner {
     }
 
     fn try_inline_call<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
-        let name = if let Expression::Identifier(ident) = &call.callee {
-            ident.name.as_str()
-        } else {
+        let Expression::Identifier(ident) = &call.callee else {
             return None;
         };
+        let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id()?;
+        let func = self.functions.get(&symbol)?;
+        let args = call
+            .arguments
+            .iter()
+            .map(|arg| arg.as_expression())
+            .collect::<Option<Vec<_>>>()?;
 
-        let func = self.functions.get(name)?;
-
-        if call.arguments.len() != func.params.len() {
-            return None;
-        }
-
-        let return_expr = func.return_expression.clone()?;
-
-        let args: Vec<_> = call.arguments.iter().filter_map(|arg| arg.as_expression()).collect();
-
-        if args.len() != func.params.len() {
-            return None;
-        }
-
-        eprintln!("[AST] Inlining call to function: {name}");
+        eprintln!("[AST] Inlining call to function: {}", func.name);
         self.changed = true;
-
-        Some(Self::build_expression(&return_expr, &args, ctx))
+        Some(Self::build_expression(&func.return_expression, &args, ctx))
     }
 
     fn build_expression<'a>(ret_expr: &ReturnExpr, args: &[&Expression<'a>], ctx: &mut Ctx<'a>) -> Expression<'a> {
         match ret_expr {
-            ReturnExpr::ParamRef(idx) => {
-                if let Some(arg) = args.get(*idx) {
-                    Self::clone_expression(arg, ctx)
-                } else {
-                    Expression::new_identifier(SPAN, "undefined", ctx)
-                }
+            ReturnExpr::ParamRef(idx) => Self::clone_expression(args[*idx], ctx),
+            ReturnExpr::Identifier { name, .. } => {
+                Expression::new_identifier(SPAN, ctx.allocator().alloc_str(name), ctx)
             }
-            ReturnExpr::Identifier(name) => Expression::new_identifier(SPAN, ctx.allocator().alloc_str(name), ctx),
             ReturnExpr::Number(val) => Expression::new_numeric_literal(SPAN, *val, None, NumberBase::Decimal, ctx),
             ReturnExpr::String(value) => {
                 Expression::new_string_literal(SPAN, ctx.allocator().alloc_str(value), None, ctx)
@@ -81,8 +68,8 @@ impl FunctionInliner {
                     BinaryOp::Mul => BinaryOperator::Multiplication,
                     BinaryOp::Div => BinaryOperator::Division,
                     BinaryOp::Mod => BinaryOperator::Remainder,
-                    BinaryOp::BitAnd | BinaryOp::And => BinaryOperator::BitwiseAnd,
-                    BinaryOp::BitOr | BinaryOp::Or => BinaryOperator::BitwiseOR,
+                    BinaryOp::BitAnd => BinaryOperator::BitwiseAnd,
+                    BinaryOp::BitOr => BinaryOperator::BitwiseOR,
                     BinaryOp::BitXor => BinaryOperator::BitwiseXOR,
                     BinaryOp::Eq => BinaryOperator::Equality,
                     BinaryOp::NotEq => BinaryOperator::Inequality,
@@ -105,23 +92,6 @@ impl FunctionInliner {
                 };
                 Expression::new_unary_expression(SPAN, operator, argument, ctx)
             }
-            ReturnExpr::Call {
-                callee,
-                args: call_args,
-            } => {
-                let mut arguments = ArenaVec::new_in(ctx);
-                for arg in call_args {
-                    arguments.push(Argument::from(Self::build_expression(arg, args, ctx)));
-                }
-                Expression::new_call_expression(
-                    SPAN,
-                    Expression::new_identifier(SPAN, ctx.allocator().alloc_str(callee), ctx),
-                    None,
-                    arguments,
-                    false,
-                    ctx,
-                )
-            }
         }
     }
 
@@ -142,13 +112,14 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionInliner {
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
         if let Statement::FunctionDeclaration(func) = stmt
             && let Some(id) = &func.id
+            && id
+                .symbol_id
+                .get()
+                .is_some_and(|symbol| self.functions.contains_key(&symbol))
         {
-            let name = id.name.as_str();
-            if self.functions.contains_key(name) {
-                eprintln!("[AST] Removing inlined function declaration: {name}");
-                self.changed = true;
-                *stmt = Statement::new_empty_statement(SPAN, ctx);
-            }
+            eprintln!("[AST] Removing inlined function declaration: {}", id.name);
+            self.changed = true;
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }
 }

@@ -178,10 +178,6 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
     }
 
     let mut beautified = beautify(&code, &options)?;
-    if beautified.trim().is_empty() && !code.trim().is_empty() {
-        eprintln!("[jsbeautify] empty output after processing; emitting original source unchanged");
-        beautified = code;
-    }
     if b.rename_llm {
         let overrides = js_beautify_rs::llm::LlmOverrides::default();
         match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {
