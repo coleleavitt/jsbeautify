@@ -130,34 +130,6 @@ pub(crate) mod variable_rename;
 pub(crate) mod void_replacer;
 pub(crate) mod window_alias_propagator;
 
-// Framework / build-tool recon extractors. Previously authored but never
-// declared (compile-dead); wired here so they compile and can be driven by
-// the `analyzers::framework_recon` dispatcher (recon, not deobfuscation).
-#[allow(dead_code)]
-pub(crate) mod angular_decompiler;
-#[allow(dead_code)]
-pub(crate) mod angular_metadata;
-#[allow(dead_code)]
-pub(crate) mod angular_route_extractor;
-#[allow(dead_code)]
-pub(crate) mod bundle_diff;
-#[allow(dead_code)]
-pub(crate) mod http_interceptor_extractor;
-#[allow(dead_code)]
-pub(crate) mod launchdarkly_extractor;
-#[allow(dead_code)]
-pub(crate) mod mfe_registry_extractor;
-#[allow(dead_code)]
-pub(crate) mod ngrx_extractor;
-#[allow(dead_code)]
-pub(crate) mod rxjs_annotator;
-#[allow(dead_code)]
-pub(crate) mod transmit_sdk_decoder;
-#[allow(dead_code)]
-pub(crate) mod webpack_module_resolver;
-#[allow(dead_code)]
-pub(crate) mod webpack_runtime_decoder;
-
 pub(crate) use self::bun_runtime::{BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer};
 pub use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,

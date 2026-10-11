@@ -1,5 +1,5 @@
 use super::{
-    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, FrameworkReconArgs, ReconstructArgs,
+    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs,
     SplitChunksArgs, SplitSourcesArgs, align, sources,
 };
 use clap::Parser;
@@ -31,7 +31,6 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
-        Some(Command::FrameworkRecon(a)) => run_framework_recon(a),
         None => run_beautify(&cli.beautify),
     }
 }
@@ -88,19 +87,6 @@ fn write_output(output: Option<&String>, text: &str) -> Fallible {
     Ok(())
 }
 
-fn run_framework_recon(args: &FrameworkReconArgs) -> Fallible {
-    let limit = js_beautify_rs::analyzers::framework_recon::AnalysisLimits::default().max_source_bytes;
-    let source = read_input_bounded(&args.input, limit, "framework-recon")?;
-    let report = js_beautify_rs::analyzers::framework_recon::analyze(&source);
-    let json = serde_json::to_string_pretty(&report)?;
-    if let Some(path) = &args.output {
-        fs::write(path, format!("{json}\n"))?;
-        eprintln!("Framework reconnaissance written to {}", path.display());
-    } else {
-        println!("{json}");
-    }
-    Ok(())
-}
 
 fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
     let source = read_vm_input_bounded(&args.input)?;
