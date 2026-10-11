@@ -1,8 +1,9 @@
 use super::{
-    AlignArgs, AnalyzeVmArgs, BeautifyArgs, Cli, Command, ExtractModulesArgs, ReconstructArgs, SplitChunksArgs,
-    SplitSourcesArgs, align, sources,
+    AlignArgs, AnalyzeVmArgs, BeautifyArgs, CfgFormat, Cli, Command, ExtractModulesArgs, InspectArgs, ReconstructArgs,
+    SplitChunksArgs, SplitSourcesArgs, align, sources,
 };
 use clap::Parser;
+use js_beautify_rs::inspect::{self, Inspection};
 use js_beautify_rs::tokenizer::Tokenizer;
 use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
 use js_beautify_rs::{Options, beautify};
@@ -31,6 +32,20 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
+        Some(Command::Ast(a)) => run_inspect(a, |source| inspect::ast::estree(source, a.ts), Clone::clone),
+        Some(Command::Scope(a)) => run_inspect(
+            a,
+            |source| inspect::scope::symbol_table(source, a.ts),
+            |report| serde_json::to_string_pretty(report).expect("scope report serializes"),
+        ),
+        Some(Command::Cfg(a)) => run_inspect(
+            &a.inspect,
+            |source| inspect::cfg::control_flow(source, a.inspect.ts, a.function.as_deref()),
+            |graph| match a.format {
+                CfgFormat::Dot => graph.to_dot(),
+                CfgFormat::Json => serde_json::to_string_pretty(graph).expect("CFG serializes"),
+            },
+        ),
         None => run_beautify(&cli.beautify),
     }
 }
@@ -114,6 +129,19 @@ fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
         }
     }
     Ok(())
+}
+
+fn run_inspect<T>(
+    args: &InspectArgs,
+    inspect: impl FnOnce(&str) -> Result<Inspection<T>, inspect::InspectError>,
+    render: impl FnOnce(&T) -> String,
+) -> Fallible {
+    let source = read_input(&args.input)?;
+    let inspection = inspect(&source)?;
+    for diagnostic in &inspection.diagnostics {
+        eprintln!("{diagnostic}");
+    }
+    write_output(args.output.as_ref(), render(&inspection.report).trim_end())
 }
 
 fn run_beautify(b: &BeautifyArgs) -> Fallible {

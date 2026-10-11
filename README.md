@@ -60,6 +60,11 @@ jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
 # Bounded, static inspection of a JavaScript-hosted VM and literal embedded WebAssembly.
 # JavaScript is never executed; WebAssembly is validated but never instantiated.
 jsbeautify analyze-vm bundle.js -o vm-report.json --extract-wasm ./vm-wasm
+
+# Inspect what oxc sees, with the exact oxc revision the passes use
+jsbeautify ast input.js > ast.json                 # ESTree JSON (--ts for TypeScript/JSX)
+jsbeautify scope input.js | jq '.unresolved'       # oxc_semantic symbol table
+jsbeautify cfg input.js --function main | dot -Tsvg > main.svg
 ```
 
 ## CLI Reference
@@ -74,6 +79,9 @@ Commands:
   reconstruct      Rebuild original sources from a standalone .js.map file
   align            Align two bundle versions for a stable diff
   analyze-vm       Statically inspect a JavaScript-hosted VM and embedded WebAssembly
+  ast              Print the program as ESTree JSON (oxc's serializer)
+  scope            Print the oxc_semantic symbol table as JSON
+  cfg              Print the oxc_semantic control-flow graph
 
 Arguments:
   [FILE]  Input JavaScript file, or "-" for stdin [default: -]
@@ -91,6 +99,25 @@ Options:
   -h, --help               Print help
   -V, --version            Print version
 ```
+
+### Inspection commands
+
+`ast`, `scope` and `cfg` take `FILE` (or `-` for stdin), `-o FILE`, and `--ts`
+(parse as TypeScript with JSX; the default is module JavaScript, as in the
+deobfuscation pipeline). Recoverable parse and semantic errors are printed to
+stderr; an unrecoverable parse error prints the diagnostics and exits 1.
+
+- `ast` prints oxc's ESTree JSON. `start`/`end` are UTF-8 byte offsets.
+- `scope` prints `scopes` (id, parent, owning AST node kind, flags),
+  `symbols` (name, kind such as `var`/`let`/`const`/`param`/`function`/
+  `class`/`catch`/`import`, raw oxc flags, scope, declaration position, and
+  every resolved reference with its `read`/`write`/`read_write` access), and
+  `unresolved` (global names with counts and references). Lines and columns
+  are 1-based; columns count Unicode characters.
+- `cfg` prints the control-flow graph as Graphviz DOT, or JSON with
+  `--format json`. `--function NAME` keeps only the functions with that name
+  (declared, or bound to a variable, property, method or assignment target),
+  without the functions nested inside them.
 
 ## Library Usage
 

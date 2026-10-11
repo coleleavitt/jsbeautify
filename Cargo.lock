@@ -130,6 +130,9 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "bumpalo"
@@ -256,6 +259,7 @@ dependencies = [
  "castaway",
  "cfg-if",
  "itoa",
+ "serde",
  "static_assertions",
  "zmij",
 ]
@@ -386,6 +390,12 @@ name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
+
+[[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fnv"
@@ -839,6 +849,7 @@ dependencies = [
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
+ "oxc_cfg",
  "oxc_codegen",
  "oxc_diagnostics",
  "oxc_parser",
@@ -1091,7 +1102,9 @@ dependencies = [
  "allocator-api2",
  "hashbrown 0.17.1",
  "oxc_data_structures",
+ "oxc_estree",
  "rustc-hash 2.1.3",
+ "serde",
 ]
 
 [[package]]
@@ -1131,6 +1144,19 @@ dependencies = [
  "oxc_ast",
  "oxc_span",
  "oxc_syntax",
+]
+
+[[package]]
+name = "oxc_cfg"
+version = "0.148.0"
+source = "git+https://github.com/oxc-project/oxc.git?rev=ca7104f775bd372e834845c96218db57b0cb5314#ca7104f775bd372e834845c96218db57b0cb5314"
+dependencies = [
+ "bitflags",
+ "itertools",
+ "oxc_index",
+ "oxc_syntax",
+ "petgraph",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
@@ -1195,6 +1221,11 @@ dependencies = [
 name = "oxc_estree"
 version = "0.148.0"
 source = "git+https://github.com/oxc-project/oxc.git?rev=ca7104f775bd372e834845c96218db57b0cb5314#ca7104f775bd372e834845c96218db57b0cb5314"
+dependencies = [
+ "dragonbox_ecma",
+ "itoa",
+ "oxc_data_structures",
+]
 
 [[package]]
 name = "oxc_index"
@@ -1255,6 +1286,7 @@ dependencies = [
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
+ "oxc_cfg",
  "oxc_data_structures",
  "oxc_diagnostics",
  "oxc_ecmascript",
@@ -1290,6 +1322,7 @@ dependencies = [
  "oxc_ast_macros",
  "oxc_estree",
  "oxc_str",
+ "serde",
 ]
 
 [[package]]
@@ -1301,6 +1334,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "oxc_allocator",
  "oxc_estree",
+ "serde",
 ]
 
 [[package]]
@@ -1319,6 +1353,7 @@ dependencies = [
  "oxc_span",
  "oxc_str",
  "phf",
+ "serde",
  "unicode-id-start",
 ]
 
@@ -1368,6 +1403,18 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "petgraph"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
+dependencies = [
+ "fixedbitset",
+ "hashbrown 0.15.5",
+ "indexmap",
+ "serde",
+]
 
 [[package]]
 name = "phf"

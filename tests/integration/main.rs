@@ -12,4 +12,5 @@ mod beautify;
 mod cli;
 mod deobfuscate;
 mod fixtures;
+mod inspect;
 mod webpack_modules;
