@@ -7,23 +7,22 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 fn run(code: &str) -> String {
-    run_n(code, 5)
+    run_with(code, SourceType::mjs())
 }
 
-fn run_n(code: &str, max_iters: usize) -> String {
+fn run_script(code: &str) -> String {
+    run_with(code, SourceType::cjs())
+}
+
+fn run_with(code: &str, source_type: SourceType) -> String {
     let allocator = Allocator::default();
-    let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+    let ret = Parser::new(&allocator, code, source_type).parse();
+    assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
     let mut program = ret.program;
     let mut pass = DynConcatResolver::new();
-    for _ in 0..max_iters {
-        pass.reset_changed();
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
-        if !pass.changed() {
-            break;
-        }
-    }
+    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
     Codegen::new().build(&program).code
 }
 
@@ -103,48 +102,6 @@ fn escapes_template_raw_when_inlining() {
 }
 
 #[test]
-fn inlines_this_property_into_chain() {
-    let out = run("class Svc { ctor() { this.BASE_URL = \"/api/\"; } get(id) { return this.BASE_URL + id; } }");
-    assert!(out.contains("\"/api/\""), "got: {out}");
-}
-
-#[test]
-fn inlines_this_property_into_template() {
-    let out = run(
-        "class Svc { ctor() { this.BASE_URL = \"/Security/Privileges\"; } get(a) { return `${this.BASE_URL}/${a}`; } }",
-    );
-    assert!(out.contains("/Security/Privileges/"), "got: {out}");
-    assert!(
-        !out.contains("${this.BASE_URL}"),
-        "this.BASE_URL must be inlined: {out}"
-    );
-}
-
-#[test]
-fn inlines_object_property_into_chain() {
-    let out = run("o.baseUrl = \"/api/v1\"; fetch(o.baseUrl + \"/users\" + id);");
-    assert!(
-        out.contains("/api/v1/users"),
-        "literal-fold should produce /api/v1/users: {out}"
-    );
-}
-
-#[test]
-fn poisons_object_property_on_reassignment() {
-    let out = run("o.baseUrl = \"/api/v1\"; o.baseUrl = \"/api/v2\"; fetch(o.baseUrl + \"/users\");");
-    assert!(
-        !out.contains("/api/v1/users") && !out.contains("/api/v2/users"),
-        "got: {out}"
-    );
-}
-
-#[test]
-fn ignores_computed_member_assignment() {
-    let out = run("o[k] = \"/api/v1\"; fetch(o[k] + e);");
-    assert!(out.contains("o[k]"), "computed member must be ignored: {out}");
-}
-
-#[test]
 fn resolves_chained_var_declarations() {
     let out = run("var BASE = \"/api\"; var V1 = BASE + \"/v1\"; fetch(V1 + e);");
     assert!(out.contains("\"/api/v1\""), "V1 should fold to /api/v1: {out}");
@@ -205,4 +162,81 @@ fn keeps_lone_surrogate_literals_unfolded() {
         let out = run(code);
         assert!(out.contains("\\ud800") || out.contains("\\udc00"), "{code} -> {out}");
     }
+}
+
+#[test]
+fn skips_reference_before_declaration() {
+    let out = run("f(a + \"!\");\nvar a = \"x\";\n");
+    assert_eq!(out, "f(a + \"!\");\nvar a = \"x\";\n");
+}
+
+#[test]
+fn skips_hoisted_function_declaration_reading_later_var() {
+    let code = "function f() {\n\treturn a + \"!\";\n}\nconsole.log(f());\nvar a = \"x\";\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn skips_hoisted_function_declaration_after_const() {
+    let code = "g();\nconst a = \"x\";\nfunction g() {\n\treturn a + \"!\";\n}\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn skips_function_declaration_nested_in_hoisted_one() {
+    let code = "const a = \"x\";\nfunction g() {\n\tfunction h() {\n\t\treturn a + \"!\";\n\t}\n\treturn h();\n}\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn inlines_into_closures_created_after_declaration() {
+    let out = run("const a = \"x\";\nvar f = () => a + \"!\";\n{\n\tfunction g() {\n\t\treturn a + \"?\";\n\t}\n}\n");
+    assert!(out.contains("\"x!\""), "arrow after the const: {out}");
+    assert!(out.contains("\"x?\""), "block function hoisted after the const: {out}");
+}
+
+#[test]
+fn skips_var_declared_in_conditional_block() {
+    let code = "if (c) {\n\tvar a = \"x\";\n}\nf(a + \"!\");\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn skips_lexical_declaration_in_switch_case() {
+    let code = "switch (k) {\n\tcase 1: const a = \"x\";\n\tcase 2: f(a + \"!\");\n}\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn skips_var_redeclaring_parameter() {
+    let code = "function g(x) {\n\tvar x = \"s\";\n\targuments[0] = 5;\n\treturn x + \"!\";\n}\n";
+    assert_eq!(run_script(code), code);
+}
+
+#[test]
+fn skips_member_properties() {
+    let code = "var o = {};\nf(o.p + \"!\");\no.p = \"x\";\nf(o.p + \"!\");\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn skips_program_with_direct_eval() {
+    let code = "const a = \"x\";\nfunction g() {\n\teval(s);\n\treturn a + \"!\";\n}\n";
+    assert_eq!(run(code), code);
+}
+
+#[test]
+fn skips_program_with_with_statement() {
+    let code = "var o = { a: 1 };\nfunction g() {\n\tvar a = \"x\";\n\twith(o) f(a + \"!\");\n}\n";
+    assert_eq!(run_script(code), code);
+}
+
+#[test]
+fn script_top_level_admits_only_const() {
+    let out = run_script("var a = \"x\";\nconst b = \"y\";\nf(a + \"!\", b + \"!\");\n");
+    assert!(
+        out.contains("a + \"!\""),
+        "global var can be reassigned via the global object: {out}"
+    );
+    assert!(out.contains("\"y!\""), "global const is immutable: {out}");
 }

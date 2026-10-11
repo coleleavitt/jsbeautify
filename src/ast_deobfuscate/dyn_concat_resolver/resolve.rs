@@ -2,7 +2,6 @@ use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{BinaryOperator, Expression, TemplateElement, TemplateLiteral};
 
 use super::literal::{make_string_literal, make_template_element};
-use super::member::member_key_from_static_member;
 use super::{Ctx, DynConcatResolver, MAX_INLINE_LEN};
 
 pub(super) fn try_resolve_to_string(
@@ -16,10 +15,6 @@ pub(super) fn try_resolve_to_string(
         Expression::Identifier(id) => {
             let symbol_id = ctx.scoping().get_reference(id.reference_id()).symbol_id()?;
             resolver.lookup_ident(symbol_id, ctx).map(str::to_string)
-        }
-        Expression::StaticMemberExpression(sme) => {
-            let key = member_key_from_static_member(&sme.object, sme.property.name.as_str())?;
-            resolver.lookup_member(&key).map(str::to_string)
         }
         Expression::BinaryExpression(b) if matches!(b.operator, BinaryOperator::Addition) => {
             let l = try_resolve_to_string(&b.left, resolver, ctx)?;
@@ -40,11 +35,6 @@ pub(super) fn chain_has_string_evidence(expr: &Expression<'_>, resolver: &DynCon
             .symbol_id()
             .and_then(|sid| resolver.lookup_ident(sid, ctx))
             .is_some(),
-        Expression::StaticMemberExpression(sme) => {
-            member_key_from_static_member(&sme.object, sme.property.name.as_str())
-                .and_then(|key| resolver.lookup_member(&key))
-                .is_some()
-        }
         Expression::BinaryExpression(b) if matches!(b.operator, BinaryOperator::Addition) => {
             chain_has_string_evidence(&b.left, resolver, ctx) || chain_has_string_evidence(&b.right, resolver, ctx)
         }
@@ -65,15 +55,6 @@ pub(super) fn substitute_in_chain<'a>(expr: &mut Expression<'a>, resolver: &DynC
         Expression::Identifier(id) => {
             if let Some(symbol_id) = ctx.scoping().get_reference(id.reference_id()).symbol_id()
                 && let Some(value) = resolver.lookup_ident(symbol_id, ctx)
-            {
-                let val = value.to_string();
-                *expr = make_string_literal(&val, ctx);
-                count += 1;
-            }
-        }
-        Expression::StaticMemberExpression(sme) => {
-            if let Some(key) = member_key_from_static_member(&sme.object, sme.property.name.as_str())
-                && let Some(value) = resolver.lookup_member(&key)
             {
                 let val = value.to_string();
                 *expr = make_string_literal(&val, ctx);
@@ -136,11 +117,6 @@ pub(super) fn substitute_in_template<'a>(
                     .symbol_id()
                     .and_then(|sid| resolver.lookup_ident(sid, ctx))
                     .map(str::to_string),
-                Expression::StaticMemberExpression(sme) => {
-                    member_key_from_static_member(&sme.object, sme.property.name.as_str())
-                        .and_then(|k| resolver.lookup_member(&k))
-                        .map(str::to_string)
-                }
                 _ => None,
             };
             if let Some(value) = replacement_value {
