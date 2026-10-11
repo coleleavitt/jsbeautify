@@ -7,6 +7,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::rename_guards::is_annex_b_function;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -91,9 +92,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineInliner {
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
         let remove = match stmt {
-            Statement::FunctionDeclaration(func) => self
-                .trampoline_of(func.id.as_ref().and_then(|id| id.symbol_id.get()))
-                .is_some(),
+            Statement::FunctionDeclaration(func) => {
+                !is_annex_b_function(ctx, func)
+                    && self
+                        .trampoline_of(func.id.as_ref().and_then(|id| id.symbol_id.get()))
+                        .is_some()
+            }
             Statement::VariableDeclaration(decl) => decl.declarations.iter().all(|d| {
                 let BindingPattern::BindingIdentifier(id) = &d.id else {
                     return false;

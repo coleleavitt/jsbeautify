@@ -6,7 +6,9 @@ use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Never-reassigned bindings whose every reference is the callee of a plain
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
+
+/// Never-reassigned, file-local bindings whose every reference is the callee of a plain
 /// call `f(a, …)` without spread arguments, with the argument counts used.
 ///
 /// A pass may replace such a binding's calls and delete its declaration
@@ -25,7 +27,8 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
             let arities = arities?;
             (count == scoping.get_resolved_reference_ids(symbol).len()
                 && !scoping.symbol_is_mutated(symbol)
-                && scoping.symbol_redeclarations(symbol).is_empty())
+                && scoping.symbol_redeclarations(symbol).is_empty()
+                && !is_global_binding(program.source_type, scoping, symbol))
             .then_some((symbol, arities))
         })
         .collect()

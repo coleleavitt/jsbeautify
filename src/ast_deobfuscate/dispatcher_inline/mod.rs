@@ -16,6 +16,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::{DeobfuscateState, DispatcherInfo};
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -97,6 +98,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatcherInliner {
             .filter(|&(symbol, count)| {
                 !scoping.symbol_is_mutated(symbol)
                     && scoping.symbol_redeclarations(symbol).is_empty()
+                    && !is_global_binding(program.source_type, scoping, symbol)
                     && scoping.get_resolved_reference_ids(symbol).len() == count
             })
             .map(|(symbol, _)| symbol)

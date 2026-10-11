@@ -2,11 +2,13 @@ use oxc_ast::ast::{
     Argument, BindingPattern, CallExpression, Expression, Function, Program, Statement, VariableDeclarator,
 };
 use oxc_semantic::Scoping;
+use oxc_span::SourceType;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -27,6 +29,7 @@ pub struct CallProxyCollector {
     candidates: FxHashMap<SymbolId, CallProxyInfo>,
     call_sites: FxHashMap<SymbolId, Vec<CallSite>>,
     proxies: FxHashMap<SymbolId, CallProxyInfo>,
+    source_type: SourceType,
 }
 
 impl CallProxyCollector {
@@ -98,6 +101,7 @@ impl CallProxyCollector {
             return false;
         };
         !scoping.symbol_is_mutated(symbol)
+            && !is_global_binding(self.source_type, scoping, symbol)
             && scoping.symbol_redeclarations(symbol).is_empty()
             && scoping.get_resolved_reference_ids(symbol).len() == 1
             && !call.has_spread
@@ -107,6 +111,10 @@ impl CallProxyCollector {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for CallProxyCollector {
+    fn enter_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
+        self.source_type = program.source_type;
+    }
+
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
         if func.is_declaration() {
             let symbol = func.id.as_ref().and_then(|id| id.symbol_id.get());

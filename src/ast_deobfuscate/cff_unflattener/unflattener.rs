@@ -79,7 +79,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
                 i += 1;
                 continue;
             };
-            let Some(shape) = plan(&resolution, ctx.current_scope_id(), ctx.scoping()) else {
+            let Some(shape) = plan(&resolution, ctx) else {
                 i += 1;
                 continue;
             };
@@ -117,7 +117,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
         let Some(resolution) = self.resolve_call(call) else {
             return;
         };
-        let Some(shape) = plan(&resolution, ctx.current_scope_id(), ctx.scoping()) else {
+        let Some(shape) = plan(&resolution, ctx) else {
             return;
         };
         let bind_args = match shape {

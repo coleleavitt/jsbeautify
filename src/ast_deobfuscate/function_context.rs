@@ -15,6 +15,8 @@ use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::FxHashSet;
 
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
+
 /// Context reads found in one function context, nested arrows included and
 /// nested non-arrow functions excluded.
 #[derive(Default, Clone, Copy)]
@@ -93,9 +95,10 @@ impl<'a> Visit<'a> for ContextReads {
     }
 }
 
-/// Never-reassigned bindings whose value is a function that ignores the
-/// `this` it is called with: arrows, and functions that never observe `this`.
-/// Calling such a binding with any receiver behaves like a plain call.
+/// Never-reassigned, file-local bindings whose value is a function that
+/// ignores the `this` it is called with: arrows, and functions that never
+/// observe `this`. Calling such a binding with any receiver behaves like a
+/// plain call.
 #[must_use]
 pub fn this_free_functions(program: &Program<'_>, scoping: &Scoping) -> FxHashSet<SymbolId> {
     let mut functions = ThisFreeFunctions::default();
@@ -103,7 +106,11 @@ pub fn this_free_functions(program: &Program<'_>, scoping: &Scoping) -> FxHashSe
     functions
         .0
         .into_iter()
-        .filter(|&symbol| !scoping.symbol_is_mutated(symbol) && scoping.symbol_redeclarations(symbol).is_empty())
+        .filter(|&symbol| {
+            !scoping.symbol_is_mutated(symbol)
+                && scoping.symbol_redeclarations(symbol).is_empty()
+                && !is_global_binding(program.source_type, scoping, symbol)
+        })
         .collect()
 }
 

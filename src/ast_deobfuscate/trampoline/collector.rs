@@ -3,12 +3,14 @@ use oxc_ast::ast::{
     VariableDeclarator,
 };
 use oxc_semantic::Scoping;
+use oxc_span::SourceType;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::function_context::this_free_functions;
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -26,6 +28,7 @@ pub struct TrampolineCollector {
     candidates: FxHashMap<SymbolId, Option<Candidate>>,
     call_scopes: FxHashMap<SymbolId, Vec<ScopeId>>,
     this_free: FxHashSet<SymbolId>,
+    source_type: SourceType,
     trampolines: FxHashMap<SymbolId, TrampolineInfo>,
 }
 
@@ -117,6 +120,7 @@ impl TrampolineCollector {
             .filter(|reference| reference.is_write())
             .count();
         write_count == writes
+            && !is_global_binding(self.source_type, scoping, symbol)
             && scoping.symbol_redeclarations(symbol).is_empty()
             && scoping.get_resolved_reference_ids(symbol).len() == call_scopes.len() + writes
             && (info.strict || info.dispatcher_symbol.is_some_and(|d| self.this_free.contains(&d)))
@@ -134,6 +138,7 @@ fn resolve(ident: &IdentifierReference<'_>, scoping: &Scoping) -> Option<SymbolI
 impl<'a> Traverse<'a, DeobfuscateState> for TrampolineCollector {
     fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         self.this_free = this_free_functions(program, ctx.scoping());
+        self.source_type = program.source_type;
     }
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {

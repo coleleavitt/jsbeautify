@@ -111,8 +111,12 @@ mod tests {
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
     fn run(code: &str) -> String {
+        run_with(code, SourceType::mjs())
+    }
+
+    fn run_with(code: &str, source_type: SourceType) -> String {
         let allocator = Allocator::default();
-        let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+        let ret = Parser::new(&allocator, code, source_type).parse();
         let mut program = ret.program;
         let mut pass = CallThisSimplifier::new();
         let state = DeobfuscateState::new();
@@ -169,6 +173,15 @@ mod tests {
         assert_unchanged("function f() { return 1; }\nf = g;\nf.call(this);");
         assert_unchanged("function f() { return 1; }\nfunction h(f) { return f.call(this); }");
         assert_unchanged("var f = () => 1;\nvar f = function () { return this; };\nf.call(this);");
+    }
+
+    #[test]
+    fn script_global_function_preserved() {
+        let code = "function P6(a) { return a; }\nP6.call(this, a);";
+        let out = run_with(code, SourceType::script());
+        assert!(out.contains(".call(this"), "another script may rebind P6: {out}");
+        let out = run_with(&format!("(function () {{ {code} }})();"), SourceType::script());
+        assert!(out.contains("P6(a)"), "a function-local P6 is simplified: {out}");
     }
 
     #[test]

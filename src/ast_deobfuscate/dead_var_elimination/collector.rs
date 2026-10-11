@@ -6,6 +6,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::rename_guards::is_global_symbol;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -96,7 +97,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
         }
     }
 
-    fn enter_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
+    fn enter_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, ctx: &mut Ctx<'a>) {
         let BindingPattern::BindingIdentifier(ident) = &decl.id else {
             return;
         };
@@ -106,6 +107,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
         };
 
         self.record_declaration(symbol_id);
+        if is_global_symbol(ctx, symbol_id) {
+            self.record_export(symbol_id);
+        }
         if crate::ast_deobfuscate::ast_trace_enabled() {
             eprintln!("[AST] Found declaration: {}", ident.name);
         }

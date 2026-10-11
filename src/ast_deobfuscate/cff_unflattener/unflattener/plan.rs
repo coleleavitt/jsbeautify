@@ -4,12 +4,14 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
-use oxc_syntax::scope::{ScopeFlags, ScopeId};
+use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::FxHashSet;
 
+use super::Ctx;
 use super::resolver::CallResolution;
 use crate::ast_deobfuscate::function_context::ContextReads;
+use crate::ast_deobfuscate::rename_guards::is_global_symbol;
 
 /// How a resolved call site is replaced.
 pub(super) enum Shape {
@@ -152,12 +154,14 @@ fn is_droppable(args: &Expression<'_>) -> bool {
     })
 }
 
-/// Whether the call `call` (at `scope`) can be replaced by its case body, and
+/// Whether the call `call` (at the current scope) can be replaced by its case body, and
 /// in which shape.
-pub(super) fn plan(call: &CallResolution<'_, '_>, scope: ScopeId, scoping: &Scoping) -> Option<Shape> {
+pub(super) fn plan(call: &CallResolution<'_, '_>, ctx: &Ctx<'_>) -> Option<Shape> {
+    let (scope, scoping) = (ctx.current_scope_id(), ctx.scoping());
     let body = call.body;
     let dispatcher = body.dispatcher?;
     if scoping.symbol_is_mutated(dispatcher)
+        || is_global_symbol(ctx, dispatcher)
         || !scoping.symbol_redeclarations(dispatcher).is_empty()
         || resolves_to(call.callee, scoping) != Some(dispatcher)
         || resolves_to(call.label, scoping) != scoping.get_reference(body.label).symbol_id()

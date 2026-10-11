@@ -21,6 +21,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::call_sites::plain_call_arities;
+use crate::ast_deobfuscate::rename_guards::is_annex_b_function;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -163,7 +164,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyInliner {
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
         let remove = match stmt {
-            Statement::FunctionDeclaration(func) => self.is_proxy(func.id.as_ref().and_then(|id| id.symbol_id.get())),
+            Statement::FunctionDeclaration(func) => {
+                !is_annex_b_function(ctx, func) && self.is_proxy(func.id.as_ref().and_then(|id| id.symbol_id.get()))
+            }
             Statement::VariableDeclaration(decl) => decl.declarations.iter().all(|d| {
                 let BindingPattern::BindingIdentifier(id) = &d.id else {
                     return false;

@@ -69,8 +69,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
     }
 
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        if self.detected_sequences.is_empty() {
-            // No control flow patterns detected, nothing to do
+        // Only top-level dispatchers are rewritten, and in a classic script
+        // their state variables are globals whose final values stay visible.
+        if self.detected_sequences.is_empty() || program.source_type.is_script() {
             return;
         }
 

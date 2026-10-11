@@ -4,9 +4,10 @@ use super::{
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
     JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
-    SourceType, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
-    TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
+    StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover,
+    VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
 };
+use crate::ParseGoal;
 
 /// Maximum accepted delimiter nesting.
 ///
@@ -63,7 +64,6 @@ impl AstDeobfuscator {
             dynamic_property_converter: DynamicPropertyConverter::new(),
             ternary_simplifier: TernarySimplifier::new(),
             try_catch_remover: TryCatchRemover::new(),
-            unicode_normalizer: UnicodeNormalizer::new(),
             boolean_literal_converter: BooleanLiteralConverter::new(),
             void_replacer: VoidReplacer::new(),
             object_sparsing_consolidator: ObjectSparsingConsolidator::new(),
@@ -81,6 +81,8 @@ impl AstDeobfuscator {
             worker_stack_bytes: DEFAULT_WORKER_STACK_BYTES,
             skip_annotations: false,
             readable_names: false,
+            parse_goal: ParseGoal::Auto,
+            isolated: false,
         }
     }
 
@@ -94,6 +96,20 @@ impl AstDeobfuscator {
     #[must_use]
     pub const fn with_readable_names(mut self, readable: bool) -> Self {
         self.readable_names = readable;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_parse_goal(mut self, goal: ParseGoal) -> Self {
+        self.parse_goal = goal;
+        self
+    }
+
+    /// Treat a classic script's top-level bindings as private (see
+    /// [`crate::Options::isolated`]).
+    #[must_use]
+    pub const fn with_isolated(mut self, isolated: bool) -> Self {
+        self.isolated = isolated;
         self
     }
 
@@ -158,8 +174,7 @@ impl AstDeobfuscator {
             },
         );
 
-        let source_type = SourceType::mjs();
-        let (intermediate, bun_helper_map, source_type) = self.run_structural_half(&code, source_type);
+        let (intermediate, bun_helper_map, source_type) = self.run_structural_half(&code);
         // Measured against the source type the structural half settled on, so
         // the final checkpoints compare like with like.
         let baseline = semantic_baseline(&code, source_type);
@@ -237,6 +252,7 @@ mod tests {
     #[test]
     fn program_that_deobfuscates_to_nothing_returns_empty_output() {
         let output = AstDeobfuscator::new()
+            .with_parse_goal(ParseGoal::Module)
             .deobfuscate("var a = 1, b = 1;")
             .expect("an all-dead module is a valid result");
         assert!(output.trim().is_empty(), "got: {output}");

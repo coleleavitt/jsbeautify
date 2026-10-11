@@ -5,6 +5,8 @@ use super::{
     flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 
+use oxc_ast::ast::Ident;
+
 impl AstDeobfuscator {
     pub(super) fn run_bun_naming_phases<'a>(
         &mut self,
@@ -24,8 +26,13 @@ impl AstDeobfuscator {
             } else {
                 eprintln!("[DEOBFUSCATE] Phase 0.9: Detected {} Bun runtime helpers", map.len());
                 let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+                let mut renamable = map.clone();
+                if program.source_type.is_script() {
+                    let globals = scoping.get_bindings(scoping.root_scope_id());
+                    renamable.retain(|name, _| !globals.contains_key(&Ident::from(name.as_str())));
+                }
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-                let mut renamer = BunRuntimeRenamer::new(map.clone());
+                let mut renamer = BunRuntimeRenamer::new(renamable);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.9: Renamed {} declarations, {} references",
@@ -39,6 +46,8 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
         let flattened_statements = flatten_top_level_cjs_wrapper(program, allocator);
         if flattened_statements > 0 {
+            // The statements now run as the wrapper's function body.
+            program.source_type = program.source_type.with_commonjs(true);
             eprintln!(
                 "[DEOBFUSCATE] Phase 0.91: Flattened top-level Bun CJS wrapper ({flattened_statements} statements)"
             );
@@ -56,15 +65,10 @@ impl AstDeobfuscator {
             let mut export_map = collector.into_map();
 
             // Soundness guard: never rename a binding observable to a direct
-            // `eval` or exposed as a native ES export (see `rename_guards`).
+            // `eval`, exposed as a native ES export, or a classic-script global
+            // (see `rename_guards`).
             if !export_map.is_empty() {
-                let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-                let mut guard = rename_guards::RenameGuardCollector::new();
-                traverse_mut_with_ctx(&mut guard, program, &mut ctx);
-                drop(ctx);
-                let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-                let guarded = guard.into_guarded(&scoping);
+                let guarded = rename_guards::guarded_symbols(allocator, program);
                 export_map.retain(|sym, _| !guarded.contains(sym));
             }
 
@@ -108,6 +112,10 @@ impl AstDeobfuscator {
             }
 
             if !class_map.is_empty() {
+                let guarded = rename_guards::guarded_symbols(allocator, program);
+                class_map.retain(|sym, _| !guarded.contains(sym));
+            }
+            if !class_map.is_empty() {
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
                     class_map.len()
@@ -139,7 +147,11 @@ impl AstDeobfuscator {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut collector = BunModuleHandleCollector::new();
             traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-            let module_handles = collector.into_map();
+            let mut module_handles = collector.into_map();
+            if !module_handles.is_empty() {
+                let guarded = rename_guards::guarded_symbols(allocator, program);
+                module_handles.retain(|sym, _| !guarded.contains(sym));
+            }
             if module_handles.is_empty() {
                 eprintln!("[DEOBFUSCATE] Phase 0.99: No Bun module wrapper handles found");
             } else {
