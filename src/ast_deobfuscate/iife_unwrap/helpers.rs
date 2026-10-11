@@ -17,7 +17,7 @@ fn extract_zero_arg_arrow_iife<'a, 'b>(expr: &'b Expression<'a>) -> Option<&'b A
     let Expression::ArrowFunctionExpression(arrow) = &paren.expression else {
         return None;
     };
-    if !arrow.params.items.is_empty() {
+    if arrow.params.has_parameter() {
         return None;
     }
     if !matches!(arrow.body, ArrowFunctionBody::FunctionBody(_)) {

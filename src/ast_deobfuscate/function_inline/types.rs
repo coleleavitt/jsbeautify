@@ -1,17 +1,22 @@
-pub(super) const MAX_BODY_STATEMENTS: usize = 5;
+use oxc_syntax::symbol::SymbolId;
+
 pub(super) const MAX_PARAMS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct InlinableFunction {
     pub name: String,
-    pub params: Vec<String>,
-    pub return_expression: Option<ReturnExpr>,
-    pub is_simple: bool,
+    pub params: usize,
+    pub return_expression: ReturnExpr,
 }
 
 #[derive(Debug, Clone)]
 pub enum ReturnExpr {
-    Identifier(String),
+    /// A non-parameter identifier and the binding it resolves to inside the
+    /// function (`None` for an unresolved global).
+    Identifier {
+        name: String,
+        symbol: Option<SymbolId>,
+    },
     Number(f64),
     String(String),
     Boolean(bool),
@@ -25,11 +30,18 @@ pub enum ReturnExpr {
         op: UnaryOp,
         arg: Box<Self>,
     },
-    Call {
-        callee: String,
-        args: Vec<Self>,
-    },
     ParamRef(usize),
+}
+
+impl ReturnExpr {
+    pub(super) fn uses_param(&self, index: usize) -> bool {
+        match self {
+            Self::ParamRef(param) => *param == index,
+            Self::Binary { left, right, .. } => left.uses_param(index) || right.uses_param(index),
+            Self::Unary { arg, .. } => arg.uses_param(index),
+            Self::Identifier { .. } | Self::Number(_) | Self::String(_) | Self::Boolean(_) | Self::Null => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,8 +51,6 @@ pub enum BinaryOp {
     Mul,
     Div,
     Mod,
-    And,
-    Or,
     BitAnd,
     BitOr,
     BitXor,
