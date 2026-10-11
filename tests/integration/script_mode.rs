@@ -64,6 +64,7 @@ const PASS_SAMPLES: &[(&str, &str)] = &[
         "Bun module handles",
         r#"var __commonJS=(cb,mod)=>function(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};var X=__commonJS({"a.js"(e,m){m.exports=1}});console.log(X());"#,
     ),
+    ("Bun runtime helpers", "var e=Object.create;console.log(typeof e);"),
     (
         "class names",
         r#"var Q=class{constructor(){this.name="RealName"}};new Q;"#,

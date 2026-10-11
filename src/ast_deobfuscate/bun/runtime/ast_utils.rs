@@ -1,8 +1,8 @@
-use oxc_ast::ast::{BindingPattern, Expression, Statement, VariableDeclarator};
+use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, Statement, VariableDeclarator};
 
-pub(super) fn decl_name<'a>(decl: &'a VariableDeclarator<'_>) -> Option<&'a str> {
+pub(super) fn decl_binding<'a, 'b>(decl: &'a VariableDeclarator<'b>) -> Option<&'a BindingIdentifier<'b>> {
     match &decl.id {
-        BindingPattern::BindingIdentifier(b) => Some(b.name.as_str()),
+        BindingPattern::BindingIdentifier(b) => Some(b),
         _ => None,
     }
 }

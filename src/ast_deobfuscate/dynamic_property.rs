@@ -31,7 +31,11 @@ impl DynamicPropertyConverter {
 
         let property = oxc_ast::ast::IdentifierName::new(SPAN, ctx.allocator().alloc_str(&property_name), ctx);
         Some(Expression::new_static_member_expression(
-            SPAN, object, property, false, ctx,
+            SPAN,
+            object,
+            property,
+            computed.optional,
+            ctx,
         ))
     }
 
@@ -136,6 +140,19 @@ mod tests {
         let output = run_dynamic_property(r#"obj["pro" + "perty"]"#);
         eprintln!("Output: {output}");
         assert!(output.contains("obj.property"), "Expected obj.property, got: {output}");
+    }
+
+    #[test]
+    fn keeps_optional_flag_on_converted_members() {
+        let output = run_dynamic_property(r#"console.log(u[k]?.["city"] ?? "-", u.p?.["a"]?.["b"]);"#);
+        assert!(output.contains("u[k]?.city"), "got: {output}");
+        assert!(output.contains("u.p?.a?.b"), "got: {output}");
+    }
+
+    #[test]
+    fn non_optional_link_inside_chain_stays_non_optional() {
+        let output = run_dynamic_property(r#"a?.["b"]["c"]?.["d"]();"#);
+        assert!(output.contains("a?.b.c?.d()"), "got: {output}");
     }
 
     #[test]

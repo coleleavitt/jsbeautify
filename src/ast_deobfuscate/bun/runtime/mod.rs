@@ -83,9 +83,14 @@ mod tests {
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+        let plan = collector
+            .helper_symbols()
+            .iter()
+            .map(|(symbol, helper)| (*symbol, helper.canonical().to_string()))
+            .collect();
         let map = collector.into_map();
 
-        let mut renamer = BunRuntimeRenamer::new(map.clone());
+        let mut renamer = BunRuntimeRenamer::new(plan);
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
@@ -203,6 +208,15 @@ mod tests {
         assert!(!out.contains(" V("), "Should not retain V() calls: {out}");
         // The decl should also be renamed.
         assert!(out.contains("var __esm ="));
+    }
+
+    #[test]
+    fn rename_leaves_shadowing_binding_with_same_name() {
+        let (out, _) = collect_and_rename("var e = Object.create; function f(e) { return e + 1; } f(typeof e);");
+        assert!(out.contains("var __create = Object.create"), "got: {out}");
+        assert!(out.contains("function f(e)"), "got: {out}");
+        assert!(out.contains("return e + 1"), "got: {out}");
+        assert!(out.contains("typeof __create"), "got: {out}");
     }
 
     #[test]

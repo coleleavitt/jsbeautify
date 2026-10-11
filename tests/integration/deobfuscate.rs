@@ -1,6 +1,6 @@
 //! Deobfuscator integration tests over the obfuscated fixtures.
 
-use js_beautify_rs::AstDeobfuscator;
+use js_beautify_rs::{AstDeobfuscator, ParseGoal};
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -102,4 +102,59 @@ fn preserves_string_contents_with_confusable_and_zero_width_characters() {
     for ch in ['\u{038E}', '\u{03A1}', '\u{200C}', '\u{200B}', '\u{FEFF}', '\u{0410}'] {
         assert!(out.contains(ch), "U+{:04X} must survive: {out}", ch as u32);
     }
+}
+
+fn deobfuscate_cjs(code: &str) -> String {
+    AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::CommonJs)
+        .deobfuscate(code)
+        .unwrap_or_else(|e| panic!("deobfuscate failed: {e}\n{code}"))
+}
+
+#[test]
+fn bun_helper_rename_leaves_shadowing_param_alone() {
+    let out = deobfuscate_cjs(
+        "var e = Object.create; function f(e) { return e + 1; } module.exports = f; console.log(f(1), typeof e);",
+    );
+    assert!(out.contains("typeof __create"), "helper should be renamed: {out}");
+    assert!(
+        !out.contains("return __create"),
+        "shadowing param must keep its own binding: {out}"
+    );
+}
+
+#[test]
+fn bun_helper_rename_avoids_capture_by_inner_binding() {
+    let out =
+        deobfuscate_cjs("var e = Object.create; function g(__create) { return e(__create); } module.exports = g;");
+    assert!(
+        !out.contains("__create(__create)"),
+        "inner param must not capture the helper: {out}"
+    );
+}
+
+#[test]
+fn bun_helper_rename_avoids_capturing_a_global() {
+    let out = deobfuscate_cjs("var e = Object.create; function g() { return __create; } module.exports = [e, g];");
+    assert!(
+        out.contains("return __create;"),
+        "free reference must stay global: {out}"
+    );
+    assert!(
+        !out.contains("var __create ="),
+        "helper must not shadow the global: {out}"
+    );
+}
+
+#[test]
+fn bun_helper_rename_skips_eval_visible_binding() {
+    let out = deobfuscate_cjs("var e = Object.create; function g() { return eval('typeof e'); } console.log(g());");
+    assert!(out.contains("var e = Object.create"), "eval reads `e` by name: {out}");
+}
+
+#[test]
+fn optional_computed_member_keeps_optional_chain() {
+    let out = deobfuscate_cjs(r#"const u = {}; const k = "p"; console.log(u[k]?.["city"] ?? "-", u.p?.["a"]?.["b"]);"#);
+    assert!(out.contains("]?.city ?? \"-\""), "got: {out}");
+    assert!(out.contains(".p?.a?.b"), "got: {out}");
 }

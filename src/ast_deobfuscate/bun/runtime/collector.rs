@@ -1,10 +1,12 @@
-use oxc_ast::ast::{BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
+use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::ast_utils::{decl_name, unwrap_cjs_iife};
+use super::ast_utils::{decl_binding, unwrap_cjs_iife};
 use super::matchers::{
     is_commonjs_helper, is_esm_helper, is_export_helper, is_name_helper_arrow, is_tocommonjs_helper, is_toesm_helper,
 };
@@ -14,6 +16,7 @@ use super::types::{BunHelper, BunHelperMap};
 /// Collector phase: walks program (incl. CJS-wrapper IIFE body) and identifies helpers.
 pub struct BunRuntimeCollector {
     map: BunHelperMap,
+    symbols: FxHashMap<SymbolId, BunHelper>,
 }
 
 impl BunRuntimeCollector {
@@ -21,6 +24,7 @@ impl BunRuntimeCollector {
     pub fn new() -> Self {
         Self {
             map: BunHelperMap::default(),
+            symbols: FxHashMap::default(),
         }
     }
 
@@ -34,13 +38,23 @@ impl BunRuntimeCollector {
         &self.map
     }
 
+    /// The detected helper bindings, keyed by resolved symbol.
+    #[must_use]
+    pub const fn helper_symbols(&self) -> &FxHashMap<SymbolId, BunHelper> {
+        &self.symbols
+    }
+
     /// Get the mangled name of a helper if detected.
     #[must_use]
     pub fn lookup_mangled(&self, helper: BunHelper) -> Option<&str> {
         self.map.iter().find_map(|(k, v)| (*v == helper).then_some(k.as_str()))
     }
 
-    fn record(&mut self, mangled: &str, helper: BunHelper) {
+    fn record(&mut self, binding: &BindingIdentifier<'_>, helper: BunHelper) {
+        if let Some(symbol) = binding.symbol_id.get() {
+            self.symbols.entry(symbol).or_insert(helper);
+        }
+        let mangled = binding.name.as_str();
         // Don't overwrite — first detection wins (helpers defined exactly once).
         if !self.map.contains_key(mangled) {
             eprintln!("[BUN] {mangled} = {} ({:?})", helper.canonical(), helper);
@@ -81,7 +95,7 @@ impl BunRuntimeCollector {
 
     /// `var X = Object.create;` → `__create`
     fn try_object_alias(&mut self, decl: &VariableDeclarator<'_>) {
-        let Some(name) = decl_name(decl) else { return };
+        let Some(binding) = decl_binding(decl) else { return };
         let Some(init) = &decl.init else { return };
         let Expression::StaticMemberExpression(m) = init else {
             return;
@@ -98,12 +112,12 @@ impl BunRuntimeCollector {
             "getOwnPropertyDescriptor" => BunHelper::GetOwnPropDesc,
             _ => return,
         };
-        self.record(name, helper);
+        self.record(binding, helper);
     }
 
     /// `var X = Object.prototype.hasOwnProperty;` → `__hasOwnProp`
     fn try_object_proto_alias(&mut self, decl: &VariableDeclarator<'_>) {
-        let Some(name) = decl_name(decl) else { return };
+        let Some(binding) = decl_binding(decl) else { return };
         let Some(init) = &decl.init else { return };
         let Expression::StaticMemberExpression(outer) = init else {
             return;
@@ -121,7 +135,7 @@ impl BunRuntimeCollector {
             "hasOwnProperty" => BunHelper::HasOwnProp,
             _ => return,
         };
-        self.record(name, helper);
+        self.record(binding, helper);
     }
 
     /// `var { defineProperty: fjH, getOwnPropertyNames: UP8, … } = Object;`
@@ -147,41 +161,40 @@ impl BunRuntimeCollector {
                 "getOwnPropertyDescriptor" => BunHelper::GetOwnPropDesc,
                 _ => continue,
             };
-            self.record(val_ident.name.as_str(), helper);
+            self.record(val_ident, helper);
         }
     }
 
     /// Match arrow-function helpers: `__esm`, `__commonJS`, `__toESM`, `__toCommonJS`, `__export`.
     fn try_arrow_helper(&mut self, decl: &VariableDeclarator<'_>) {
-        let Some(name) = decl_name(decl) else { return };
+        let Some(binding) = decl_binding(decl) else { return };
         let Some(init) = &decl.init else { return };
         let Expression::ArrowFunctionExpression(arrow) = init else {
             return;
         };
 
         if is_esm_helper(arrow) {
-            self.record(name, BunHelper::Esm);
+            self.record(binding, BunHelper::Esm);
         } else if is_commonjs_helper(arrow) {
-            self.record(name, BunHelper::CommonJs);
+            self.record(binding, BunHelper::CommonJs);
         } else if is_export_helper(arrow) {
-            self.record(name, BunHelper::Export);
+            self.record(binding, BunHelper::Export);
         } else if is_toesm_helper(arrow) {
-            self.record(name, BunHelper::ToEsm);
+            self.record(binding, BunHelper::ToEsm);
         } else if is_tocommonjs_helper(arrow) {
-            self.record(name, BunHelper::ToCommonJs);
+            self.record(binding, BunHelper::ToCommonJs);
         } else if is_reexport_helper(arrow, &self.map) {
-            self.record(name, BunHelper::ReExport);
+            self.record(binding, BunHelper::ReExport);
         } else if is_copyprops_helper(arrow, &self.map) {
-            self.record(name, BunHelper::CopyProps);
+            self.record(binding, BunHelper::CopyProps);
         } else if is_name_helper_arrow(arrow) {
-            self.record(name, BunHelper::Name);
+            self.record(binding, BunHelper::Name);
         }
     }
 
     /// `function JG$(H) { return this[H]; }` → `__accessProp`
     fn try_function_helper(&mut self, func: &Function<'_>) {
         let Some(id) = &func.id else { return };
-        let name = id.name.as_str();
         let Some(body) = &func.body else { return };
         if func.params.items.len() != 1 || body.statements.len() != 1 {
             return;
@@ -204,7 +217,7 @@ impl BunRuntimeCollector {
             return;
         };
         if prop_id.name.as_str() == param_ident.name.as_str() {
-            self.record(name, BunHelper::AccessProp);
+            self.record(id, BunHelper::AccessProp);
         }
     }
 }

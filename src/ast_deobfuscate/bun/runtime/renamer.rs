@@ -1,22 +1,23 @@
-use oxc_ast::ast::{BindingPattern, Function, Ident, IdentifierReference, VariableDeclarator};
+use oxc_ast::ast::{BindingIdentifier, Ident, IdentifierReference};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
+use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::types::{BunHelper, BunHelperMap};
 
-/// Renames mangled helper identifiers to their canonical names everywhere
-/// in the program, using a map from `BunRuntimeCollector`.
+/// Renames helper bindings and their resolved references to canonical names,
+/// keyed by `SymbolId` so shadowing bindings with the same text are untouched.
 pub struct BunRuntimeRenamer {
-    map: BunHelperMap,
+    map: FxHashMap<SymbolId, String>,
     renamed_refs: usize,
     renamed_decls: usize,
 }
 
 impl BunRuntimeRenamer {
     #[must_use]
-    pub const fn new(map: BunHelperMap) -> Self {
+    pub const fn new(map: FxHashMap<SymbolId, String>) -> Self {
         Self {
             map,
             renamed_refs: 0,
@@ -33,47 +34,26 @@ impl BunRuntimeRenamer {
     pub const fn renamed_decls(&self) -> usize {
         self.renamed_decls
     }
-
-    fn canonical_for(&self, mangled: &str) -> Option<&'static str> {
-        self.map.get(mangled).map(BunHelper::canonical)
-    }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeRenamer {
+    fn exit_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
+        if let Some(symbol) = ident.symbol_id.get()
+            && let Some(name) = self.map.get(&symbol)
+            && ident.name.as_str() != name
+        {
+            ident.name = Ident::from_str_in(name, &ctx.ast);
+            self.renamed_decls += 1;
+        }
+    }
+
     fn exit_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(canon) = self.canonical_for(ident.name.as_str()) {
-            ident.name = Ident::from_str_in(canon, &ctx.ast);
+        if let Some(symbol) = ctx.scoping().get_reference(ident.reference_id()).symbol_id()
+            && let Some(name) = self.map.get(&symbol)
+            && ident.name.as_str() != name
+        {
+            ident.name = Ident::from_str_in(name, &ctx.ast);
             self.renamed_refs += 1;
-        }
-    }
-
-    fn exit_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, ctx: &mut Ctx<'a>) {
-        // Rename `var V = …` → `var __esm = …`
-        if let BindingPattern::BindingIdentifier(ident) = &mut decl.id
-            && let Some(canon) = self.canonical_for(ident.name.as_str())
-        {
-            ident.name = Ident::from_str_in(canon, &ctx.ast);
-            self.renamed_decls += 1;
-        }
-        // Rename inside `var { defineProperty: fjH, … } = Object;`
-        if let BindingPattern::ObjectPattern(obj_pat) = &mut decl.id {
-            for prop in &mut obj_pat.properties {
-                if let BindingPattern::BindingIdentifier(b) = &mut prop.value
-                    && let Some(canon) = self.canonical_for(b.name.as_str())
-                {
-                    b.name = Ident::from_str_in(canon, &ctx.ast);
-                    self.renamed_decls += 1;
-                }
-            }
-        }
-    }
-
-    fn exit_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(id) = &mut func.id
-            && let Some(canon) = self.canonical_for(id.name.as_str())
-        {
-            id.name = Ident::from_str_in(canon, &ctx.ast);
-            self.renamed_decls += 1;
         }
     }
 }

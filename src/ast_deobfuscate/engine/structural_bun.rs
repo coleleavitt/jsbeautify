@@ -6,6 +6,7 @@ use super::{
 };
 
 use oxc_ast::ast::Ident;
+use rustc_hash::FxHashSet;
 
 impl AstDeobfuscator {
     pub(super) fn run_bun_naming_phases<'a>(
@@ -20,19 +21,25 @@ impl AstDeobfuscator {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut collector = BunRuntimeCollector::new();
             traverse_mut_with_ctx(&mut collector, program, &mut ctx);
+            drop(ctx);
+            let mut helper_symbols = collector.helper_symbols().clone();
             let map = collector.into_map();
             if map.is_empty() {
                 eprintln!("[DEOBFUSCATE] Phase 0.9: No Bun helpers detected (not a Bun bundle)");
             } else {
                 eprintln!("[DEOBFUSCATE] Phase 0.9: Detected {} Bun runtime helpers", map.len());
+                let guarded = rename_guards::guarded_symbols(allocator, program);
+                helper_symbols.retain(|symbol, _| !guarded.contains(symbol));
+                let desired = helper_symbols
+                    .into_iter()
+                    .map(|(symbol, helper)| (symbol, helper.canonical().to_string()))
+                    .collect();
                 let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-                let mut renamable = map.clone();
-                if program.source_type.is_script() {
-                    let globals = scoping.get_bindings(scoping.root_scope_id());
-                    renamable.retain(|name, _| !globals.contains_key(&Ident::from(name.as_str())));
-                }
+                let globals: FxHashSet<&str> = scoping.root_unresolved_references().keys().map(Ident::as_str).collect();
+                let mut plan = bun::export_renamer::make_names_unique(desired, &scoping);
+                plan.retain(|_, name| !globals.contains(name.as_str()));
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-                let mut renamer = BunRuntimeRenamer::new(renamable);
+                let mut renamer = BunRuntimeRenamer::new(plan);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.9: Renamed {} declarations, {} references",
