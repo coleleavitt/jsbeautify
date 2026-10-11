@@ -6,6 +6,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::rename_guards::{binds_global, is_annex_b_function};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -116,6 +117,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionInliner {
                 .symbol_id
                 .get()
                 .is_some_and(|symbol| self.functions.contains_key(&symbol))
+            && !binds_global(ctx, id)
+            && !is_annex_b_function(ctx, func)
         {
             eprintln!("[AST] Removing inlined function declaration: {}", id.name);
             self.changed = true;

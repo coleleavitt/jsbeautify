@@ -1,13 +1,17 @@
-use oxc_ast::ast::{BindingIdentifier, Function, Ident, IdentifierReference};
+use oxc_ast::ast::{BindingIdentifier, Ident, IdentifierReference};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::rename_guards::is_global_symbol;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
+/// Renames `_0x…` obfuscator bindings to `var_N` / `func_N`, by resolved
+/// symbol, leaving classic-script globals and unresolved names untouched.
 pub struct VariableRenamer {
-    rename_map: FxHashMap<String, String>,
+    rename_map: FxHashMap<SymbolId, String>,
     var_counter: usize,
     func_counter: usize,
     changed: bool,
@@ -42,33 +46,24 @@ impl VariableRenamer {
         false
     }
 
-    fn generate_name(&mut self, var_type: &VarType) -> String {
-        match var_type {
-            VarType::Function => {
-                self.func_counter += 1;
-                format!("func_{}", self.func_counter)
-            }
-            VarType::Variable => {
-                self.var_counter += 1;
-                format!("var_{}", self.var_counter)
-            }
+    /// The new name of `symbol`, assigned on first sight in source order.
+    fn rename_for(&mut self, symbol: SymbolId, ctx: &Ctx<'_>) -> Option<String> {
+        if let Some(new_name) = self.rename_map.get(&symbol) {
+            return Some(new_name.clone());
         }
-    }
-
-    fn get_or_create_rename(&mut self, old_name: &str, var_type: &VarType) -> String {
-        if let Some(new_name) = self.rename_map.get(old_name) {
-            new_name.clone()
+        if !Self::should_rename(ctx.scoping().symbol_name(symbol)) || is_global_symbol(ctx, symbol) {
+            return None;
+        }
+        let new_name = if ctx.scoping().symbol_flags(symbol).is_function() {
+            self.func_counter += 1;
+            format!("func_{}", self.func_counter)
         } else {
-            let new_name = self.generate_name(var_type);
-            self.rename_map.insert(old_name.to_string(), new_name.clone());
-            new_name
-        }
+            self.var_counter += 1;
+            format!("var_{}", self.var_counter)
+        };
+        self.rename_map.insert(symbol, new_name.clone());
+        Some(new_name)
     }
-}
-
-enum VarType {
-    Variable,
-    Function,
 }
 
 impl Default for VariableRenamer {
@@ -79,39 +74,20 @@ impl Default for VariableRenamer {
 
 impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
-        let old_name = ident.name.as_str();
-        if Self::should_rename(old_name) {
-            let new_name = self.get_or_create_rename(old_name, &VarType::Variable);
-            if crate::ast_deobfuscate::ast_trace_enabled() {
-                eprintln!("[AST] Renaming binding: {old_name} → {new_name}");
-            }
+        if let Some(symbol) = ident.symbol_id.get()
+            && let Some(new_name) = self.rename_for(symbol, ctx)
+        {
             ident.name = Ident::from_str_in(&new_name, ctx);
             self.changed = true;
         }
     }
 
     fn enter_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
-        let old_name = ident.name.as_str();
-        if let Some(new_name) = self.rename_map.get(old_name) {
-            if crate::ast_deobfuscate::ast_trace_enabled() {
-                eprintln!("[AST] Renaming reference: {old_name} → {new_name}");
-            }
-            ident.name = Ident::from_str_in(new_name, ctx);
+        if let Some(symbol) = ctx.scoping().get_reference(ident.reference_id()).symbol_id()
+            && let Some(new_name) = self.rename_for(symbol, ctx)
+        {
+            ident.name = Ident::from_str_in(&new_name, ctx);
             self.changed = true;
-        }
-    }
-
-    fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
-        if let Some(ident) = &mut func.id {
-            let old_name = ident.name.as_str();
-            if Self::should_rename(old_name) {
-                let new_name = self.get_or_create_rename(old_name, &VarType::Function);
-                if crate::ast_deobfuscate::ast_trace_enabled() {
-                    eprintln!("[AST] Renaming function: {old_name} → {new_name}");
-                }
-                ident.name = Ident::from_str_in(&new_name, ctx);
-                self.changed = true;
-            }
         }
     }
 }
@@ -128,8 +104,11 @@ mod tests {
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
     fn run_rename(code: &str) -> String {
+        run_rename_as(code, SourceType::mjs())
+    }
+
+    fn run_rename_as(code: &str, source_type: SourceType) -> String {
         let allocator = Allocator::default();
-        let source_type = SourceType::mjs();
         let ret = Parser::new(&allocator, code, source_type).parse();
         let mut program = ret.program;
 
@@ -182,5 +161,37 @@ mod tests {
         assert!(output.contains("var_1"));
         assert!(output.contains("var_2"));
         assert!(!output.contains("_0x"));
+    }
+
+    #[test]
+    fn hoisted_reference_before_declaration_is_renamed() {
+        let output = run_rename("_0xabcd(); function _0xabcd() { return 42; }");
+        assert!(!output.contains("_0xabcd"), "{output}");
+    }
+
+    #[test]
+    fn unresolved_names_are_not_renamed() {
+        let output = run_rename("function f(_0x1) { return _0x1 + _0x2; }");
+        assert!(output.contains("_0x2"), "{output}");
+        assert!(!output.contains("_0x1"), "{output}");
+    }
+
+    #[test]
+    fn script_globals_are_not_renamed() {
+        let code = "var _0x1 = 1; function _0x2() { var _0x1 = 2; return _0x1; } window._0x1; _0x2(_0x1);";
+        let output = run_rename_as(code, SourceType::script());
+        assert!(output.contains("var _0x1 = 1"), "{output}");
+        assert!(output.contains("function _0x2()"), "{output}");
+        assert!(output.contains("_0x2(_0x1)"), "{output}");
+        assert!(
+            output.contains("var var_1 = 2"),
+            "shadowing local is still renamed: {output}"
+        );
+    }
+
+    #[test]
+    fn commonjs_top_level_is_renamed() {
+        let output = run_rename_as("var _0x1 = 1; f(_0x1);", SourceType::cjs());
+        assert!(!output.contains("_0x1"), "{output}");
     }
 }

@@ -100,6 +100,7 @@ mod layout {
     use super::*;
     use crate::options::{BraceStyle, Eol};
     use oxc_codegen::CodegenOptions;
+    use oxc_span::SourceType;
 
     fn minified(code: &str) -> String {
         let allocator = Allocator::default();

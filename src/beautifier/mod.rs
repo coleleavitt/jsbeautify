@@ -13,12 +13,10 @@ use crate::{BeautifyError, Result};
 use oxc_allocator::Allocator;
 use oxc_codegen::{Codegen, CodegenOptions};
 use oxc_parser::Parser;
-use oxc_span::SourceType;
 
 fn oxc_beautify(code: &str, options: &Options) -> Result<String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs();
-    let parse_result = Parser::new(&allocator, code, source_type).parse();
+    let parse_result = Parser::new(&allocator, code, options.parse_goal.resolve(code, false)).parse();
 
     // oxc performs error recovery and still produces a usable (partial) AST
     // even when `errors` is non-empty. Rather than bail — which left huge or
@@ -56,7 +54,7 @@ fn oxc_beautify(code: &str, options: &Options) -> Result<String> {
             options.max_preserve_newlines,
         )
     });
-    Layout::new(options, code).apply(&out, source_type, &blank_lines)
+    Layout::new(options, code).apply(&out, parse_result.program.source_type, &blank_lines)
 }
 
 fn has_blank_line(code: &str) -> bool {
@@ -70,6 +68,8 @@ pub fn beautify(code: &str, options: &Options) -> Result<String> {
         let mut deobfuscator = AstDeobfuscator::new()
             .with_skip_annotations(options.skip_annotations)
             .with_readable_names(options.readable_names)
+            .with_parse_goal(options.parse_goal)
+            .with_isolated(options.isolated)
             .with_layout(Layout::new(options, code));
         return deobfuscator.deobfuscate(code);
     }

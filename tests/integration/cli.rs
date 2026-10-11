@@ -146,3 +146,30 @@ fn analyze_vm_rejects_over_limit_file_before_reading_it() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn deobfuscate_file(name: &str, code: &str, args: &[&str]) -> String {
+    let dir = std::env::temp_dir().join(format!("jsb-cli-goal-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join(name);
+    std::fs::write(&path, code).expect("write input");
+    let output = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("-d")
+        .args(args)
+        .arg(&path)
+        .output()
+        .expect("run jsbeautify -d");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.status.success(), "jsbeautify failed: {output:?}");
+    String::from_utf8(output.stdout).expect("stdout is utf8")
+}
+
+#[test]
+fn source_type_and_isolated_decide_whether_globals_survive() {
+    let code = "var unused = 1;";
+    assert!(deobfuscate_file("a.js", code, &[]).contains("var unused"));
+    assert!(!deobfuscate_file("b.js", code, &["--isolated"]).contains("unused"));
+    assert!(!deobfuscate_file("c.js", code, &["--source-type", "module"]).contains("unused"));
+    assert!(deobfuscate_file("d.mjs", code, &["--source-type", "script"]).contains("var unused"));
+    assert!(!deobfuscate_file("e.cjs", code, &[]).contains("unused"));
+    assert!(!deobfuscate_file("f.mjs", code, &[]).contains("unused"));
+}

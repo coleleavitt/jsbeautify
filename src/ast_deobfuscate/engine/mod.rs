@@ -87,4 +87,6 @@ pub struct AstDeobfuscator {
     /// (`heuristic_rename`) instead of opaque `v{n}` slots.
     readable_names: bool,
     layout: Option<Layout>,
+    parse_goal: crate::ParseGoal,
+    isolated: bool,
 }

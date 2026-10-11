@@ -12,6 +12,8 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 use serde::Serialize;
 
+use crate::ParseGoal;
+
 #[derive(Debug, thiserror::Error)]
 pub enum InspectError {
     #[error("parse failed\n{}", .0.join("\n"))]
@@ -27,21 +29,24 @@ pub struct Inspection<T> {
     pub diagnostics: Vec<String>,
 }
 
-/// Module JavaScript, as the deobfuscation pipeline parses it, or TSX.
-const fn source_type(typescript: bool) -> SourceType {
+/// JavaScript parsed with `goal`, as the deobfuscation pipeline parses it,
+/// optionally as TypeScript with JSX.
+const fn source_type(goal: ParseGoal, typescript: bool) -> SourceType {
+    let source_type = goal.source_type();
     if typescript {
-        SourceType::tsx()
+        source_type.with_typescript(true).with_jsx(true)
     } else {
-        SourceType::mjs()
+        source_type
     }
 }
 
 fn parse<'a>(
     allocator: &'a Allocator,
     source: &'a str,
+    goal: ParseGoal,
     typescript: bool,
 ) -> Result<(Program<'a>, Vec<String>), InspectError> {
-    let ret = Parser::new(allocator, source, source_type(typescript)).parse();
+    let ret = Parser::new(allocator, source, source_type(goal, typescript)).parse();
     let diagnostics = render(source, ret.diagnostics.into_vec());
     if ret.panicked {
         return Err(InspectError::Parse(diagnostics));

@@ -113,6 +113,8 @@ Options:
       --sourcemap <FILE>            Apply original variable names from a sourcemap (.map) file
       --names-json <FILE>           Apply full name mappings from a names.json file
       --bun-extract                 Recover names from Bun bundle patterns
+      --source-type <TYPE>          auto | module | script | commonjs [default: auto]
+      --isolated                    Allow renaming/removing a classic script's top-level bindings
   -h, --help                        Print help
   -V, --version                     Print version (also -v)
 ```

@@ -15,8 +15,11 @@ struct EliminationResult {
 }
 
 fn run_elimination(code: &str) -> EliminationResult {
+    run_elimination_as(code, SourceType::mjs())
+}
+
+fn run_elimination_as(code: &str, source_type: SourceType) -> EliminationResult {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs();
     let ret = Parser::new(&allocator, code, source_type).parse();
     assert!(
         ret.diagnostics.is_empty(),
@@ -347,4 +350,22 @@ fn preserves_exported_declarations() {
     let specifier = run_elimination("const publicValue = 1; export { publicValue };");
     assert!(specifier.output.contains("publicValue"), "got: {}", specifier.output);
     assert_eq!(specifier.removed_declarators, 0);
+}
+
+#[test]
+fn script_keeps_unused_globals_but_sweeps_locals() {
+    let result = run_elimination_as(
+        "var g = 1; let l = 2; if (g) { var nested = 3; } function f() { var local = 4; }",
+        SourceType::script(),
+    );
+    for kept in ["var g = 1", "let l = 2", "var nested = 3"] {
+        assert!(result.output.contains(kept), "{kept} is a global: {}", result.output);
+    }
+    assert!(!result.output.contains("local"), "got: {}", result.output);
+}
+
+#[test]
+fn commonjs_sweeps_unused_top_level() {
+    let result = run_elimination_as("var g = 1; return;", SourceType::cjs());
+    assert!(!result.output.contains("var g"), "got: {}", result.output);
 }

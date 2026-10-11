@@ -1,6 +1,6 @@
 //! End-to-end Angular recovery on a trimmed real production build.
 
-use js_beautify_rs::AstDeobfuscator;
+use js_beautify_rs::{AstDeobfuscator, ParseGoal};
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -11,7 +11,9 @@ use crate::fixtures;
 fn recovers_angular_names_and_templates_from_production_build() {
     let path = fixtures::fixtures_dir().join("angular").join("main_trimmed.js");
     let src = std::fs::read_to_string(&path).expect("read Angular fixture");
+    // The Angular CLI loads its bundles with `<script type="module">`.
     let out = AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
         .deobfuscate(&src)
         .expect("deobfuscate Angular sample");
 
