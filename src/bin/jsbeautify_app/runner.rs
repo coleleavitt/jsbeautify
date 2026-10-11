@@ -34,12 +34,12 @@ fn run() -> Fallible {
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
         Some(Command::Ast(a)) => run_inspect(
             a,
-            |source| inspect::ast::estree(source, a.goal.source_type.into(), a.ts),
+            |source| inspect::ast::estree(source, a.goal.parse_goal(&a.input), a.ts),
             Clone::clone,
         ),
         Some(Command::Scope(a)) => run_inspect(
             a,
-            |source| inspect::scope::symbol_table(source, a.goal.source_type.into(), a.ts),
+            |source| inspect::scope::symbol_table(source, a.goal.parse_goal(&a.input), a.ts),
             |report| serde_json::to_string_pretty(report).expect("scope report serializes"),
         ),
         Some(Command::Cfg(a)) => run_inspect(
@@ -47,7 +47,7 @@ fn run() -> Fallible {
             |source| {
                 inspect::cfg::control_flow(
                     source,
-                    a.inspect.goal.source_type.into(),
+                    a.inspect.goal.parse_goal(&a.inspect.input),
                     a.inspect.ts,
                     a.function.as_deref(),
                 )
@@ -161,7 +161,7 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
         deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm,
         readable_names: b.rename_vars || b.rename_llm,
         indent_with_tabs: b.tabs,
-        parse_goal: b.goal.source_type.into(),
+        parse_goal: b.goal.parse_goal(&b.input),
         isolated: b.isolated,
         ..Options::default()
     };
@@ -173,7 +173,11 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
     if sourcemap_rename {
         let sm = fs::read_to_string(b.sourcemap.as_ref().expect("sourcemap present"))?;
         eprintln!("[RENAME] Applying sourcemap original names...");
-        code = js_beautify_rs::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(&code, &sm)?;
+        code = js_beautify_rs::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(
+            &code,
+            options.parse_goal.resolve(&code, options.isolated),
+            &sm,
+        )?;
     }
     if !sourcemap_rename && (b.sourcemap.is_some() || b.names_json.is_some() || b.bun_extract) {
         options.skip_annotations = true;
@@ -196,7 +200,9 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
         match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {
             Some(suggester) => {
                 eprintln!("[RENAME] Querying LLM for residual minified names...");
-                beautified = js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, &suggester);
+                let source_type = options.parse_goal.resolve(&code, options.isolated);
+                beautified =
+                    js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, source_type, &suggester);
             }
             None => eprintln!(
                 "[RENAME] --rename-llm set but no endpoint configured \

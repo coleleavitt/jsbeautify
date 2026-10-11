@@ -11,7 +11,7 @@ use oxc_parser::Parser;
 
 fn oxc_beautify(code: &str, goal: ParseGoal) -> Result<String> {
     let allocator = Allocator::default();
-    let parse_result = Parser::new(&allocator, code, goal.source_type()).parse();
+    let parse_result = Parser::new(&allocator, code, goal.resolve(code, false)).parse();
 
     // oxc performs error recovery and still produces a usable (partial) AST
     // even when `errors` is non-empty. Rather than bail — which left huge or

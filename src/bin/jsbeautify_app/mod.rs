@@ -5,6 +5,7 @@
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use clap::{Parser, Subcommand};
+use js_beautify_rs::ParseGoal;
 use std::path::PathBuf;
 
 mod align;
@@ -81,17 +82,17 @@ struct BeautifyArgs {
 
     /// Promise that no other script reads this file's globals, so top-level
     /// bindings of a classic script may be renamed or removed. Ignored for
-    /// module and CommonJS input.
+    /// module and `CommonJS` input.
     #[arg(long)]
     isolated: bool,
 }
 
 #[derive(clap::Args, Debug)]
 struct GoalArgs {
-    /// How to parse the input. `auto` picks module when the source has
-    /// import/export/import.meta/top-level await, otherwise classic script,
-    /// whose top-level bindings stay visible to other scripts and are never
-    /// renamed or removed.
+    /// How to parse the input. `auto` follows a `.mjs`/`.cjs` extension, else
+    /// picks module when the source has import/export/import.meta/top-level
+    /// await, otherwise classic script, whose top-level bindings stay visible
+    /// to other scripts and are never renamed or removed.
     #[arg(long = "source-type", value_enum, default_value_t = SourceTypeArg::Auto)]
     source_type: SourceTypeArg,
 }
@@ -104,13 +105,14 @@ enum SourceTypeArg {
     Commonjs,
 }
 
-impl From<SourceTypeArg> for js_beautify_rs::ParseGoal {
-    fn from(arg: SourceTypeArg) -> Self {
-        match arg {
-            SourceTypeArg::Auto => Self::Auto,
-            SourceTypeArg::Module => Self::Module,
-            SourceTypeArg::Script => Self::Script,
-            SourceTypeArg::Commonjs => Self::CommonJs,
+impl GoalArgs {
+    fn parse_goal(&self, input: &str) -> ParseGoal {
+        let extension = std::path::Path::new(input).extension().and_then(|ext| ext.to_str());
+        match (self.source_type, extension) {
+            (SourceTypeArg::Module, _) | (SourceTypeArg::Auto, Some("mjs")) => ParseGoal::Module,
+            (SourceTypeArg::Commonjs, _) | (SourceTypeArg::Auto, Some("cjs")) => ParseGoal::CommonJs,
+            (SourceTypeArg::Script, _) => ParseGoal::Script,
+            (SourceTypeArg::Auto, _) => ParseGoal::Auto,
         }
     }
 }

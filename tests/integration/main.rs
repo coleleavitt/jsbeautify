@@ -14,4 +14,5 @@ mod cli;
 mod deobfuscate;
 mod fixtures;
 mod inspect;
+mod script_mode;
 mod webpack_modules;

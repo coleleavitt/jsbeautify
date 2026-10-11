@@ -2,9 +2,8 @@ use super::{Allocator, AstDeobfuscator, BunHelperMap, Codegen, Parser, SourceTyp
 
 impl AstDeobfuscator {
     /// Returns the structural checkpoint output, the Bun helpers, and the
-    /// source type every later parse must use: the parse goal resolved by the
-    /// parser, made CommonJS when the input is declared isolated or its Bun
-    /// CJS wrapper was flattened.
+    /// source type every later parse must use: the resolved parse goal, made
+    /// `CommonJS` when a Bun CJS wrapper was flattened.
     pub(super) fn run_structural_half(&mut self, code: &str) -> (String, BunHelperMap, SourceType) {
         // ── Structural half (Phases 0–12.5) runs in its own arena that is freed
         // before the cosmetic half re-parses. The transform passes accumulate a
@@ -14,7 +13,7 @@ impl AstDeobfuscator {
         // halves peak RSS. `bun_helper_map` is the only state that must cross.
         let allocator = Allocator::default();
 
-        let source_type = self.parse_goal.source_type();
+        let source_type = self.parse_goal.resolve(code, self.isolated);
         let mut parse_result = Parser::new(&allocator, code, source_type).parse();
 
         // oxc recovers from syntax errors and still yields a usable partial
@@ -40,9 +39,6 @@ impl AstDeobfuscator {
         }
 
         let mut program = parse_result.program;
-        if self.isolated && program.source_type.is_script() {
-            program.source_type = program.source_type.with_commonjs(true);
-        }
         eprintln!("[DEOBFUSCATE] Parsed as {:?}", program.source_type);
 
         self.run_structural_preamble(&allocator, &mut program);
@@ -66,18 +62,11 @@ impl AstDeobfuscator {
         code: &'a str,
         source_type: SourceType,
     ) -> Option<oxc_parser::ParserReturn<'a>> {
-        // A classic script that fails only on a top-level `return` is a
-        // CommonJS body; only `Auto` may reinterpret it that way.
-        let commonjs = source_type.is_unambiguous().then(SourceType::cjs);
         for candidate in [
-            Some(source_type.with_typescript(true)),
-            Some(source_type.with_jsx(true)),
-            Some(source_type.with_typescript(true).with_jsx(true)),
-            commonjs,
-        ]
-        .into_iter()
-        .flatten()
-        {
+            source_type.with_typescript(true),
+            source_type.with_jsx(true),
+            source_type.with_typescript(true).with_jsx(true),
+        ] {
             if candidate == source_type {
                 continue;
             }

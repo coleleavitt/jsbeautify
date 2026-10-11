@@ -183,7 +183,10 @@ mod tests {
         assert!(output.contains("var _0x1 = 1"), "{output}");
         assert!(output.contains("function _0x2()"), "{output}");
         assert!(output.contains("_0x2(_0x1)"), "{output}");
-        assert!(output.contains("var var_1 = 2"), "shadowing local is still renamed: {output}");
+        assert!(
+            output.contains("var var_1 = 2"),
+            "shadowing local is still renamed: {output}"
+        );
     }
 
     #[test]

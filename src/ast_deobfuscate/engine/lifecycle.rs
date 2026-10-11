@@ -253,6 +253,7 @@ mod tests {
     #[test]
     fn program_that_deobfuscates_to_nothing_returns_empty_output() {
         let output = AstDeobfuscator::new()
+            .with_parse_goal(ParseGoal::Module)
             .deobfuscate("var a = 1, b = 1;")
             .expect("an all-dead module is a valid result");
         assert!(output.trim().is_empty(), "got: {output}");

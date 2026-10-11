@@ -1,6 +1,8 @@
 use std::default::Default;
 use std::path::PathBuf;
 
+use oxc_allocator::Allocator;
+use oxc_parser::Parser;
 use oxc_span::SourceType;
 
 #[allow(clippy::struct_excessive_bools)]
@@ -36,7 +38,7 @@ pub struct Options {
     pub parse_goal: ParseGoal,
     /// Promise that nothing outside the input reads its top-level bindings,
     /// so a classic script may have them renamed or removed like module
-    /// locals. Module and CommonJS input are already isolated.
+    /// locals. Module and `CommonJS` input are already isolated.
     pub isolated: bool,
 }
 
@@ -53,7 +55,7 @@ pub enum ParseGoal {
     /// Classic script: top-level bindings are shared through the global
     /// object and the global lexical scope.
     Script,
-    /// CommonJS: script syntax inside a function wrapper, so top-level
+    /// `CommonJS`: script syntax inside a function wrapper, so top-level
     /// bindings are private and top-level `return` is legal.
     CommonJs,
 }
@@ -69,6 +71,31 @@ impl ParseGoal {
             Self::Script => SourceType::script(),
             Self::CommonJs => SourceType::cjs(),
         }
+    }
+
+    /// The source type `code` is processed as. `Auto` settles on module or
+    /// script by the presence of ESM syntax, or `CommonJS` when a script fails
+    /// to parse only because of a top-level `return`. With `isolated`, a script
+    /// becomes `CommonJS`, whose top-level bindings are private.
+    #[must_use]
+    pub fn resolve(self, code: &str, isolated: bool) -> SourceType {
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, code, self.source_type()).parse();
+        let mut source_type = parsed.program.source_type;
+        if self == Self::Auto
+            && source_type.is_script()
+            && !parsed.diagnostics.is_empty()
+            && Parser::new(&allocator, code, SourceType::cjs())
+                .parse()
+                .diagnostics
+                .is_empty()
+        {
+            source_type = SourceType::cjs();
+        }
+        if isolated && source_type.is_script() {
+            source_type = source_type.with_commonjs(true);
+        }
+        source_type
     }
 }
 

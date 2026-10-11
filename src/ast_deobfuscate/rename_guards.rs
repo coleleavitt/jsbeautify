@@ -20,7 +20,7 @@
 //!    is safe (the public name is always `default`), and `export … from "mod"`
 //!    re-exports a foreign binding (nothing local is exposed by name).
 //!
-//! 3. **Classic-script globals** — in a script (not a module or CommonJS
+//! 3. **Classic-script globals** — in a script (not a module or `CommonJS`
 //!    body), every top-level binding is shared: `var` and `function` become
 //!    properties of the global object, `let`/`const`/`class` live in the global
 //!    lexical scope, and other scripts, `window.x`, `this.x` and
@@ -34,11 +34,11 @@
 //! every rename plan must exclude. Excluded symbols keep their original name, so
 //! they still *reserve* that name against collisions in the rename planners.
 
+use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BindingIdentifier, CallExpression, Declaration, ExportDeclaration, ExportNamedDeclaration, Expression, Function,
     IdentifierReference, ModuleExportName, Program,
 };
-use oxc_allocator::Allocator;
 use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::SourceType;
 use oxc_syntax::scope::ScopeId;
@@ -101,7 +101,10 @@ pub fn references_global<State>(ctx: &TraverseCtx<'_, State>, ident: &Identifier
 pub fn is_annex_b_function<State>(ctx: &TraverseCtx<'_, State>, func: &Function<'_>) -> bool {
     func.is_declaration()
         && !ctx.current_scope_flags().is_strict_mode()
-        && !matches!(ctx.parent(), Ancestor::ProgramBody(_) | Ancestor::FunctionBodyStatements(_))
+        && !matches!(
+            ctx.parent(),
+            Ancestor::ProgramBody(_) | Ancestor::FunctionBodyStatements(_)
+        )
 }
 
 /// Whether the declaration of `id` binds a classic-script global.
@@ -235,8 +238,12 @@ mod tests {
     /// Run the collector on `code` and return the guarded names (resolved back
     /// to their symbol's text for easy assertions).
     fn guarded_names(code: &str) -> FxHashSet<String> {
+        guarded_names_as(code, SourceType::mjs())
+    }
+
+    fn guarded_names_as(code: &str, source_type: SourceType) -> FxHashSet<String> {
         let alloc = Allocator::default();
-        let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+        let parsed = Parser::new(&alloc, code, source_type).parse();
         let mut prog = parsed.program;
 
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
@@ -292,5 +299,38 @@ mod tests {
             "default export local should not be guarded: {names:?}"
         );
         assert!(!names.contains("K"), "plain local should not be guarded: {names:?}");
+    }
+
+    #[test]
+    fn flags_every_script_global() {
+        let code = "var v; let l = 1; const c = 2; class K {} function f(p) { var inner; } if (v) { var nested; }";
+        let names = guarded_names_as(code, SourceType::script());
+        for global in ["v", "l", "c", "K", "f", "nested"] {
+            assert!(
+                names.contains(global),
+                "script global {global} must be guarded: {names:?}"
+            );
+        }
+        assert!(!names.contains("p") && !names.contains("inner"), "{names:?}");
+    }
+
+    #[test]
+    fn module_and_commonjs_top_level_is_not_flagged() {
+        let code = "var v; function f() {}";
+        assert!(guarded_names_as(code, SourceType::mjs()).is_empty());
+        assert!(guarded_names_as(code, SourceType::cjs()).is_empty());
+    }
+
+    #[test]
+    fn flags_sloppy_block_functions() {
+        let code = "function g() { { function f() {} } { function f() {} } if (g) function h() {} }";
+        let names = guarded_names_as(code, SourceType::cjs());
+        assert!(names.contains("f") && names.contains("h"), "{names:?}");
+        assert!(!names.contains("g"), "{names:?}");
+        let strict = guarded_names_as(code, SourceType::mjs());
+        assert!(
+            !strict.contains("f"),
+            "strict block functions are block-scoped: {strict:?}"
+        );
     }
 }
