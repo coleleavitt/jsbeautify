@@ -75,6 +75,13 @@ fn direct_eval_disables_elimination_for_entire_program() {
 }
 
 #[test]
+fn parenthesized_direct_eval_disables_elimination() {
+    let result = run_elimination("let visible = 1; (eval)('visible');");
+    assert!(result.output.contains("let visible = 1"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
 fn nested_eval_preserves_ancestor_binding() {
     let result = run_elimination(
         "function outer() { let ancestor = 1; function inner() { eval('ancestor'); } inner(); } outer();",

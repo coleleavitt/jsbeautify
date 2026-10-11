@@ -4,9 +4,8 @@ use super::{
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
     JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
-    StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
-    TernaryToIfElse, TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval,
-    semantic_baseline,
+    StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover,
+    UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
 };
 use crate::ParseGoal;
 
@@ -59,7 +58,6 @@ impl AstDeobfuscator {
             expression_simplifier: ExpressionSimplifier::new(),
             algebraic_simplifier: AlgebraicSimplifier::new(),
             array_coerce_fold: ArrayCoerceFold::new(),
-            strength_reducer: StrengthReducer::new(),
             comma_return_simplifier: CommaReturnSimplifier::new(),
             dead_code_eliminator: DeadCodeEliminator::new(),
             array_unpacker: ArrayUnpacker::new(),
@@ -242,6 +240,30 @@ mod tests {
             MAX_WORKER_STACK_BYTES
         );
         assert_eq!(AstDeobfuscator::new().worker_stack_bytes, DEFAULT_WORKER_STACK_BYTES);
+    }
+
+    #[test]
+    fn top_level_return_is_parsed_as_commonjs() {
+        let output = AstDeobfuscator::new()
+            .deobfuscate("x(); return; y();")
+            .expect("CommonJS input with a top-level return must deobfuscate");
+        assert!(output.contains("return;"), "got: {output}");
+    }
+
+    #[test]
+    fn program_that_deobfuscates_to_nothing_returns_empty_output() {
+        let output = AstDeobfuscator::new()
+            .deobfuscate("var a = 1, b = 1;")
+            .expect("an all-dead module is a valid result");
+        assert!(output.trim().is_empty(), "got: {output}");
+    }
+
+    #[test]
+    fn unparseable_input_that_recovers_to_nothing_is_an_error() {
+        let error = AstDeobfuscator::new()
+            .deobfuscate("HTTP/1.1 200 OK\nContent-Type: x\n\n{}")
+            .expect_err("no program was recovered");
+        assert!(matches!(error, BeautifyError::BeautificationFailed(_)));
     }
 
     #[test]

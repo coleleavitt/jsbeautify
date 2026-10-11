@@ -98,8 +98,6 @@ pub(crate) mod short_circuit_to_if;
 pub mod sourcemap_rename;
 pub(crate) mod state;
 #[allow(dead_code)]
-pub(crate) mod strength_reduction;
-#[allow(dead_code)]
 pub(crate) mod string_array_inline;
 pub(crate) mod string_array_rotation;
 pub(crate) mod string_array_self_defending;
@@ -177,7 +175,6 @@ pub(crate) use self_init_accessor::SelfInitAccessorFlattener;
 pub(crate) use sequence_expression_split::SequenceExpressionSplitter;
 pub(crate) use short_circuit_to_if::ShortCircuitToIf;
 pub(crate) use state::DeobfuscateState;
-pub(crate) use strength_reduction::StrengthReducer;
 pub(crate) use string_array_inline::StringArrayInliner;
 pub(crate) use string_array_rotation::StringArrayRotation;
 pub(crate) use string_array_self_defending::SelfDefendingStringArray;

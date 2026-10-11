@@ -41,7 +41,6 @@ These improve code quality:
 6. **constant_folding** - Fold constant expressions
 7. **expression_simplify** - Simplify boolean/arithmetic expressions
 8. **algebraic_simplify** - Algebraic identities
-9. **strength_reduction** - Replace expensive ops
 10. **dead_code** - Remove unreachable code
 11. **dead_var_elimination** - Remove unused variables
 

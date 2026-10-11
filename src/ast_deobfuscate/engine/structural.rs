@@ -22,7 +22,7 @@ impl AstDeobfuscator {
         // non-JS inputs — e.g. an HTTP response dump — with no output at
         // all), log the diagnostics and continue on the recovered program.
         // The final codegen + re-parse checkpoints below validate the
-        // result, and the CLI/pipeline fall back to raw on empty output.
+        // result, and an input that recovers to an empty program is an error.
         if !parse_result.diagnostics.is_empty() {
             let diagnostic_count = parse_result.diagnostics.len();
             let first_diagnostic = parse_result.diagnostics.first().map(ToString::to_string);

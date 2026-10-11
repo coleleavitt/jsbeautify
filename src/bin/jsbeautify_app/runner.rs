@@ -32,7 +32,11 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
-        Some(Command::Ast(a)) => run_inspect(a, |source| inspect::ast::estree(source, a.goal.source_type.into(), a.ts), Clone::clone),
+        Some(Command::Ast(a)) => run_inspect(
+            a,
+            |source| inspect::ast::estree(source, a.goal.source_type.into(), a.ts),
+            Clone::clone,
+        ),
         Some(Command::Scope(a)) => run_inspect(
             a,
             |source| inspect::scope::symbol_table(source, a.goal.source_type.into(), a.ts),
@@ -40,12 +44,14 @@ fn run() -> Fallible {
         ),
         Some(Command::Cfg(a)) => run_inspect(
             &a.inspect,
-            |source| inspect::cfg::control_flow(
+            |source| {
+                inspect::cfg::control_flow(
                     source,
                     a.inspect.goal.source_type.into(),
                     a.inspect.ts,
                     a.function.as_deref(),
-                ),
+                )
+            },
             |graph| match a.format {
                 CfgFormat::Dot => graph.to_dot(),
                 CfgFormat::Json => serde_json::to_string_pretty(graph).expect("CFG serializes"),
@@ -185,10 +191,6 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
     }
 
     let mut beautified = beautify(&code, &options)?;
-    if beautified.trim().is_empty() && !code.trim().is_empty() {
-        eprintln!("[jsbeautify] empty output after processing; emitting original source unchanged");
-        beautified = code;
-    }
     if b.rename_llm {
         let overrides = js_beautify_rs::llm::LlmOverrides::default();
         match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {

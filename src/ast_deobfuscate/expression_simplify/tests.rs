@@ -61,12 +61,8 @@ fn test_plus_not_array_to_one() {
 }
 
 #[test]
-fn test_void_to_undefined() {
-    let output = run_simplify("var x = void 0;");
-    assert!(
-        output.contains("undefined"),
-        "Should convert void 0 to undefined, got: {output}"
-    );
+fn test_void_kept() {
+    assert_eq!(run_simplify("x = void f();"), "x = void f();\n");
 }
 
 #[test]
@@ -100,4 +96,10 @@ fn test_remove_debugger() {
         !output.contains("debugger"),
         "Should remove debugger statement, got: {output}"
     );
+}
+
+#[test]
+fn test_string_concat_keeps_lone_surrogate() {
+    let output = run_simplify("x = '\\ud800' + 'y';");
+    assert!(output.contains("\\ud800"), "lone surrogate must survive, got: {output}");
 }
