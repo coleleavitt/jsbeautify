@@ -18,6 +18,7 @@ use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::rename_guards::{binds_global, is_annex_b_function};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -159,6 +160,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyInliner {
         if let Statement::FunctionDeclaration(func) = stmt
             && let Some(id) = &func.id
             && self.proxies.contains_key(id.name.as_str())
+            && !binds_global(ctx, id)
+            && !is_annex_b_function(ctx, func)
         {
             eprintln!("[AST] Removing unary proxy function: {}", id.name.as_str());
             *stmt = Statement::new_empty_statement(SPAN, ctx);
@@ -173,7 +176,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyInliner {
                     let Some(Expression::FunctionExpression(_)) = &d.init else {
                         return false;
                     };
-                    self.proxies.contains_key(id.name.as_str())
+                    self.proxies.contains_key(id.name.as_str()) && !binds_global(ctx, id)
                 });
             if all_are_proxies {
                 let names: Vec<String> = decl

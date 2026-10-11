@@ -32,15 +32,26 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
-        Some(Command::Ast(a)) => run_inspect(a, |source| inspect::ast::estree(source, a.ts), Clone::clone),
+        Some(Command::Ast(a)) => run_inspect(
+            a,
+            |source| inspect::ast::estree(source, a.goal.parse_goal(&a.input), a.ts),
+            Clone::clone,
+        ),
         Some(Command::Scope(a)) => run_inspect(
             a,
-            |source| inspect::scope::symbol_table(source, a.ts),
+            |source| inspect::scope::symbol_table(source, a.goal.parse_goal(&a.input), a.ts),
             |report| serde_json::to_string_pretty(report).expect("scope report serializes"),
         ),
         Some(Command::Cfg(a)) => run_inspect(
             &a.inspect,
-            |source| inspect::cfg::control_flow(source, a.inspect.ts, a.function.as_deref()),
+            |source| {
+                inspect::cfg::control_flow(
+                    source,
+                    a.inspect.goal.parse_goal(&a.inspect.input),
+                    a.inspect.ts,
+                    a.function.as_deref(),
+                )
+            },
             |graph| match a.format {
                 CfgFormat::Dot => graph.to_dot(),
                 CfgFormat::Json => serde_json::to_string_pretty(graph).expect("CFG serializes"),
@@ -150,6 +161,8 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
         deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm,
         readable_names: b.rename_vars || b.rename_llm,
         indent_with_tabs: b.tabs,
+        parse_goal: b.goal.parse_goal(&b.input),
+        isolated: b.isolated,
         ..Options::default()
     };
     if let Some(size) = b.indent {
@@ -160,7 +173,11 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
     if sourcemap_rename {
         let sm = fs::read_to_string(b.sourcemap.as_ref().expect("sourcemap present"))?;
         eprintln!("[RENAME] Applying sourcemap original names...");
-        code = js_beautify_rs::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(&code, &sm)?;
+        code = js_beautify_rs::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(
+            &code,
+            options.parse_goal.resolve(&code, options.isolated),
+            &sm,
+        )?;
     }
     if !sourcemap_rename && (b.sourcemap.is_some() || b.names_json.is_some() || b.bun_extract) {
         options.skip_annotations = true;
@@ -183,7 +200,9 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
         match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {
             Some(suggester) => {
                 eprintln!("[RENAME] Querying LLM for residual minified names...");
-                beautified = js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, &suggester);
+                let source_type = options.parse_goal.resolve(&code, options.isolated);
+                beautified =
+                    js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, source_type, &suggester);
             }
             None => eprintln!(
                 "[RENAME] --rename-llm set but no endpoint configured \

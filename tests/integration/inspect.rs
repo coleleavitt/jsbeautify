@@ -216,3 +216,23 @@ fn cfg_unknown_function_fails() {
     assert!(!output.status.success());
     assert_eq!(output.stdout, b"");
 }
+
+#[test]
+fn ast_reports_the_detected_source_type() {
+    assert_eq!(json(&["ast", "-"], "let a = 1;")["sourceType"], "script");
+    assert_eq!(json(&["ast", "-"], "export let a = 1;")["sourceType"], "module");
+    assert_eq!(
+        json(&["ast", "--source-type", "module", "-"], "let a = 1;")["sourceType"],
+        "module"
+    );
+    assert_eq!(
+        json(&["ast", "--source-type", "commonjs", "-"], "return;")["sourceType"],
+        "commonjs"
+    );
+}
+
+#[test]
+fn scope_parses_sloppy_scripts() {
+    let report = json(&["scope", "-"], "with (o) { x = 010; }");
+    assert_eq!(report["symbols"], Value::Array(Vec::new()));
+}

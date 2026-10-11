@@ -102,15 +102,16 @@ impl<'a, S: BuildHasher> Traverse<'a, DeobfuscateState> for SourcemapNameCollect
 #[must_use]
 pub fn apply_names_by_position<S: BuildHasher>(
     code: &str,
+    source_type: SourceType,
     by_pos: &std::collections::HashMap<(u32, u32), String, S>,
 ) -> String {
     if by_pos.is_empty() {
         return code.to_string();
     }
     let alloc = Allocator::default();
-    let mut prog = Parser::new(&alloc, code, SourceType::mjs()).parse().program;
+    let mut prog = Parser::new(&alloc, code, source_type).parse().program;
 
-    // Soundness guards (eval / native exports).
+    // Soundness guards (eval / native exports / script globals).
     let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut guard = RenameGuardCollector::new();
@@ -163,13 +164,13 @@ pub fn apply_names_by_position<S: BuildHasher>(
 ///
 /// # Errors
 /// Returns an error only if the sourcemap JSON is malformed.
-pub fn apply_sourcemap_names(code: &str, sourcemap_json: &str) -> Result<String> {
+pub fn apply_sourcemap_names(code: &str, source_type: SourceType, sourcemap_json: &str) -> Result<String> {
     let mappings = SourcemapParser::new().extract_names(sourcemap_json, code)?;
     let by_pos: FxHashMap<(u32, u32), String> = mappings
         .into_iter()
         .map(|m| ((m.minified_line, m.minified_column), m.original_name))
         .collect();
-    Ok(apply_names_by_position(code, &by_pos))
+    Ok(apply_names_by_position(code, source_type, &by_pos))
 }
 
 #[cfg(test)]
@@ -183,7 +184,7 @@ mod tests {
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 11), "left".to_string());
         by_pos.insert((1, 14), "right".to_string());
-        let out = apply_names_by_position(code, &by_pos);
+        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos);
         assert!(out.contains("function f(left, right)"), "params: {out}");
         assert!(out.contains("return left + right"), "refs follow: {out}");
     }
@@ -196,7 +197,7 @@ mod tests {
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 11), "userId".to_string()); // f's a
         by_pos.insert((2, 11), "count".to_string()); // g's a
-        let out = apply_names_by_position(code, &by_pos);
+        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos);
         assert!(
             out.contains("function f(userId)") && out.contains("return userId"),
             "{out}"
@@ -212,11 +213,22 @@ mod tests {
         let code = "function f(a, b){ return a }";
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 11), "value".to_string()); // only `a`
-        let out = apply_names_by_position(code, &by_pos);
+        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos);
         assert!(out.contains("value"), "mapped binding renamed: {out}");
         assert!(
             out.contains(", b)") || out.contains(",b)"),
             "unmapped `b` must stay: {out}"
         );
+    }
+
+    #[test]
+    fn script_globals_keep_their_minified_names() {
+        let code = "var a = 1;\nfunction f(b) { return a + b; }";
+        let mut by_pos = FxHashMap::default();
+        by_pos.insert((1, 4), "total".to_string());
+        by_pos.insert((2, 11), "step".to_string());
+        let out = apply_names_by_position(code, SourceType::script(), &by_pos);
+        assert!(out.contains("var a = 1"), "global renamed: {out}");
+        assert!(out.contains("function f(step)"), "local not renamed: {out}");
     }
 }
