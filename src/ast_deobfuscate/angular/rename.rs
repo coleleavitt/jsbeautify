@@ -15,7 +15,7 @@ use super::collector::AngularNameCollector;
 use super::naming::is_minified;
 
 /// Rename minified Angular class bindings (from `ɵcmp`/`ɵdir`/`ɵpipe`
-/// definitions) and NgRx action creators to derived names, by `SymbolId`.
+/// definitions) and `NgRx` action creators to derived names, by `SymbolId`.
 ///
 /// Bindings visible to a direct `eval` or exported by name are skipped, names
 /// are made unique along the scope chain, and a name that an unresolved
@@ -76,7 +76,7 @@ fn plan_renames(
     let globals: FxHashSet<&str> = scoping
         .root_unresolved_references()
         .keys()
-        .map(|k| k.as_str())
+        .map(oxc_ast::ast::Ident::as_str)
         .collect();
     let mut plan = make_names_unique(desired, scoping);
     plan.retain(|_, name| !globals.contains(name.as_str()));

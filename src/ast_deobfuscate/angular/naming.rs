@@ -76,7 +76,7 @@ fn pascal_case(raw: &str) -> Option<String> {
     out.starts_with(|c: char| c.is_ascii_alphabetic()).then_some(out)
 }
 
-/// NgRx action type `"[Auth] Login Success"` → `loginSuccess`.
+/// `NgRx` action type `"[Auth] Login Success"` → `loginSuccess`.
 pub(super) fn action_name(action_type: &str) -> Option<String> {
     let rest = action_type.strip_prefix('[')?;
     let (source, event) = rest.split_once(']')?;

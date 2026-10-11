@@ -89,7 +89,7 @@ struct View<'a> {
     pipes: FxHashMap<u32, String>,
 }
 
-impl<'a> View<'a> {
+impl View<'_> {
     fn node_at(&self, slot: u32) -> Option<usize> {
         self.slots.get(&slot).copied()
     }
@@ -121,7 +121,7 @@ impl<'s, 'a> Renderer<'s, 'a> {
         self.active.remove(&func.key());
     }
 
-    fn role(&self, call: &Call<'a>) -> Option<Role> {
+    const fn role(&self, call: &Call<'a>) -> Option<Role> {
         self.bundle.roles[call.callee_index]
     }
 
@@ -158,9 +158,10 @@ impl<'s, 'a> Renderer<'s, 'a> {
                 (Some(Role::Text), Some(_)) => Kind::Text(call.string(1).unwrap_or_default().to_string()),
                 (Some(Role::Projection), Some(_)) => Kind::Projection,
                 (Some(_), _) => continue,
-                (None, _) => match self.shaped(call, &view) {
-                    Some(kind) => kind,
-                    None => {
+                (None, _) => {
+                    if let Some(kind) = self.shaped(call, &view) {
+                        kind
+                    } else {
                         if let (Some(event), Some(handler), Some(element)) =
                             (call.string(0), self.function(call.arg(1)), last_element)
                         {
@@ -169,7 +170,7 @@ impl<'s, 'a> Renderer<'s, 'a> {
                         }
                         continue;
                     }
-                },
+                }
             };
             let consts_index = match kind {
                 Kind::Element { .. } => call.int(2),
@@ -189,7 +190,7 @@ impl<'s, 'a> Renderer<'s, 'a> {
             let index = view.nodes.len();
             view.nodes.push(Node {
                 kind,
-                attrs: consts_index.map(|i| self.attrs(i)).unwrap_or_default(),
+                attrs: consts_index.map_or_else(Vec::new, |i| self.attrs(i)),
                 bindings: Vec::new(),
                 events: Vec::new(),
                 children: Vec::new(),
@@ -436,14 +437,15 @@ impl<'s, 'a> Renderer<'s, 'a> {
                 }
             }
             Kind::Projection => self.line(depth, "<ng-content />".to_string()),
-            Kind::Template { body } => match &node.branches {
-                Some(branches) => self.conditional(view, index, branches, depth),
-                None => {
+            Kind::Template { body } => {
+                if let Some(branches) = &node.branches {
+                    self.conditional(view, index, branches, depth);
+                } else {
                     self.line(depth, format!("<ng-template{}>", attributes(node)));
                     self.render(*body, depth + 1);
                     self.line(depth, "</ng-template>".to_string());
                 }
-            },
+            }
             Kind::Repeater {
                 body,
                 empty,
@@ -524,8 +526,9 @@ impl<'s, 'a> Renderer<'s, 'a> {
         finder.found
     }
 
-    fn line(&mut self, depth: usize, text: String) {
-        self.lines.push(format!("{}{}", "  ".repeat(depth), text));
+    fn line(&mut self, depth: usize, mut text: String) {
+        text.insert_str(0, &"  ".repeat(depth));
+        self.lines.push(text);
     }
 
     /// Source text of `expr` with the component prefix dropped and

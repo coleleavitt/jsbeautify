@@ -12,7 +12,7 @@
 //! ```
 //!
 //! - [`rename_angular_symbols`] renames the class bindings named by a
-//!   definition's `type` (and NgRx `createAction` results) by `SymbolId`.
+//!   definition's `type` (and `NgRx` `createAction` results) by `SymbolId`.
 //! - [`annotate_angular_templates`] reconstructs an approximate HTML template
 //!   from each component's instruction stream and inserts it as a comment
 //!   above the `template` property of the final output.

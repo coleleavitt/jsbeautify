@@ -46,7 +46,7 @@ struct Stats {
     /// `(slot, int)`
     slot_int: usize,
     max_arity: usize,
-    in_update: bool,
+    update_calls: usize,
     all_tag_like: bool,
     free_text: bool,
     pipe_evidence: bool,
@@ -58,7 +58,7 @@ impl Stats {
     }
 
     const fn only_zero_arity(&self) -> bool {
-        self.used() && self.zero_arity == self.total && !self.in_update
+        self.used() && self.zero_arity == self.total && self.update_calls == 0
     }
 
     const fn only_slot_string(&self) -> bool {
@@ -95,7 +95,7 @@ pub(super) fn infer_roles(callees: &[Callee], views: &[Instructions<'_>]) -> Vec
             observe_create(s, call, view);
         }
         for call in &view.update {
-            stats[call.callee_index].in_update = true;
+            stats[call.callee_index].update_calls += 1;
         }
     }
 
@@ -113,12 +113,12 @@ pub(super) fn infer_roles(callees: &[Callee], views: &[Instructions<'_>]) -> Vec
         .collect();
     if let Some(end) = most_used(zero_arity.clone()) {
         roles[end] = Some(Role::ElementEnd);
-        let starts = unnamed
+        let openers = unnamed
             .iter()
             .copied()
             .filter(|&i| stats[i].only_slot_string() && balanced(i, end))
             .collect();
-        if let Some(start) = most_used(starts) {
+        if let Some(start) = most_used(openers) {
             roles[start] = Some(Role::ElementStart);
         }
     }

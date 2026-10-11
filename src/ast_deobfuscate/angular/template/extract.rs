@@ -238,9 +238,9 @@ impl<'s, 'a> Extractor<'s, 'a> {
         if bin.operator != BinaryOperator::BitwiseAnd {
             return None;
         }
-        let (flag, mask) = match (&bin.left, &bin.right) {
-            (Expression::Identifier(id), mask) | (mask, Expression::Identifier(id)) => (id, mask),
-            _ => return None,
+        let ((Expression::Identifier(flag), mask) | (mask, Expression::Identifier(flag))) = (&bin.left, &bin.right)
+        else {
+            return None;
         };
         let symbol = self.semantic.scoping().get_reference(flag.reference_id()).symbol_id();
         if symbol.is_none() || symbol != self.flags {

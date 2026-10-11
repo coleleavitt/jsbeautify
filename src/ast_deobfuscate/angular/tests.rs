@@ -49,6 +49,12 @@ fn renames_esbuild_static_component_and_its_variable() {
 }
 
 #[test]
+fn shorthand_property_keeps_its_key() {
+    let out = rename(r#"var a = class e { static ɵcmp = Vt({ type: e, selectors: [["app-x"]] }); }; use({ a });"#);
+    assert!(out.contains("a: AppXComponent"), "{out}");
+}
+
+#[test]
 fn renames_iife_wrapped_directive_pipe_and_class_selector() {
     let out = rename(
         r#"
