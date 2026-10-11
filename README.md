@@ -60,9 +60,6 @@ jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
 # Bounded, static inspection of a JavaScript-hosted VM and literal embedded WebAssembly.
 # JavaScript is never executed; WebAssembly is validated but never instantiated.
 jsbeautify analyze-vm bundle.js -o vm-report.json --extract-wasm ./vm-wasm
-
-# Bounded, non-executing framework/build-tool reconnaissance as stable JSON.
-jsbeautify framework-recon bundle.js -o framework-report.json
 ```
 
 ## CLI Reference
@@ -77,7 +74,6 @@ Commands:
   reconstruct      Rebuild original sources from a standalone .js.map file
   align            Align two bundle versions for a stable diff
   analyze-vm       Statically inspect a JavaScript-hosted VM and embedded WebAssembly
-  framework-recon  Extract framework and build-tool findings as JSON
 
 Arguments:
   [FILE]  Input JavaScript file, or "-" for stdin [default: -]
@@ -204,16 +200,6 @@ Targeted checks:
 ```bash
 # Static VM/Wasm analyzer integration tests (never executes target JavaScript)
 cargo test --test integration analyze_vm
-
-# Individual framework/build-tool extractor helper APIs are compiled and tested.
-# They are not separate CLI commands or automatically run by deobfuscation;
-# their findings are exposed through the aggregate `framework-recon` CLI command.
-cargo test --lib ast_deobfuscate::angular_metadata
-cargo test --lib ast_deobfuscate::angular_decompiler
-cargo test --lib ast_deobfuscate::angular_route_extractor
-cargo test --lib ast_deobfuscate::ngrx_extractor
-cargo test --lib ast_deobfuscate::rxjs_annotator
-cargo test --lib ast_deobfuscate::webpack_runtime_decoder
 ```
 
 `Cargo.toml` sets `autotests = false` and declares `tests/integration/main.rs` as

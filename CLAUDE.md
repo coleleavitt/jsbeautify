@@ -20,10 +20,7 @@ deobfuscation, bundle splitting/alignment, and static VM analysis.
 - `src/ast_deobfuscate/engine/` owns the ordered pipeline. Its structural,
   cosmetic-A, and cosmetic-B arenas are separated by Phase 12.6 and 15.6
   codegen/re-parse checkpoints.
-- `src/ast_deobfuscate/` owns individual Oxc passes plus compiled framework
-  extraction helpers. `src/analyzers/framework_recon/` aggregates those helpers
-  for the separate `framework-recon` CLI command; deobfuscation does not invoke
-  it implicitly. See `FRAMEWORK_EXTRACTION_GAPS.md`.
+- `src/ast_deobfuscate/` owns the individual Oxc passes.
 - `src/vm_analysis/` performs bounded static JavaScript/Wasm inspection. It must
   never execute JavaScript or instantiate WebAssembly.
 - `src/bin/jsbeautify_app/` owns CLI argument parsing and command runners.
