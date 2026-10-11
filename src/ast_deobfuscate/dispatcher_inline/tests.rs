@@ -164,10 +164,10 @@ fn test_inline_arrow_expression_body() {
 
 #[test]
 fn block_arrow_without_return_yields_undefined() {
-    let code = r#"
+    let code = r"
             var d = { a: () => { var x = 1; 42 } };
             var x = d.a();
-        "#;
+        ";
     let (output, inliner) = run_dispatcher_inliner(code);
     assert!(
         !inliner.has_changed(),

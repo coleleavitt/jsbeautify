@@ -231,19 +231,18 @@ fn extract_case_bodies<'a>(
             .consequent
             .iter()
             .position(|s| matches!(s, Statement::BreakStatement(b) if b.label.is_none()));
-        let run = match first_break {
-            Some(end) => &case.consequent[..end],
-            None => {
-                let last_case = index + 1 == switch.cases.len();
-                let exits = matches!(
-                    case.consequent.last(),
-                    Some(Statement::ReturnStatement(_) | Statement::ThrowStatement(_))
-                );
-                if !last_case && !exits {
-                    continue;
-                }
-                case.consequent.as_slice()
+        let run = if let Some(end) = first_break {
+            &case.consequent[..end]
+        } else {
+            let last_case = index + 1 == switch.cases.len();
+            let exits = matches!(
+                case.consequent.last(),
+                Some(Statement::ReturnStatement(_) | Statement::ThrowStatement(_))
+            );
+            if !last_case && !exits {
+                continue;
             }
+            case.consequent.as_slice()
         };
         let mut stmts: OxcVec<'a, Statement<'a>> = OxcVec::new_in(&alloc);
         stmts.extend(run.iter().map(|s| s.clone_in_with_semantic_ids(alloc)));
