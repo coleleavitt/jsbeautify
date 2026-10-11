@@ -1,31 +1,39 @@
-use oxc_ast::ast::{BindingPattern, Expression, Function, Statement, VariableDeclarator};
+use oxc_ast::ast::{BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::call_sites::plain_call_arities;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
 use super::types::MethodForwarderInfo;
 
+/// Finds `function f(a, b) { return a.m(b); }` bindings whose every reference
+/// is a two-argument call.
+#[derive(Default)]
 pub struct MethodCallForwarderCollector {
-    forwarders: FxHashMap<String, MethodForwarderInfo>,
+    binary_calls_only: FxHashSet<SymbolId>,
+    forwarders: FxHashMap<SymbolId, MethodForwarderInfo>,
 }
 
 impl MethodCallForwarderCollector {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            forwarders: FxHashMap::default(),
-        }
+        Self::default()
     }
 
     #[must_use]
-    pub fn into_forwarders(self) -> FxHashMap<String, MethodForwarderInfo> {
+    pub fn into_forwarders(self) -> FxHashMap<SymbolId, MethodForwarderInfo> {
         self.forwarders
     }
 
     fn extract_info(func: &Function<'_>) -> Option<MethodForwarderInfo> {
-        if func.r#async || func.generator {
+        if func.r#async
+            || func.generator
+            || func.params.rest.is_some()
+            || func.params.items.iter().any(|param| param.initializer.is_some())
+        {
             return None;
         }
         if func.params.items.len() != 2 {
@@ -69,42 +77,38 @@ impl MethodCallForwarderCollector {
             method: sme.property.name.as_str().to_string(),
         })
     }
-}
 
-impl Default for MethodCallForwarderCollector {
-    fn default() -> Self {
-        Self::new()
+    fn add(&mut self, symbol: Option<SymbolId>, func: &Function<'_>) {
+        if let Some(symbol) = symbol
+            && self.binary_calls_only.contains(&symbol)
+            && let Some(info) = Self::extract_info(func)
+        {
+            eprintln!("[AST/method-fwd] found forwarder to a.{}(b)", info.method);
+            self.forwarders.insert(symbol, info);
+        }
     }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for MethodCallForwarderCollector {
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.binary_calls_only = plain_call_arities(program, ctx.scoping())
+            .into_iter()
+            .filter(|(_, arities)| arities.len() == 1 && arities.contains(&2))
+            .map(|(symbol, _)| symbol)
+            .collect();
+    }
+
     fn enter_function(&mut self, func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
-        if let Some(id) = &func.id
-            && let Some(info) = Self::extract_info(func)
-        {
-            eprintln!(
-                "[AST/method-fwd] found  function {}(a, b) {{ return a.{}(b); }}",
-                id.name.as_str(),
-                info.method
-            );
-            self.forwarders.insert(id.name.as_str().to_string(), info);
+        if func.is_declaration() {
+            self.add(func.id.as_ref().and_then(|id| id.symbol_id.get()), func);
         }
     }
 
     fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
-        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-            return;
-        };
-        let Some(Expression::FunctionExpression(func)) = &declarator.init else {
-            return;
-        };
-        if let Some(info) = Self::extract_info(func) {
-            eprintln!(
-                "[AST/method-fwd] found  var {} = function(a, b) {{ return a.{}(b); }};",
-                id.name.as_str(),
-                info.method
-            );
-            self.forwarders.insert(id.name.as_str().to_string(), info);
+        if let BindingPattern::BindingIdentifier(id) = &declarator.id
+            && let Some(Expression::FunctionExpression(func)) = &declarator.init
+        {
+            self.add(id.symbol_id.get(), func);
         }
     }
 }

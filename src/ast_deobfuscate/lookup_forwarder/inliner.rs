@@ -1,24 +1,24 @@
 use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{BindingPattern, CallExpression, Expression, Statement};
 use oxc_span::SPAN;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
-use crate::ast_deobfuscate::rename_guards::{binds_global, is_annex_b_function};
+use crate::ast_deobfuscate::rename_guards::is_annex_b_function;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::collector::LookupForwarderCollector;
 use super::types::LookupForwarderInfo;
 
 pub struct LookupForwarderInliner {
-    forwarders: FxHashMap<String, LookupForwarderInfo>,
+    forwarders: FxHashMap<SymbolId, LookupForwarderInfo>,
     inlined: usize,
 }
 
 impl LookupForwarderInliner {
     #[must_use]
-    pub const fn new(forwarders: FxHashMap<String, LookupForwarderInfo>) -> Self {
+    pub const fn new(forwarders: FxHashMap<SymbolId, LookupForwarderInfo>) -> Self {
         Self { forwarders, inlined: 0 }
     }
 
@@ -27,31 +27,34 @@ impl LookupForwarderInliner {
         self.inlined
     }
 
+    fn is_forwarder(&self, symbol: Option<SymbolId>) -> bool {
+        symbol.is_some_and(|symbol| self.forwarders.contains_key(&symbol))
+    }
+
     fn try_inline<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
         let Expression::Identifier(ident) = &call.callee else {
             return None;
         };
-        let info = self.forwarders.get(ident.name.as_str())?;
-        if call.arguments.len() != 1 {
+        let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id()?;
+        let info = self.forwarders.get(&symbol)?;
+        let [arg] = call.arguments.as_slice() else {
             return None;
-        }
-        let arg = call.arguments[0].as_expression()?;
+        };
+        let arg = arg.as_expression()?;
         if self.inlined < 10 {
             eprintln!(
                 "[AST/lookup-fwd] inline {}(x) -> {}()[x]",
-                ident.name.as_str(),
-                info.accessor_name
+                ident.name, info.accessor_name
             );
         }
         self.inlined += 1;
-
-        let accessor_callee = Expression::new_identifier(SPAN, ctx.allocator().alloc_str(&info.accessor_name), ctx);
-        let accessor_call = Expression::new_call_expression(SPAN, accessor_callee, None, [], false, ctx);
-        let index_expr = arg.clone_in_with_semantic_ids(ctx.ast.allocator());
+        let accessor = Expression::new_identifier(SPAN, ctx.allocator().alloc_str(&info.accessor_name), ctx);
+        let accessor_call = Expression::new_call_expression(SPAN, accessor, None, [], false, ctx);
+        let index = arg.clone_in_with_semantic_ids(ctx.allocator());
         Some(Expression::new_computed_member_expression(
             SPAN,
             accessor_call,
-            index_expr,
+            index,
             false,
             ctx,
         ))
@@ -68,33 +71,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for LookupForwarderInliner {
     }
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
-        if let Statement::FunctionDeclaration(func) = stmt
-            && let Some(id) = &func.id
-            && self.forwarders.contains_key(id.name.as_str())
-            && !binds_global(ctx, id)
-            && !is_annex_b_function(ctx, func)
-        {
-            eprintln!("[AST/lookup-fwd] remove function {}", id.name.as_str());
-            *stmt = Statement::new_empty_statement(SPAN, ctx);
-            return;
-        }
-        if let Statement::VariableDeclaration(decl) = stmt {
-            let all_are_forwarders = !decl.declarations.is_empty()
-                && decl.declarations.iter().all(|d| {
-                    let BindingPattern::BindingIdentifier(id) = &d.id else {
-                        return false;
-                    };
-                    let Some(Expression::FunctionExpression(func)) = &d.init else {
-                        return false;
-                    };
-                    self.forwarders.contains_key(id.name.as_str())
-                        && !binds_global(ctx, id)
-                        && LookupForwarderCollector::extract_info(func).is_some()
-                });
-            if all_are_forwarders {
-                eprintln!("[AST/lookup-fwd] remove var declaration");
-                *stmt = Statement::new_empty_statement(SPAN, ctx);
+        let remove = match stmt {
+            Statement::FunctionDeclaration(func) => {
+                !is_annex_b_function(ctx, func) && self.is_forwarder(func.id.as_ref().and_then(|id| id.symbol_id.get()))
             }
+            Statement::VariableDeclaration(decl) => decl.declarations.iter().all(|d| {
+                let BindingPattern::BindingIdentifier(id) = &d.id else {
+                    return false;
+                };
+                matches!(&d.init, Some(Expression::FunctionExpression(_))) && self.is_forwarder(id.symbol_id.get())
+            }),
+            _ => false,
+        };
+        if remove {
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }
 }

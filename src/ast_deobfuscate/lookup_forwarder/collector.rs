@@ -1,31 +1,43 @@
-use oxc_ast::ast::{BindingPattern, Expression, Function, Statement, VariableDeclarator};
+use oxc_ast::ast::{BindingPattern, CallExpression, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_semantic::Scoping;
+use oxc_syntax::scope::ScopeId;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::call_sites::plain_call_arities;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
 use super::types::LookupForwarderInfo;
 
+/// Finds `function F(x) { return A()[x]; }` bindings whose every reference is
+/// a one-argument call at which `A` names the same binding.
+#[derive(Default)]
 pub struct LookupForwarderCollector {
-    forwarders: FxHashMap<String, LookupForwarderInfo>,
+    unary_calls_only: FxHashSet<SymbolId>,
+    candidates: FxHashMap<SymbolId, LookupForwarderInfo>,
+    call_scopes: FxHashMap<SymbolId, Vec<ScopeId>>,
+    forwarders: FxHashMap<SymbolId, LookupForwarderInfo>,
 }
 
 impl LookupForwarderCollector {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            forwarders: FxHashMap::default(),
-        }
+        Self::default()
     }
 
     #[must_use]
-    pub fn forwarders(self) -> FxHashMap<String, LookupForwarderInfo> {
+    pub fn forwarders(self) -> FxHashMap<SymbolId, LookupForwarderInfo> {
         self.forwarders
     }
 
-    pub fn extract_info(func: &Function<'_>) -> Option<LookupForwarderInfo> {
-        if func.r#async || func.generator {
+    fn extract_info(func: &Function<'_>, scoping: &Scoping) -> Option<LookupForwarderInfo> {
+        if func.r#async
+            || func.generator
+            || func.params.rest.is_some()
+            || func.params.items.iter().any(|param| param.initializer.is_some())
+        {
             return None;
         }
         if func.params.items.len() != 1 {
@@ -64,44 +76,63 @@ impl LookupForwarderCollector {
 
         Some(LookupForwarderInfo {
             accessor_name: accessor.name.as_str().to_string(),
+            accessor_symbol: scoping.get_reference(accessor.reference_id()).symbol_id(),
         })
     }
-}
 
-impl Default for LookupForwarderCollector {
-    fn default() -> Self {
-        Self::new()
+    fn add(&mut self, symbol: Option<SymbolId>, func: &Function<'_>, scoping: &Scoping) {
+        if let Some(symbol) = symbol
+            && self.unary_calls_only.contains(&symbol)
+            && let Some(info) = Self::extract_info(func, scoping)
+        {
+            self.candidates.insert(symbol, info);
+        }
     }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for LookupForwarderCollector {
-    fn enter_function(&mut self, func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
-        if let Some(id) = &func.id
-            && let Some(info) = Self::extract_info(func)
-        {
-            eprintln!(
-                "[AST/lookup-fwd] found  function {}(x) {{ return {}()[x]; }}",
-                id.name.as_str(),
-                info.accessor_name
-            );
-            self.forwarders.insert(id.name.as_str().to_string(), info);
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.unary_calls_only = plain_call_arities(program, ctx.scoping())
+            .into_iter()
+            .filter(|(_, arities)| arities.len() == 1 && arities.contains(&1))
+            .map(|(symbol, _)| symbol)
+            .collect();
+    }
+
+    fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
+        if func.is_declaration() {
+            self.add(func.id.as_ref().and_then(|id| id.symbol_id.get()), func, ctx.scoping());
         }
     }
 
-    fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
-        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-            return;
-        };
-        let Some(Expression::FunctionExpression(func)) = &declarator.init else {
-            return;
-        };
-        if let Some(info) = Self::extract_info(func) {
-            eprintln!(
-                "[AST/lookup-fwd] found  var {} = function(x) {{ return {}()[x]; }};",
-                id.name.as_str(),
-                info.accessor_name
-            );
-            self.forwarders.insert(id.name.as_str().to_string(), info);
+    fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, ctx: &mut Ctx<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &declarator.id
+            && let Some(Expression::FunctionExpression(func)) = &declarator.init
+        {
+            self.add(id.symbol_id.get(), func, ctx.scoping());
+        }
+    }
+
+    fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
+        if let Expression::Identifier(ident) = &call.callee
+            && let Some(symbol) = ctx.scoping().get_reference(ident.reference_id()).symbol_id()
+        {
+            self.call_scopes.entry(symbol).or_default().push(ctx.current_scope_id());
+        }
+    }
+
+    fn exit_program(&mut self, _program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        let scoping = ctx.scoping();
+        for (symbol, info) in std::mem::take(&mut self.candidates) {
+            let accessor_resolves = self.call_scopes.get(&symbol).is_some_and(|scopes| {
+                scopes.iter().all(|&scope| {
+                    scoping.find_binding(scope, info.accessor_name.as_str().into()) == info.accessor_symbol
+                })
+            });
+            if accessor_resolves {
+                eprintln!("[AST/lookup-fwd] found forwarder to {}()[x]", info.accessor_name);
+                self.forwarders.insert(symbol, info);
+            }
         }
     }
 }

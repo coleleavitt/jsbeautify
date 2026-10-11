@@ -75,3 +75,23 @@ fn preserves_receiver_expression_at_call_site() {
         "got: {out}"
     );
 }
+
+#[test]
+fn forwarder_used_as_a_value_or_with_defaults_is_kept() {
+    let out = run("function f(a, b) { return a.push(b); }\nvar g = f;\nf(x, 1);");
+    assert!(out.contains("function f") && out.contains("f(x, 1)"), "got: {out}");
+    let out = run("function f(a, b = 2) { return a.push(b); }\nf(x, undefined);");
+    assert!(
+        out.contains("function f") && out.contains("f(x, undefined)"),
+        "got: {out}"
+    );
+}
+
+#[test]
+fn same_name_in_another_scope_is_untouched() {
+    let out = run(
+        "function f() { function p(a, b) { return a.push(b); } return p(x, 1); }\nfunction g(p) { return p(y, 2); }",
+    );
+    assert!(out.contains("x.push(1)"), "got: {out}");
+    assert!(out.contains("return p(y, 2)"), "got: {out}");
+}

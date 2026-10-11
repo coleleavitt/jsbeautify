@@ -76,3 +76,23 @@ fn does_not_remove_same_name_var_with_different_shape() {
         "outer var Xt (operator proxy) must be preserved: {out}"
     );
 }
+
+#[test]
+fn forwarder_used_as_a_value_is_kept() {
+    let out = run("function bI(x) { return x19()[x]; }\nvar r = [1].map(bI);\nvar s = bI(5);");
+    assert!(out.contains("function bI") && out.contains("bI(5)"), "got: {out}");
+}
+
+#[test]
+fn accessor_shadowed_at_the_call_site_is_kept() {
+    let out = run("function bI(x) { return x19()[x]; }\nfunction f(x19) { return bI(5); }");
+    assert!(out.contains("function bI") && out.contains("bI(5)"), "got: {out}");
+}
+
+#[test]
+fn same_name_in_another_scope_is_untouched() {
+    let out =
+        run("function f() { function bI(x) { return x19()[x]; } return bI(1); }\nfunction g(bI) { return bI(2); }");
+    assert!(out.contains("x19()[1]"), "got: {out}");
+    assert!(out.contains("return bI(2)"), "got: {out}");
+}
