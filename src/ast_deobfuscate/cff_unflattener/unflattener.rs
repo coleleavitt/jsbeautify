@@ -1,5 +1,6 @@
 use oxc_allocator::Vec as OxcVec;
 use oxc_ast::ast::{Expression, Statement};
+use oxc_span::SPAN;
 use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 
@@ -7,10 +8,12 @@ use super::CaseBodyMap;
 use crate::ast_deobfuscate::dispatcher_detector::DispatcherMap;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
+mod plan;
 mod replacements;
 mod resolver;
 
-use replacements::{make_iife, make_inline_stmts};
+use plan::{Shape, plan};
+use replacements::{clone_statements, make_iife};
 use resolver::{CallResolution, resolve_call};
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -64,26 +67,34 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
     fn exit_statements(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
         let mut i = 0;
         while i < stmts.len() {
-            let call = match &stmts[i] {
-                Statement::ExpressionStatement(es) => {
-                    if let Expression::CallExpression(c) = &es.expression {
-                        Some(c.as_ref())
-                    } else {
-                        None
-                    }
+            let Statement::ExpressionStatement(es) = &stmts[i] else {
+                i += 1;
+                continue;
+            };
+            let Expression::CallExpression(call) = &es.expression else {
+                i += 1;
+                continue;
+            };
+            let Some(resolution) = self.resolve_call(call) else {
+                i += 1;
+                continue;
+            };
+            let Some(shape) = plan(&resolution, ctx.current_scope_id(), ctx.scoping()) else {
+                i += 1;
+                continue;
+            };
+            let replacement: Vec<Statement<'a>> = match shape {
+                Shape::Splice => clone_statements(&resolution.body.stmts, ctx).collect(),
+                Shape::Iife { bind_args } => {
+                    let iife = make_iife(
+                        &resolution.meta.args_param,
+                        &resolution.body.stmts,
+                        bind_args.then_some(resolution.args),
+                        ctx,
+                    );
+                    vec![Statement::new_expression_statement(SPAN, iife, ctx)]
                 }
-                _ => None,
             };
-            let Some(call) = call else {
-                i += 1;
-                continue;
-            };
-            let Some((_, _, args_expr, meta, body)) = self.resolve_call(call) else {
-                i += 1;
-                continue;
-            };
-            let args_param = meta.args_param.clone();
-            let replacement = make_inline_stmts(&args_param, body, args_expr, ctx);
 
             if self.inlined < 10 {
                 eprintln!("[CFF] inlining call site (stmt-level)");
@@ -91,10 +102,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
             self.inlined += 1;
 
             let count = replacement.len();
-            stmts.remove(i);
-            for (j, s) in replacement.into_iter().enumerate() {
-                stmts.insert(i + j, s);
-            }
+            stmts.splice(i..=i, replacement);
             i += count;
         }
     }
@@ -103,19 +111,31 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
         if matches!(ctx.parent(), Ancestor::ExpressionStatementExpression(_)) {
             return;
         }
-        if let Expression::CallExpression(call) = expr {
-            let Some((_, _, args_expr, meta, body)) = self.resolve_call(call) else {
-                return;
-            };
-            let args_param = meta.args_param.clone();
-            let replacement = make_iife(&args_param, body, args_expr, ctx);
+        let Expression::CallExpression(call) = expr else {
+            return;
+        };
+        let Some(resolution) = self.resolve_call(call) else {
+            return;
+        };
+        let Some(shape) = plan(&resolution, ctx.current_scope_id(), ctx.scoping()) else {
+            return;
+        };
+        let bind_args = match shape {
+            Shape::Splice => false,
+            Shape::Iife { bind_args } => bind_args,
+        };
+        let replacement = make_iife(
+            &resolution.meta.args_param,
+            &resolution.body.stmts,
+            bind_args.then_some(resolution.args),
+            ctx,
+        );
 
-            if self.inlined < 10 {
-                eprintln!("[CFF] inlining call site (expr-level)");
-            }
-            self.inlined += 1;
-
-            *expr = replacement;
+        if self.inlined < 10 {
+            eprintln!("[CFF] inlining call site (expr-level)");
         }
+        self.inlined += 1;
+
+        *expr = replacement;
     }
 }

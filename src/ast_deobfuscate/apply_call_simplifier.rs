@@ -8,7 +8,8 @@
 //! 1. The first argument is `undefined` (an unresolved reference) or `void` of
 //!    a literal. A `null` receiver is kept: a strict-mode callee sees `null`,
 //!    not `undefined`.
-//! 2. The callee is not a member expression: `o.f(a)` would bind `this` to `o`.
+//! 2. The callee is not a member expression: `o.f(a)` would bind `this` to `o`,
+//!    and not `eval`: `eval(s)` would turn an indirect eval into a direct one.
 //! 3. For `apply`, the 2nd argument is a literal `ArrayExpression` with no
 //!    spread elements or holes.
 //!
@@ -63,6 +64,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
         let callee = sme.object.without_parentheses();
         if !is_undefined(first_arg, ctx)
             || callee.is_member_expression()
+            || matches!(callee, Expression::Identifier(id) if id.name == "eval")
             || matches!(callee, Expression::ChainExpression(_))
         {
             return;
@@ -164,6 +166,13 @@ mod tests {
             "D8()[x19()[Rj]].call(undefined, Hn, QS, fw);\n",
             "(a?.b).call(undefined, x);\n",
         ] {
+            assert_eq!(run(code), code);
+        }
+    }
+
+    #[test]
+    fn leaves_eval_alone() {
+        for code in ["eval.call(undefined, s);\n", "eval.apply(void 0, [s]);\n"] {
             assert_eq!(run(code), code);
         }
     }

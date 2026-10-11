@@ -31,14 +31,14 @@ fn test_detect_dispatcher() {
                 "a": function() { return 1; },
                 "b": function() { return 2; }
             };
+            d.a();
         "#;
 
     let (_, inliner) = run_dispatcher_inliner(code);
 
     assert_eq!(inliner.detected_dispatchers.len(), 1);
-    assert!(inliner.detected_dispatchers.contains_key("d"));
-
-    let dispatcher = inliner.detected_dispatchers.get("d").unwrap();
+    let dispatcher = inliner.detected_dispatchers.values().next().unwrap();
+    assert_eq!(dispatcher.var_name, "d");
     assert_eq!(dispatcher.functions.len(), 2);
     assert!(matches!(
         dispatcher.functions.get("a").unwrap().return_value,
@@ -163,22 +163,16 @@ fn test_inline_arrow_expression_body() {
 }
 
 #[test]
-fn test_inline_arrow_with_block_last_expr() {
+fn block_arrow_without_return_yields_undefined() {
     let code = r#"
-            var d = {
-                a: () => { var x = 1; var y = 2; 42 },
-                b: () => { 1; 2; "test" }
-            };
+            var d = { a: () => { var x = 1; 42 } };
             var x = d.a();
-            var y = d.b();
         "#;
-
     let (output, inliner) = run_dispatcher_inliner(code);
-    eprintln!("Output: {output}");
-
-    assert!(inliner.has_changed(), "Should have inlined arrow with block body");
-    assert!(output.contains("42"), "Should inline last expression");
-    assert!(output.contains("\"test\""), "Should inline second function");
+    assert!(
+        !inliner.has_changed(),
+        "a block body without return yields undefined: {output}"
+    );
 }
 
 #[test]
@@ -199,18 +193,36 @@ fn test_no_inline_arrow_with_side_effects() {
 }
 
 #[test]
-fn test_inline_identifier_return() {
-    let code = r#"
-            var result = 999;
-            var d = { a: function() { return result; } };
-            var x = d["a"]();
-        "#;
+fn identifier_return_is_not_moved_to_the_call_site() {
+    for code in [
+        "var result = 999;\nvar d = { a: function() { return result; } };\nfunction f(result) { return d.a(); }",
+        "var d = { a: function() { return arguments; } };\nfunction f(x) { return d.a(); }",
+    ] {
+        let (output, inliner) = run_dispatcher_inliner(code);
+        assert!(!inliner.has_changed(), "{output}");
+    }
+}
 
+#[test]
+fn replaced_or_escaping_dispatcher_is_not_inlined() {
+    for code in [
+        "var d = { a: function() { return true; } };\nd.a = function() { return false; };\nd.a();",
+        "var d = { a: function() { return true; } };\nd = other;\nd.a();",
+        "var d = { a: function() { return true; } };\nmutate(d);\nd.a();",
+        "var d = { a: function() { return true; }, a: function() { return false; } };\nd.a();",
+        "var d = { a: function() { return true; }, ...o };\nd.a();",
+        "var d = { a: function() { return true; } };\nfunction f(d) { return d.a(); }\nf({ a: () => 7 });",
+    ] {
+        let (output, _) = run_dispatcher_inliner(code);
+        assert!(output.contains(".a()"), "call must be kept: {output}");
+    }
+}
+
+#[test]
+fn call_with_non_literal_arguments_is_kept() {
+    let code = "var d = { a: function() { return 1; } };\nvar x = d.a(sideEffect());";
     let (output, inliner) = run_dispatcher_inliner(code);
-    eprintln!("Output: {output}");
-
-    assert!(inliner.has_changed(), "Should have inlined identifier return");
-    assert!(output.contains("result"), "Should keep identifier reference");
+    assert!(!inliner.has_changed(), "{output}");
 }
 
 #[test]

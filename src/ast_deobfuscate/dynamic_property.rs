@@ -38,14 +38,6 @@ impl DynamicPropertyConverter {
     fn try_extract_property_name(expr: &Expression<'_>) -> Option<String> {
         match expr {
             Expression::StringLiteral(s) => Some(s.value.as_str().to_string()),
-            Expression::NumericLiteral(n) => {
-                let val = n.value as u32;
-                if val <= 127 {
-                    char::from_u32(val).map(|c| c.to_string())
-                } else {
-                    None
-                }
-            }
             Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
                 let left = Self::try_extract_property_name(&binary.left)?;
                 let right = Self::try_extract_property_name(&binary.right)?;
@@ -132,10 +124,11 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_hex_ascii() {
-        let output = run_dynamic_property("obj[97]");
-        eprintln!("Output: {output}");
-        assert!(output.contains("obj.a"), "Expected obj.a (97 = 'a'), got: {output}");
+    fn numeric_key_names_its_decimal_string() {
+        for code in ["obj[97]", r#"obj["a" + 1 + 2]"#] {
+            let output = run_dynamic_property(code);
+            assert!(output.contains('['), "numeric keys are not characters: {output}");
+        }
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use oxc_allocator::{ArenaVec, CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
-    Argument, ArrayExpressionElement, AssignmentTarget, BindingPattern, CallExpression, Expression, IdentifierName,
-    Statement,
+    Argument, ArrayExpressionElement, AssignmentTarget, BindingPattern, CallExpression, Expression, Statement,
 };
 use oxc_span::SPAN;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
@@ -13,13 +13,13 @@ use super::Ctx;
 use super::types::TrampolineInfo;
 
 pub struct TrampolineInliner {
-    trampolines: FxHashMap<String, TrampolineInfo>,
+    trampolines: FxHashMap<SymbolId, TrampolineInfo>,
     inlined: usize,
 }
 
 impl TrampolineInliner {
     #[must_use]
-    pub const fn new(trampolines: FxHashMap<String, TrampolineInfo>) -> Self {
+    pub const fn new(trampolines: FxHashMap<SymbolId, TrampolineInfo>) -> Self {
         Self {
             trampolines,
             inlined: 0,
@@ -32,67 +32,51 @@ impl TrampolineInliner {
     }
 
     fn make_call_expr<'a>(
-        dispatcher: &str,
-        state: &str,
+        info: &TrampolineInfo,
         call_args: &OxcVec<'a, Argument<'a>>,
         ctx: &Ctx<'a>,
     ) -> Expression<'a> {
-        let dispatcher = ctx.ast.allocator().alloc_str(dispatcher);
-        let state = ctx.ast.allocator().alloc_str(state);
+        let dispatcher = ctx.ast.allocator().alloc_str(&info.dispatcher);
+        let state = ctx.ast.allocator().alloc_str(&info.state);
         let dispatcher_ident = Expression::new_identifier(SPAN, dispatcher, &ctx.ast);
-        let call_member = Expression::new_static_member_expression(
-            SPAN,
-            dispatcher_ident,
-            IdentifierName::new(SPAN, "call", &ctx.ast),
-            false,
-            &ctx.ast,
-        );
-
-        let this_arg = Expression::new_this_expression(SPAN, &ctx.ast);
         let state_arg = Expression::new_identifier(SPAN, state, &ctx.ast);
 
         let mut array_elems: OxcVec<'a, ArrayExpressionElement<'a>> = ArenaVec::new_in(&ctx.ast);
         for arg in call_args {
-            if let Some(e) = arg.as_expression() {
-                array_elems.push(ArrayExpressionElement::from(
-                    e.clone_in_with_semantic_ids(ctx.ast.allocator()),
-                ));
-            } else {
-                let cloned_arg: Argument<'a> = arg.clone_in_with_semantic_ids(ctx.ast.allocator());
-                array_elems.push(cloned_arg.into());
-            }
+            let cloned_arg: Argument<'a> = arg.clone_in_with_semantic_ids(ctx.ast.allocator());
+            array_elems.push(cloned_arg.into());
         }
         let args_array = Expression::new_array_expression(SPAN, array_elems, &ctx.ast);
 
         let mut new_arguments: OxcVec<'a, Argument<'a>> = ArenaVec::new_in(&ctx.ast);
-        new_arguments.push(Argument::from(this_arg));
         new_arguments.push(Argument::from(state_arg));
         new_arguments.push(Argument::from(args_array));
 
-        Expression::new_call_expression_with_pure(SPAN, call_member, None, new_arguments, false, false, &ctx.ast)
+        Expression::new_call_expression(SPAN, dispatcher_ident, None, new_arguments, false, &ctx.ast)
+    }
+
+    fn trampoline_of(&self, symbol: Option<SymbolId>) -> Option<&TrampolineInfo> {
+        self.trampolines.get(&symbol?)
     }
 
     fn try_inline<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
         let Expression::Identifier(ident) = &call.callee else {
             return None;
         };
-        let info = self.trampolines.get(ident.name.as_str())?;
+        let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id();
+        let info = self.trampoline_of(symbol)?;
         if self.inlined < 10 {
             eprintln!(
-                "[AST/tramp] inline {}({} args) -> {}.call(this, {}, [...])",
+                "[AST/tramp] inline {}({} args) -> {}({}, [...])",
                 ident.name.as_str(),
                 call.arguments.len(),
                 info.dispatcher,
                 info.state
             );
         }
+        let inlined = Self::make_call_expr(info, &call.arguments, ctx);
         self.inlined += 1;
-        Some(Self::make_call_expr(
-            &info.dispatcher,
-            &info.state,
-            &call.arguments,
-            ctx,
-        ))
+        Some(inlined)
     }
 }
 
@@ -106,38 +90,31 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineInliner {
     }
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
-        if let Statement::FunctionDeclaration(func) = stmt
-            && let Some(id) = &func.id
-            && self.trampolines.contains_key(id.name.as_str())
-        {
-            eprintln!("[AST/tramp] remove function {}", id.name.as_str());
-            *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
-            return;
-        }
-        if let Statement::VariableDeclaration(decl) = stmt {
-            let all_are_trampolines = !decl.declarations.is_empty()
-                && decl.declarations.iter().all(|d| {
-                    let BindingPattern::BindingIdentifier(id) = &d.id else {
-                        return false;
-                    };
-                    let Some(Expression::FunctionExpression(_)) = &d.init else {
-                        return false;
-                    };
-                    self.trampolines.contains_key(id.name.as_str())
-                });
-            if all_are_trampolines {
-                eprintln!("[AST/tramp] remove var declaration");
-                *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
-                return;
+        let remove = match stmt {
+            Statement::FunctionDeclaration(func) => self
+                .trampoline_of(func.id.as_ref().and_then(|id| id.symbol_id.get()))
+                .is_some(),
+            Statement::VariableDeclaration(decl) => decl.declarations.iter().all(|d| {
+                let BindingPattern::BindingIdentifier(id) = &d.id else {
+                    return false;
+                };
+                matches!(&d.init, Some(Expression::FunctionExpression(_)))
+                    && self.trampoline_of(id.symbol_id.get()).is_some()
+            }),
+            Statement::ExpressionStatement(es) => {
+                if let Expression::AssignmentExpression(assign) = &es.expression
+                    && let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left
+                    && matches!(&assign.right, Expression::FunctionExpression(_))
+                {
+                    let symbol = ctx.scoping().get_reference(target.reference_id()).symbol_id();
+                    self.trampoline_of(symbol).is_some()
+                } else {
+                    false
+                }
             }
-        }
-        if let Statement::ExpressionStatement(es) = stmt
-            && let Expression::AssignmentExpression(assign) = &es.expression
-            && let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left
-            && matches!(&assign.right, Expression::FunctionExpression(_))
-            && self.trampolines.contains_key(target.name.as_str())
-        {
-            eprintln!("[AST/tramp] remove {} = function()", target.name.as_str());
+            _ => false,
+        };
+        if remove {
             *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
         }
     }

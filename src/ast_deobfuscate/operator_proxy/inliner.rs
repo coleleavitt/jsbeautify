@@ -1,6 +1,7 @@
 use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{BindingPattern, CallExpression, Expression, Statement};
 use oxc_span::SPAN;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
@@ -10,13 +11,13 @@ use super::Ctx;
 use super::types::OperatorProxyInfo;
 
 pub struct OperatorProxyInliner {
-    proxies: FxHashMap<String, OperatorProxyInfo>,
+    proxies: FxHashMap<SymbolId, OperatorProxyInfo>,
     changed: bool,
 }
 
 impl OperatorProxyInliner {
     #[must_use]
-    pub const fn new(proxies: FxHashMap<String, OperatorProxyInfo>) -> Self {
+    pub const fn new(proxies: FxHashMap<SymbolId, OperatorProxyInfo>) -> Self {
         Self {
             proxies,
             changed: false,
@@ -28,36 +29,31 @@ impl OperatorProxyInliner {
         self.changed
     }
 
+    fn is_proxy(&self, symbol: Option<SymbolId>) -> bool {
+        symbol.is_some_and(|symbol| self.proxies.contains_key(&symbol))
+    }
+
     fn try_inline_call<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
-        let name = if let Expression::Identifier(ident) = &call.callee {
-            ident.name.as_str()
-        } else {
+        let Expression::Identifier(ident) = &call.callee else {
             return None;
         };
-
-        let proxy = self.proxies.get(name)?;
-
-        if call.arguments.len() != 2 {
+        let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id()?;
+        let proxy = self.proxies.get(&symbol)?;
+        let [arg1, arg2] = call.arguments.as_slice() else {
             return None;
-        }
+        };
+        let (arg1, arg2) = (arg1.as_expression()?, arg2.as_expression()?);
 
-        let arg1 = call.arguments[0].as_expression()?;
-        let arg2 = call.arguments[1].as_expression()?;
-
-        eprintln!("[AST] Inlining operator proxy: {} -> {:?}", name, proxy.operator);
+        eprintln!("[AST] Inlining operator proxy: {} -> {:?}", ident.name, proxy.operator);
         self.changed = true;
 
         Some(Expression::new_binary_expression(
             SPAN,
-            Self::clone_expression(arg1, ctx),
+            arg1.clone_in_with_semantic_ids(ctx.allocator()),
             proxy.operator,
-            Self::clone_expression(arg2, ctx),
+            arg2.clone_in_with_semantic_ids(ctx.allocator()),
             ctx,
         ))
-    }
-
-    fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.allocator())
     }
 }
 
@@ -71,45 +67,19 @@ impl<'a> Traverse<'a, DeobfuscateState> for OperatorProxyInliner {
     }
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
-        if let Statement::FunctionDeclaration(func) = stmt
-            && let Some(id) = &func.id
-        {
-            let name = id.name.as_str();
-            if self.proxies.contains_key(name) {
-                eprintln!("[AST] Removing operator proxy function: {name}");
-                self.changed = true;
-                *stmt = Statement::new_empty_statement(SPAN, ctx);
-                return;
-            }
-        }
-
-        if let Statement::VariableDeclaration(decl) = stmt {
-            let all_are_proxies = !decl.declarations.is_empty()
-                && decl.declarations.iter().all(|d| {
-                    let BindingPattern::BindingIdentifier(id) = &d.id else {
-                        return false;
-                    };
-                    let Some(Expression::FunctionExpression(_)) = &d.init else {
-                        return false;
-                    };
-                    self.proxies.contains_key(id.name.as_str())
-                });
-            if all_are_proxies {
-                let names: Vec<String> = decl
-                    .declarations
-                    .iter()
-                    .filter_map(|d| match &d.id {
-                        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
-                        _ => None,
-                    })
-                    .collect();
-                eprintln!(
-                    "[AST] Removing operator proxy var declaration: var {};",
-                    names.join(", ")
-                );
-                self.changed = true;
-                *stmt = Statement::new_empty_statement(SPAN, ctx);
-            }
+        let remove = match stmt {
+            Statement::FunctionDeclaration(func) => self.is_proxy(func.id.as_ref().and_then(|id| id.symbol_id.get())),
+            Statement::VariableDeclaration(decl) => decl.declarations.iter().all(|d| {
+                let BindingPattern::BindingIdentifier(id) = &d.id else {
+                    return false;
+                };
+                matches!(&d.init, Some(Expression::FunctionExpression(_))) && self.is_proxy(id.symbol_id.get())
+            }),
+            _ => false,
+        };
+        if remove {
+            self.changed = true;
+            *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }
 }

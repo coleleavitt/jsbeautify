@@ -237,8 +237,8 @@ impl AstDeobfuscator {
         let dispatchers = detector.detect(program);
         eprintln!("[DEOBFUSCATE] Phase 8.5: Found {} dispatchers", dispatchers.len());
         if !dispatchers.is_empty() {
-            let case_bodies = collect_case_bodies(program, &dispatchers, allocator);
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let case_bodies = collect_case_bodies(program, &dispatchers, allocator);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);
             traverse_mut_with_ctx(&mut unflattener, program, &mut ctx);

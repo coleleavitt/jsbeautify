@@ -38,7 +38,7 @@ impl Default for WindowAliasCollector {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
-    fn enter_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
+    fn enter_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, ctx: &mut Ctx<'a>) {
         let oxc_ast::ast::BindingPattern::BindingIdentifier(id) = &decl.id else {
             return;
         };
@@ -50,7 +50,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         // SymbolId, so a later non-global redeclaration must cancel the alias.
         // A different binding named X in another scope is a distinct SymbolId.
         match decl.init.as_ref() {
-            Some(init) if is_global_like(init) => {
+            Some(init) if is_global_like(init, ctx.scoping()) => {
                 self.candidates.insert(symbol_id);
             }
             _ => {
@@ -72,7 +72,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         // Only a *simple* `X = window` promotes X. A compound assignment
         // (`X += window` computes `X + window`, a number) or any non-global RHS
         // means X no longer holds a pure global object and must be poisoned.
-        if assign.operator.is_assign() && is_global_like(&assign.right) {
+        if assign.operator.is_assign() && is_global_like(&assign.right, ctx.scoping()) {
             self.candidates.insert(symbol_id);
         } else {
             self.poisoned.insert(symbol_id);

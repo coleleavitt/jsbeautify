@@ -1,13 +1,10 @@
 use oxc_allocator::{CloneIn, Vec as OxcVec};
 use oxc_ast::ast::{BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_syntax::symbol::SymbolId;
 use rustc_hash::FxHashMap;
 
-use super::CaseBodyMap;
+use super::{CaseBody, CaseBodyMap};
 use crate::ast_deobfuscate::dispatcher_detector::DispatcherMap;
-
-mod refs;
-
-pub(super) use refs::body_references_param;
 
 pub fn collect_case_bodies<'a>(
     program: &Program<'a>,
@@ -41,7 +38,7 @@ fn scan_stmt<'a>(
             if let Some(id) = &func.id {
                 let name = id.name.as_str();
                 if let Some(info) = dispatchers.get(name) {
-                    extract_case_bodies(func, &info.name, dispatchers, bodies, alloc);
+                    extract_case_bodies(func, &info.name, id.symbol_id.get(), dispatchers, bodies, alloc);
                 }
             }
             if let Some(body) = &func.body {
@@ -190,7 +187,7 @@ fn scan_var_declarator<'a>(
     };
     let var_name = var_id.name.as_str();
     if let Some(info) = dispatchers.get(var_name) {
-        extract_case_bodies(func, &info.name, dispatchers, bodies, alloc);
+        extract_case_bodies(func, &info.name, var_id.symbol_id.get(), dispatchers, bodies, alloc);
     }
     // Always recurse into the function body to find nested dispatchers
     if let Some(body) = &func.body {
@@ -198,27 +195,27 @@ fn scan_var_declarator<'a>(
     }
 }
 
+/// Records the statements one call `D(LABEL, args)` runs for every case of a
+/// dispatcher whose body is only the `switch`: the case's statements up to its
+/// first top-level `break`. A case that can fall through into the next one is
+/// skipped, and so is a repeated label (only its first case is reachable).
 fn extract_case_bodies<'a>(
     func: &Function<'a>,
     dispatcher_name: &str,
+    dispatcher: Option<SymbolId>,
     dispatchers: &DispatcherMap,
     bodies: &mut CaseBodyMap<'a>,
     alloc: &'a oxc_allocator::Allocator,
 ) {
     let Some(body) = &func.body else { return };
-    let switch = body.statements.iter().find_map(|s| {
-        if let Statement::SwitchStatement(sw) = s {
-            Some(sw)
-        } else {
-            None
-        }
-    });
-    let Some(switch) = switch else { return };
+    let [Statement::SwitchStatement(switch)] = body.statements.as_slice() else {
+        return;
+    };
     let Some(info) = dispatchers.get(dispatcher_name) else {
         return;
     };
 
-    for case in &switch.cases {
+    for (index, case) in switch.cases.iter().enumerate() {
         let Some(Expression::Identifier(label_id)) = &case.test else {
             continue;
         };
@@ -226,13 +223,40 @@ fn extract_case_bodies<'a>(
         if !info.cases.contains_key(label) {
             continue;
         }
-        let mut stmts: OxcVec<'a, Statement<'a>> = OxcVec::new_in(&alloc);
-        for s in &case.consequent {
-            if matches!(s, Statement::BreakStatement(_)) {
-                continue;
-            }
-            stmts.push(s.clone_in_with_semantic_ids(alloc));
+        let key = (dispatcher_name.to_string(), label.to_string());
+        if bodies.contains_key(&key) {
+            continue;
         }
-        bodies.insert((dispatcher_name.to_string(), label.to_string()), stmts);
+        let first_break = case
+            .consequent
+            .iter()
+            .position(|s| matches!(s, Statement::BreakStatement(b) if b.label.is_none()));
+        let run = match first_break {
+            Some(end) => &case.consequent[..end],
+            None => {
+                let last_case = index + 1 == switch.cases.len();
+                let exits = matches!(
+                    case.consequent.last(),
+                    Some(Statement::ReturnStatement(_) | Statement::ThrowStatement(_))
+                );
+                if !last_case && !exits {
+                    continue;
+                }
+                case.consequent.as_slice()
+            }
+        };
+        let mut stmts: OxcVec<'a, Statement<'a>> = OxcVec::new_in(&alloc);
+        stmts.extend(run.iter().map(|s| s.clone_in_with_semantic_ids(alloc)));
+        let Some(label) = label_id.reference_id.get() else {
+            continue;
+        };
+        bodies.insert(
+            key,
+            CaseBody {
+                dispatcher,
+                label,
+                stmts,
+            },
+        );
     }
 }

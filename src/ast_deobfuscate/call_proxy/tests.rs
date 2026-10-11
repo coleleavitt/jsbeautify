@@ -22,7 +22,6 @@ fn run_call_proxy(code: &str) -> String {
     traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
 
     let single_use = collector.get_single_use_proxies();
-    eprintln!("Single use proxies: {:?}", single_use.keys().collect::<Vec<_>>());
 
     if !single_use.is_empty() {
         let mut inliner = CallProxyInliner::new(single_use);
@@ -82,4 +81,39 @@ fn test_no_proxy_wrong_order() {
         output.contains("function _wrap"),
         "Non-proxy (wrong param order) should be preserved, got: {output}"
     );
+}
+
+#[test]
+fn proxy_used_as_a_value_is_kept() {
+    let output =
+        run_call_proxy("function t(a) { return a * 2; }\nfunction p(a) { return t(a); }\nvar api = { p };\np(3);");
+    assert!(output.contains("function p"), "got: {output}");
+    assert!(output.contains("p(3)"), "got: {output}");
+}
+
+#[test]
+fn eval_target_is_not_moved_to_the_call_site() {
+    let output =
+        run_call_proxy("function p(c) { return eval(c); }\nvar o = { m: function() { return p(\"this\"); } };");
+    assert!(output.contains("function p"), "got: {output}");
+}
+
+#[test]
+fn target_bound_differently_at_the_call_site_is_kept() {
+    for code in [
+        "function p(t) { return t(t); }\np(f);",
+        "function p(a) { return t(a); }\nfunction f(t) { return p(1); }",
+        "function g() {}\nfunction p(a) { return g(a); }\ng = h;\np(1);",
+    ] {
+        let output = run_call_proxy(code);
+        assert!(output.contains("function p"), "got: {output}");
+    }
+}
+
+#[test]
+fn same_name_in_another_scope_is_untouched() {
+    let output =
+        run_call_proxy("function f() { function p(a) { return t(a); } return p(1); }\nfunction g(p) { return p(2); }");
+    assert!(output.contains("return t(1)"), "got: {output}");
+    assert!(output.contains("return p(2)"), "got: {output}");
 }

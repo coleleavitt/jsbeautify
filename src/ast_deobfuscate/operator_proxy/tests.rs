@@ -22,7 +22,6 @@ fn run_operator_proxy(code: &str) -> String {
     traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
 
     let proxies = collector.get_proxies();
-    eprintln!("Operator proxies: {:?}", proxies.keys().collect::<Vec<_>>());
 
     if !proxies.is_empty() {
         let mut inliner = OperatorProxyInliner::new(proxies);
@@ -88,4 +87,21 @@ fn test_comparison_operator() {
         output.contains("5 < 10") || output.contains("5<10"),
         "Call should be inlined to comparison, got: {output}"
     );
+}
+
+#[test]
+fn proxy_used_as_a_value_is_kept() {
+    let output =
+        run_operator_proxy("function add(a, b) { return a + b; }\nvar s = [1, 2].reduce(add);\nvar t = add(1, 2);");
+    assert!(output.contains("function add"), "got: {output}");
+    assert!(output.contains("add(1, 2)"), "got: {output}");
+}
+
+#[test]
+fn same_name_in_another_scope_is_untouched() {
+    let output = run_operator_proxy(
+        "function f() { function add(a, b) { return a + b; } return add(1, 2); }\nfunction g(add) { return add(3, 4); }",
+    );
+    assert!(output.contains("return 1 + 2"), "got: {output}");
+    assert!(output.contains("return add(3, 4)"), "got: {output}");
 }

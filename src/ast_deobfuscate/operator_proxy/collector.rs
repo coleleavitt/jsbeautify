@@ -1,118 +1,94 @@
-use oxc_ast::ast::{BindingPattern, Expression, Function, Statement, VariableDeclarator};
+use oxc_ast::ast::{BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::call_sites::plain_call_arities;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
 use super::types::OperatorProxyInfo;
 
+/// Finds `function f(a, b) { return a OP b; }` bindings whose every reference
+/// is a two-argument call.
+#[derive(Default)]
 pub struct OperatorProxyCollector {
-    proxies: FxHashMap<String, OperatorProxyInfo>,
+    binary_calls_only: FxHashSet<SymbolId>,
+    proxies: FxHashMap<SymbolId, OperatorProxyInfo>,
 }
 
 impl OperatorProxyCollector {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            proxies: FxHashMap::default(),
-        }
+        Self::default()
     }
 
     #[must_use]
-    pub fn get_proxies(&self) -> FxHashMap<String, OperatorProxyInfo> {
+    pub fn get_proxies(&self) -> FxHashMap<SymbolId, OperatorProxyInfo> {
         self.proxies.clone()
     }
 
-    fn try_extract_proxy(&mut self, func: &Function<'_>) -> Option<(String, OperatorProxyInfo)> {
-        let name = func.id.as_ref()?.name.as_str().to_string();
-        let info = Self::extract_proxy_info(func, &name)?;
-        Some((name, info))
-    }
-
-    fn try_extract_proxy_for(&mut self, name: &str, func: &Function<'_>) -> Option<OperatorProxyInfo> {
-        Self::extract_proxy_info(func, name)
-    }
-
-    fn extract_proxy_info(func: &Function<'_>, name: &str) -> Option<OperatorProxyInfo> {
-        if func.r#async || func.generator {
+    fn extract_proxy_info(func: &Function<'_>) -> Option<OperatorProxyInfo> {
+        if func.r#async || func.generator || func.params.rest.is_some() {
             return None;
         }
-
         let body = func.body.as_ref()?;
-
-        if body.statements.len() != 1 {
-            return None;
-        }
-
-        let Statement::ReturnStatement(ret) = &body.statements[0] else {
+        let [Statement::ReturnStatement(ret)] = body.statements.as_slice() else {
             return None;
         };
-
         let Some(Expression::BinaryExpression(binary)) = &ret.argument else {
             return None;
         };
-
-        if func.params.items.len() != 2 {
+        let [first, second] = func.params.items.as_slice() else {
+            return None;
+        };
+        let (BindingPattern::BindingIdentifier(param1), BindingPattern::BindingIdentifier(param2)) =
+            (&first.pattern, &second.pattern)
+        else {
+            return None;
+        };
+        if first.initializer.is_some() || second.initializer.is_some() || param1.name == param2.name {
             return None;
         }
-
-        let param1 = if let BindingPattern::BindingIdentifier(ident) = &func.params.items[0].pattern {
-            ident.name.as_str().to_string()
-        } else {
+        let (Expression::Identifier(left), Expression::Identifier(right)) = (&binary.left, &binary.right) else {
             return None;
         };
-
-        let param2 = if let BindingPattern::BindingIdentifier(ident) = &func.params.items[1].pattern {
-            ident.name.as_str().to_string()
-        } else {
-            return None;
-        };
-
-        let Expression::Identifier(left_ident) = &binary.left else {
-            return None;
-        };
-        let Expression::Identifier(right_ident) = &binary.right else {
-            return None;
-        };
-
-        if left_ident.name.as_str() != param1 || right_ident.name.as_str() != param2 {
-            return None;
-        }
-
-        eprintln!("[AST] Found operator proxy: {name} -> {:?}", binary.operator);
-
-        Some(OperatorProxyInfo {
+        (left.name == param1.name && right.name == param2.name).then_some(OperatorProxyInfo {
             operator: binary.operator,
-            param1,
-            param2,
         })
     }
-}
 
-impl Default for OperatorProxyCollector {
-    fn default() -> Self {
-        Self::new()
+    fn add(&mut self, symbol: Option<SymbolId>, func: &Function<'_>) {
+        if let Some(symbol) = symbol
+            && self.binary_calls_only.contains(&symbol)
+            && let Some(info) = Self::extract_proxy_info(func)
+        {
+            eprintln!("[AST] Found operator proxy -> {:?}", info.operator);
+            self.proxies.insert(symbol, info);
+        }
     }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for OperatorProxyCollector {
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.binary_calls_only = plain_call_arities(program, ctx.scoping())
+            .into_iter()
+            .filter(|(_, arities)| arities.len() == 1 && arities.contains(&2))
+            .map(|(symbol, _)| symbol)
+            .collect();
+    }
+
     fn enter_function(&mut self, func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
-        if let Some((name, info)) = self.try_extract_proxy(func) {
-            self.proxies.insert(name, info);
+        if func.is_declaration() {
+            self.add(func.id.as_ref().and_then(|id| id.symbol_id.get()), func);
         }
     }
 
     fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
-        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-            return;
-        };
-        let Some(Expression::FunctionExpression(func)) = &declarator.init else {
-            return;
-        };
-        let name = id.name.as_str().to_string();
-        if let Some(info) = self.try_extract_proxy_for(&name, func) {
-            self.proxies.insert(name, info);
+        if let BindingPattern::BindingIdentifier(id) = &declarator.id
+            && let Some(Expression::FunctionExpression(func)) = &declarator.init
+        {
+            self.add(id.symbol_id.get(), func);
         }
     }
 }

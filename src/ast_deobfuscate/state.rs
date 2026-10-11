@@ -1,3 +1,4 @@
+use oxc_syntax::symbol::SymbolId;
 use rustc_hash::FxHashMap;
 
 pub struct DeobfuscateState {
@@ -28,6 +29,7 @@ impl Default for DeobfuscateState {
 #[derive(Debug, Clone)]
 pub struct DispatcherInfo {
     pub var_name: String,
+    pub symbol: Option<SymbolId>,
     pub functions: FxHashMap<String, FunctionInfo>,
 }
 
@@ -43,7 +45,6 @@ pub enum ReturnValue {
     String(String),
     Bool(bool),
     Null,
-    Identifier(String),
 }
 
 #[derive(Debug, Clone)]

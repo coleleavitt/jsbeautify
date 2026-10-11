@@ -1,89 +1,41 @@
-use oxc_allocator::Vec as OxcVec;
-use oxc_ast::ast::{CallExpression, Expression, Statement};
+use oxc_ast::ast::{CallExpression, Expression, IdentifierReference};
 use rustc_hash::FxHashMap;
 
-use super::super::CaseBodyMap;
+use super::super::{CaseBody, CaseBodyMap};
 use super::DispatcherMeta;
 use crate::ast_deobfuscate::dispatcher_detector::DispatcherMap;
 
-pub(super) type CallResolution<'a, 'b> = (
-    &'b str,
-    &'b str,
-    &'b Expression<'a>,
-    &'b DispatcherMeta,
-    &'b OxcVec<'a, Statement<'a>>,
-);
-
-fn resolve_direct<'a, 'b>(
-    dispatchers: &'b DispatcherMap,
-    case_bodies: &'b CaseBodyMap<'a>,
-    meta_map: &'b FxHashMap<String, DispatcherMeta>,
-    call: &'b CallExpression<'a>,
-) -> Option<CallResolution<'a, 'b>> {
-    let Expression::Identifier(callee_id) = &call.callee else {
-        return None;
-    };
-    let name = callee_id.name.as_str();
-    if !dispatchers.contains_key(name) {
-        return None;
-    }
-    if call.arguments.len() != 2 {
-        return None;
-    }
-    let state_expr = call.arguments[0].as_expression()?;
-    let Expression::Identifier(state_id) = state_expr else {
-        return None;
-    };
-    let state_label = state_id.name.as_str();
-    let key = (name.to_string(), state_label.to_string());
-    if !case_bodies.contains_key(&key) {
-        return None;
-    }
-    let args_expr = call.arguments[1].as_expression()?;
-    let meta = meta_map.get(name)?;
-    let body = case_bodies.get(&key)?;
-    Some((name, state_label, args_expr, meta, body))
+/// A call site matched to a dispatcher case.
+pub(super) struct CallResolution<'a, 'b> {
+    pub(super) callee: &'b IdentifierReference<'a>,
+    pub(super) label: &'b IdentifierReference<'a>,
+    pub(super) args: &'b Expression<'a>,
+    pub(super) meta: &'b DispatcherMeta,
+    pub(super) body: &'b CaseBody<'a>,
+    /// `D.call(this, …)`: the case body sees the call site's `this`.
+    pub(super) forwards_this: bool,
 }
 
-fn resolve_call_this<'a, 'b>(
-    dispatchers: &'b DispatcherMap,
+fn resolve<'a, 'b>(
     case_bodies: &'b CaseBodyMap<'a>,
     meta_map: &'b FxHashMap<String, DispatcherMeta>,
-    call: &'b CallExpression<'a>,
+    callee: &'b IdentifierReference<'a>,
+    label: &'b Expression<'a>,
+    args: &'b Expression<'a>,
+    forwards_this: bool,
 ) -> Option<CallResolution<'a, 'b>> {
-    let Expression::StaticMemberExpression(sme) = &call.callee else {
+    let Expression::Identifier(label) = label else {
         return None;
     };
-    if sme.property.name.as_str() != "call" {
-        return None;
-    }
-    let Expression::Identifier(obj_id) = &sme.object else {
-        return None;
-    };
-    let name = obj_id.name.as_str();
-    if !dispatchers.contains_key(name) {
-        return None;
-    }
-    if call.arguments.len() != 3 {
-        return None;
-    }
-    let first = call.arguments[0].as_expression()?;
-    if !matches!(first, Expression::ThisExpression(_)) {
-        return None;
-    }
-    let state_expr = call.arguments[1].as_expression()?;
-    let Expression::Identifier(state_id) = state_expr else {
-        return None;
-    };
-    let state_label = state_id.name.as_str();
-    let key = (name.to_string(), state_label.to_string());
-    if !case_bodies.contains_key(&key) {
-        return None;
-    }
-    let args_expr = call.arguments[2].as_expression()?;
-    let meta = meta_map.get(name)?;
-    let body = case_bodies.get(&key)?;
-    Some((name, state_label, args_expr, meta, body))
+    let key = (callee.name.to_string(), label.name.to_string());
+    Some(CallResolution {
+        callee,
+        label,
+        args,
+        meta: meta_map.get(callee.name.as_str())?,
+        body: case_bodies.get(&key)?,
+        forwards_this,
+    })
 }
 
 pub(super) fn resolve_call<'a, 'b>(
@@ -92,6 +44,26 @@ pub(super) fn resolve_call<'a, 'b>(
     meta_map: &'b FxHashMap<String, DispatcherMeta>,
     call: &'b CallExpression<'a>,
 ) -> Option<CallResolution<'a, 'b>> {
-    resolve_direct(dispatchers, case_bodies, meta_map, call)
-        .or_else(|| resolve_call_this(dispatchers, case_bodies, meta_map, call))
+    let args: Vec<&Expression<'a>> = call
+        .arguments
+        .iter()
+        .map(|arg| arg.as_expression())
+        .collect::<Option<_>>()?;
+    match (&call.callee, args.as_slice()) {
+        (Expression::Identifier(callee), [label, args]) if dispatchers.contains_key(callee.name.as_str()) => {
+            resolve(case_bodies, meta_map, callee, label, args, false)
+        }
+        (Expression::StaticMemberExpression(sme), [Expression::ThisExpression(_), label, args])
+            if sme.property.name == "call" =>
+        {
+            let Expression::Identifier(callee) = &sme.object else {
+                return None;
+            };
+            if !dispatchers.contains_key(callee.name.as_str()) {
+                return None;
+            }
+            resolve(case_bodies, meta_map, callee, label, args, true)
+        }
+        _ => None,
+    }
 }

@@ -1,8 +1,8 @@
 use oxc_ast::ast::{
-    ArrowFunctionExpression, BindingPattern, Expression, Function, ObjectPropertyKind, PropertyKey, Statement,
-    VariableDeclaration,
+    ArrowFunctionExpression, BindingPattern, Expression, Function, ObjectPropertyKind, PropertyKey, PropertyKind,
+    Statement, VariableDeclaration,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::{DispatcherInfo, FunctionInfo, ReturnValue};
 
@@ -16,10 +16,10 @@ impl DispatcherInliner {
 
         let decl = &var_decl.declarations[0];
 
-        let var_name = match &decl.id {
-            BindingPattern::BindingIdentifier(ident) => ident.name.as_str().to_string(),
-            _ => return None,
+        let BindingPattern::BindingIdentifier(ident) = &decl.id else {
+            return None;
         };
+        let var_name = ident.name.as_str().to_string();
 
         let init = decl.init.as_ref()?;
 
@@ -29,29 +29,39 @@ impl DispatcherInliner {
 
         let mut functions = FxHashMap::default();
 
+        let mut keys = FxHashSet::default();
         for prop in &obj_expr.properties {
-            if let ObjectPropertyKind::ObjectProperty(obj_prop) = prop {
-                let key = match &obj_prop.key {
-                    PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
-                    PropertyKey::StaticIdentifier(id) => id.name.as_str().to_string(),
-                    _ => continue,
-                };
+            // Every key must be known and unique, so no later property or
+            // spread replaces a detected function.
+            let ObjectPropertyKind::ObjectProperty(obj_prop) = prop else {
+                return None;
+            };
+            let key = match &obj_prop.key {
+                PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                PropertyKey::StaticIdentifier(id) => id.name.as_str().to_string(),
+                _ => return None,
+            };
+            if key == "__proto__" || !keys.insert(key.clone()) {
+                return None;
+            }
+            if obj_prop.kind != PropertyKind::Init {
+                continue;
+            }
 
-                let return_value = match &obj_prop.value {
-                    Expression::FunctionExpression(func) => Self::extract_function_return(func),
-                    Expression::ArrowFunctionExpression(arrow) => Self::extract_arrow_return(arrow),
-                    _ => None,
-                };
+            let return_value = match &obj_prop.value {
+                Expression::FunctionExpression(func) => Self::extract_function_return(func),
+                Expression::ArrowFunctionExpression(arrow) => Self::extract_arrow_return(arrow),
+                _ => None,
+            };
 
-                if let Some(ret_val) = return_value {
-                    functions.insert(
-                        key.clone(),
-                        FunctionInfo {
-                            key,
-                            return_value: Some(ret_val),
-                        },
-                    );
-                }
+            if let Some(ret_val) = return_value {
+                functions.insert(
+                    key.clone(),
+                    FunctionInfo {
+                        key,
+                        return_value: Some(ret_val),
+                    },
+                );
             }
         }
 
@@ -59,7 +69,11 @@ impl DispatcherInliner {
             return None;
         }
 
-        Some(DispatcherInfo { var_name, functions })
+        Some(DispatcherInfo {
+            var_name,
+            symbol: ident.symbol_id.get(),
+            functions,
+        })
     }
 
     fn extract_function_return(func: &Function<'_>) -> Option<ReturnValue> {
@@ -82,20 +96,8 @@ impl DispatcherInliner {
 
         let statements = &arrow.body.as_function_body()?.statements;
 
-        if statements.len() == 1
-            && let Statement::ReturnStatement(ret) = &statements[0]
-        {
+        if let [Statement::ReturnStatement(ret)] = statements.as_slice() {
             return ret.argument.as_ref().and_then(Self::extract_literal_value);
-        }
-
-        if let Some(Statement::ExpressionStatement(expr_stmt)) = statements.last() {
-            let all_non_return = statements[..statements.len() - 1]
-                .iter()
-                .all(|s| !matches!(s, Statement::ReturnStatement(_)));
-
-            if all_non_return {
-                return Self::extract_literal_value(&expr_stmt.expression);
-            }
         }
 
         None
@@ -107,7 +109,6 @@ impl DispatcherInliner {
             Expression::StringLiteral(lit) => Some(ReturnValue::String(lit.value.to_string())),
             Expression::BooleanLiteral(lit) => Some(ReturnValue::Bool(lit.value)),
             Expression::NullLiteral(_) => Some(ReturnValue::Null),
-            Expression::Identifier(ident) => Some(ReturnValue::Identifier(ident.name.to_string())),
             _ => None,
         }
     }

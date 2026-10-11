@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Expression, Ident, Str};
+use oxc_ast::ast::{Expression, Str};
 use oxc_span::SPAN;
 use oxc_syntax::number::NumberBase;
 
@@ -18,11 +18,6 @@ impl DispatcherInliner {
             }
             ReturnValue::Bool(b) => Expression::new_boolean_literal(SPAN, *b, ctx),
             ReturnValue::Null => Expression::new_null_literal(SPAN, ctx),
-            ReturnValue::Identifier(name) => ctx.create_unbound_ident_expr(
-                SPAN,
-                Ident::from_str_in(name.as_str(), &ctx.ast),
-                oxc_syntax::reference::ReferenceFlags::Read,
-            ),
         }
     }
 }

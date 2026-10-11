@@ -1,8 +1,15 @@
-use oxc_ast::ast::{CallExpression, Expression};
+use oxc_ast::ast::{CallExpression, Expression, IdentifierReference};
+
+use crate::ast_deobfuscate::state::DispatcherInfo;
 
 use super::{Ctx, DispatcherInliner};
 
 impl DispatcherInliner {
+    fn dispatcher_of(&self, object: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> Option<&DispatcherInfo> {
+        let symbol = ctx.scoping().get_reference(object.reference_id()).symbol_id()?;
+        self.detected_dispatchers.get(&symbol)
+    }
+
     pub(super) fn try_inline_dispatcher_call<'a>(
         &self,
         call: &CallExpression<'a>,
@@ -26,12 +33,11 @@ impl DispatcherInliner {
             return None;
         };
 
-        let obj_name = match &member.object {
-            Expression::Identifier(ident) => ident.name.as_str(),
-            _ => return None,
+        let Expression::Identifier(object) = &member.object else {
+            return None;
         };
-
-        let dispatcher = self.detected_dispatchers.get(obj_name)?;
+        let obj_name = object.name.as_str();
+        let dispatcher = self.dispatcher_of(object, ctx)?;
 
         // Support string literal keys: d["key"]()
         let key = match &member.expression {
@@ -52,13 +58,11 @@ impl DispatcherInliner {
             return None;
         };
 
-        // Object must be an identifier: d.key()
-        let obj_name = match &member.object {
-            Expression::Identifier(ident) => ident.name.as_str(),
-            _ => return None,
+        let Expression::Identifier(object) = &member.object else {
+            return None;
         };
-
-        let dispatcher = self.detected_dispatchers.get(obj_name)?;
+        let obj_name = object.name.as_str();
+        let dispatcher = self.dispatcher_of(object, ctx)?;
 
         // Property must be an identifier: d.key (not d["key"])
         let key = member.property.name.as_str();

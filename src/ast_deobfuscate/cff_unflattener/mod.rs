@@ -3,15 +3,31 @@
 //! Consumes a [`DispatcherMap`] (from [`super::dispatcher_detector`]) and inlines
 //! dispatcher call sites by replacing them with the cloned case body.
 //!
-//! Statement-level calls emit bare statements (or a block with `var` binding when
-//! the body references the dispatcher's args parameter). Expression-level calls
-//! fall back to a zero-param IIFE.
+//! A call site `D(LABEL, args)` or `D.call(this, LABEL, args)` is inlined only
+//! when `D` and `LABEL` resolve to the dispatcher and the case label, every
+//! other free name in the case body resolves to the same binding at the call
+//! site, and the body neither reads a context value the call site would rebind
+//! nor leaves the case with `break`/`continue`. A statement-level call whose
+//! body has no `return`, declaration or args-parameter use is spliced as bare
+//! statements; every other call becomes an arrow IIFE, which keeps the call
+//! site's `this` and binds the args parameter locally.
 
 use oxc_allocator::Vec as OxcVec;
 use oxc_ast::ast::Statement;
+use oxc_syntax::reference::ReferenceId;
+use oxc_syntax::symbol::SymbolId;
 use rustc_hash::FxHashMap;
 
-type CaseBodyMap<'a> = FxHashMap<(String, String), OxcVec<'a, Statement<'a>>>;
+/// The statements one dispatcher call runs for a case label.
+pub struct CaseBody<'a> {
+    /// The dispatcher's binding.
+    dispatcher: Option<SymbolId>,
+    /// The case test's reference to the label.
+    label: ReferenceId,
+    stmts: OxcVec<'a, Statement<'a>>,
+}
+
+type CaseBodyMap<'a> = FxHashMap<(String, String), CaseBody<'a>>;
 
 mod case_bodies;
 mod unflattener;
@@ -42,10 +58,10 @@ mod tests {
             return (Codegen::new().build(&program).code, 0);
         }
 
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let case_bodies = collect_case_bodies(&program, &dispatchers, &allocator);
         let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);
 
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
 
@@ -238,5 +254,79 @@ mod tests {
         assert!(!out.contains("function(a)"), "no IIFE param: {out}");
         assert!(out.contains("var a = [42]"), "var decl for args param: {out}");
         assert!(out.contains("foo(t)"), "body preserved: {out}");
+    }
+
+    #[test]
+    fn call_this_form_keeps_this_in_an_arrow_iife() {
+        let code = r"
+            function D(s, a) { switch (s) { case X: { return this.v + a[0]; } } }
+            var o = { v: 10, m: function () { var r = D.call(this, X, [5]); return r; } };
+        ";
+        let (out, inlined) = run(code);
+        assert_eq!(inlined, 1, "{out}");
+        assert!(out.contains("var r = (() => {"), "expected an arrow IIFE: {out}");
+    }
+
+    #[test]
+    fn skips_bodies_reading_the_rebound_context() {
+        for body in [
+            "out.push(this)",
+            "out.push(arguments.length)",
+            "out.push(new.target)",
+            "eval(c)",
+        ] {
+            let code = format!(
+                "function D(s, a) {{ switch (s) {{ case X: {{ {body}; }} break; }} }}\nvar o = {{ m: function () {{ D(X, [5]); }} }};"
+            );
+            let (out, inlined) = run(&code);
+            assert_eq!(inlined, 0, "{body}: {out}");
+        }
+        let code =
+            "function D(s, a) { switch (s) { case X: { out.push(arguments.length); } break; } }\nD.call(this, X, [5]);";
+        assert_eq!(run(code).1, 0);
+    }
+
+    #[test]
+    fn return_does_not_leave_the_caller() {
+        let code = r#"
+            function D(s, a) { switch (s) { case X: { return 1; } } }
+            function f() { D(X, [5]); return "reached"; }
+        "#;
+        let (out, inlined) = run(code);
+        assert_eq!(inlined, 1, "{out}");
+        assert!(out.contains("(() => {"), "a returning body must stay in an IIFE: {out}");
+    }
+
+    #[test]
+    fn skips_bodies_whose_names_resolve_differently_at_the_call_site() {
+        let state_param = "function D(s, a) { switch (s) { case X: { foo(s); } break; } }\nD(X, [1]);";
+        assert_eq!(run(state_param).1, 0);
+        let shadowed =
+            "var t = 1;\nfunction D(s, a) { switch (s) { case X: { foo(t); } break; } }\nfunction f(t) { D(X, [1]); }";
+        assert_eq!(run(shadowed).1, 0);
+        let label = "function D(s, a) { switch (s) { case X: { foo(); } break; } }\nfunction f(X) { D(X, [1]); }";
+        assert_eq!(run(label).1, 0);
+        let callee = "function D(s, a) { switch (s) { case X: { foo(); } break; } }\nfunction f(D) { D(X, [1]); }";
+        assert_eq!(run(callee).1, 0);
+    }
+
+    #[test]
+    fn skips_cases_that_fall_through_or_jump_out() {
+        let fallthrough = "function D(s, a) { switch (s) { case X: foo(); case Y: bar(); break; } }\nD(X, [1]);";
+        assert_eq!(run(fallthrough).1, 0);
+        let nested_break = "function D(s, a) { switch (s) { case X: if (a[0]) break; foo(); break; } }\nD(X, [1]);";
+        assert_eq!(run(nested_break).1, 0);
+        let after_switch = "function D(s, a) { switch (s) { case X: foo(); break; } bar(); }\nD(X, [1]);";
+        assert_eq!(run(after_switch).1, 0);
+        let inner_loop = "function D(s, a) { switch (s) { case X: for (;;) { if (a[0]) break; } break; } }\nD(X, [1]);";
+        assert_eq!(run(inner_loop).1, 1);
+    }
+
+    #[test]
+    fn keeps_args_evaluation_when_the_body_ignores_them() {
+        let code = "function D(s, a) { switch (s) { case X: { foo(); } break; } }\nD(X, [g()]);";
+        let (out, inlined) = run(code);
+        assert_eq!(inlined, 1, "{out}");
+        assert!(out.contains("var a = [g()]"), "args must still be evaluated: {out}");
     }
 }

@@ -1,15 +1,18 @@
 use oxc_ast::ast::Expression;
+use oxc_semantic::Scoping;
 use oxc_traverse::Ancestor;
 
 use super::Ctx;
 
-pub(super) fn is_global_like(expr: &Expression<'_>) -> bool {
+pub(super) fn is_global_like(expr: &Expression<'_>, scoping: &Scoping) -> bool {
     // NOTE: `this` is deliberately NOT global-like. `var self = this; self.foo`
     // inside a method/class reads an instance property — rewriting it to bare
     // `foo` silently turns it into a global lookup (a real miscompile). Only the
-    // genuine global objects qualify.
+    // genuine global objects qualify, read through an unbound name: a local or
+    // parameter called `window` is an ordinary value.
     matches!(expr, Expression::Identifier(id)
-        if matches!(id.name.as_str(), "window" | "globalThis" | "global" | "self"))
+        if matches!(id.name.as_str(), "window" | "globalThis" | "global" | "self")
+            && id.reference_id.get().is_some_and(|r| scoping.get_reference(r).symbol_id().is_none()))
 }
 
 /// A reserved word can never be emitted as a bare identifier, so rewriting

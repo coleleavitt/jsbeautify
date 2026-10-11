@@ -38,6 +38,7 @@ pub(crate) mod boolean_literals;
 pub(crate) mod bun;
 #[allow(dead_code)]
 pub(crate) mod call_proxy;
+pub(crate) mod call_sites;
 pub(crate) mod call_this_simplifier;
 pub(crate) mod cff_unflattener;
 #[allow(dead_code)]
@@ -72,6 +73,7 @@ pub(crate) mod esbuild;
 #[allow(dead_code)]
 pub(crate) mod expression_simplify;
 pub(crate) mod fromcharcode_fold;
+pub(crate) mod function_context;
 #[allow(dead_code)]
 pub(crate) mod function_inline;
 pub(crate) mod heuristic_rename;

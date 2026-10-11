@@ -4,7 +4,8 @@
 //! `function f(x){return +x}`, `function f(x){return ~x}`, `function f(x){return typeof x}`,
 //! `function f(x){return void x}` — whether declared as `function f(x){...}` or
 //! `var f = function(x){...};`. Every call site `f(arg)` becomes the corresponding
-//! `<op>arg` expression and the declaration is removed.
+//! `<op>arg` expression and the declaration is removed. Proxies are matched by
+//! `SymbolId` and only when every reference is a one-argument call.
 //!
 //! Akamai BMP defines many of these (`Bd(x) = !x`, `lv(x) = -x`, `Xv(x) = +x`) and
 //! calls them hundreds of times — the existing [`OperatorProxyCollector`] only
@@ -12,12 +13,14 @@
 
 use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{
-    BindingPattern, CallExpression, Expression, Function, Statement, UnaryOperator, VariableDeclarator,
+    BindingPattern, CallExpression, Expression, Function, Program, Statement, UnaryOperator, VariableDeclarator,
 };
 use oxc_span::SPAN;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::call_sites::plain_call_arities;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -27,94 +30,96 @@ pub struct UnaryProxyInfo {
     pub operator: UnaryOperator,
 }
 
+#[derive(Default)]
 pub struct UnaryProxyCollector {
-    proxies: FxHashMap<String, UnaryProxyInfo>,
+    unary_calls_only: FxHashSet<SymbolId>,
+    proxies: FxHashMap<SymbolId, UnaryProxyInfo>,
 }
 
 impl UnaryProxyCollector {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            proxies: FxHashMap::default(),
-        }
+        Self::default()
     }
 
     #[must_use]
-    pub fn get_proxies(&self) -> FxHashMap<String, UnaryProxyInfo> {
+    pub fn get_proxies(&self) -> FxHashMap<SymbolId, UnaryProxyInfo> {
         self.proxies.clone()
     }
 
-    fn extract_proxy_info(func: &Function<'_>, name: &str) -> Option<UnaryProxyInfo> {
+    fn extract_proxy_info(func: &Function<'_>) -> Option<UnaryProxyInfo> {
         if func.r#async || func.generator {
             return None;
         }
         let body = func.body.as_ref()?;
-        if body.statements.len() != 1 {
-            return None;
-        }
-        let Statement::ReturnStatement(ret) = &body.statements[0] else {
+        let [Statement::ReturnStatement(ret)] = body.statements.as_slice() else {
             return None;
         };
         let Some(Expression::UnaryExpression(unary)) = &ret.argument else {
             return None;
         };
-        if func.params.items.len() != 1 {
+        // `delete param` is a no-op on a binding but deletes a property inline.
+        if unary.operator == UnaryOperator::Delete || func.params.items.len() != 1 || func.params.rest.is_some() {
             return None;
         }
-        let BindingPattern::BindingIdentifier(param) = &func.params.items[0].pattern else {
+        let param = &func.params.items[0];
+        let BindingPattern::BindingIdentifier(param_id) = &param.pattern else {
             return None;
         };
         let Expression::Identifier(arg_ident) = &unary.argument else {
             return None;
         };
-        if arg_ident.name.as_str() != param.name.as_str() {
+        if param.initializer.is_some() || arg_ident.name != param_id.name {
             return None;
         }
-        eprintln!("[AST] Found unary proxy: {name} -> {:?}", unary.operator);
         Some(UnaryProxyInfo {
             operator: unary.operator,
         })
     }
-}
 
-impl Default for UnaryProxyCollector {
-    fn default() -> Self {
-        Self::new()
+    fn add(&mut self, symbol: Option<SymbolId>, func: &Function<'_>) {
+        if let Some(symbol) = symbol
+            && self.unary_calls_only.contains(&symbol)
+            && let Some(info) = Self::extract_proxy_info(func)
+        {
+            eprintln!("[AST] Found unary proxy -> {:?}", info.operator);
+            self.proxies.insert(symbol, info);
+        }
     }
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyCollector {
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.unary_calls_only = plain_call_arities(program, ctx.scoping())
+            .into_iter()
+            .filter(|(_, arities)| arities.len() == 1 && arities.contains(&1))
+            .map(|(symbol, _)| symbol)
+            .collect();
+    }
+
     fn enter_function(&mut self, func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
-        if let Some(id) = &func.id {
-            let name = id.name.as_str().to_string();
-            if let Some(info) = Self::extract_proxy_info(func, &name) {
-                self.proxies.insert(name, info);
-            }
+        if func.is_declaration() {
+            self.add(func.id.as_ref().and_then(|id| id.symbol_id.get()), func);
         }
     }
 
     fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
-        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-            return;
-        };
-        let Some(Expression::FunctionExpression(func)) = &declarator.init else {
-            return;
-        };
-        let name = id.name.as_str().to_string();
-        if let Some(info) = Self::extract_proxy_info(func, &name) {
-            self.proxies.insert(name, info);
+        if let BindingPattern::BindingIdentifier(id) = &declarator.id
+            && let Some(Expression::FunctionExpression(func)) = &declarator.init
+        {
+            self.add(id.symbol_id.get(), func);
         }
     }
 }
 
 pub struct UnaryProxyInliner {
-    proxies: FxHashMap<String, UnaryProxyInfo>,
+    proxies: FxHashMap<SymbolId, UnaryProxyInfo>,
     inlined: usize,
 }
 
 impl UnaryProxyInliner {
     #[must_use]
-    pub const fn new(proxies: FxHashMap<String, UnaryProxyInfo>) -> Self {
+    pub const fn new(proxies: FxHashMap<SymbolId, UnaryProxyInfo>) -> Self {
         Self { proxies, inlined: 0 }
     }
 
@@ -123,18 +128,19 @@ impl UnaryProxyInliner {
         self.inlined
     }
 
+    fn is_proxy(&self, symbol: Option<SymbolId>) -> bool {
+        symbol.is_some_and(|symbol| self.proxies.contains_key(&symbol))
+    }
+
     fn try_inline_call<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
         let Expression::Identifier(ident) = &call.callee else {
             return None;
         };
-        let name = ident.name.as_str();
-        let info = self.proxies.get(name)?;
-        if call.arguments.len() != 1 {
-            return None;
-        }
-        let arg = call.arguments[0].as_expression()?;
+        let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id()?;
+        let info = self.proxies.get(&symbol)?;
+        let arg = call.arguments.first()?.as_expression()?;
         if self.inlined < 10 {
-            eprintln!("[AST] Inlining unary proxy: {name} -> {:?}", info.operator);
+            eprintln!("[AST] Inlining unary proxy: {} -> {:?}", ident.name, info.operator);
         }
         self.inlined += 1;
         Some(Expression::new_unary_expression(
@@ -156,37 +162,18 @@ impl<'a> Traverse<'a, DeobfuscateState> for UnaryProxyInliner {
     }
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
-        if let Statement::FunctionDeclaration(func) = stmt
-            && let Some(id) = &func.id
-            && self.proxies.contains_key(id.name.as_str())
-        {
-            eprintln!("[AST] Removing unary proxy function: {}", id.name.as_str());
+        let remove = match stmt {
+            Statement::FunctionDeclaration(func) => self.is_proxy(func.id.as_ref().and_then(|id| id.symbol_id.get())),
+            Statement::VariableDeclaration(decl) => decl.declarations.iter().all(|d| {
+                let BindingPattern::BindingIdentifier(id) = &d.id else {
+                    return false;
+                };
+                matches!(&d.init, Some(Expression::FunctionExpression(_))) && self.is_proxy(id.symbol_id.get())
+            }),
+            _ => false,
+        };
+        if remove {
             *stmt = Statement::new_empty_statement(SPAN, ctx);
-            return;
-        }
-        if let Statement::VariableDeclaration(decl) = stmt {
-            let all_are_proxies = !decl.declarations.is_empty()
-                && decl.declarations.iter().all(|d| {
-                    let BindingPattern::BindingIdentifier(id) = &d.id else {
-                        return false;
-                    };
-                    let Some(Expression::FunctionExpression(_)) = &d.init else {
-                        return false;
-                    };
-                    self.proxies.contains_key(id.name.as_str())
-                });
-            if all_are_proxies {
-                let names: Vec<String> = decl
-                    .declarations
-                    .iter()
-                    .filter_map(|d| match &d.id {
-                        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
-                        _ => None,
-                    })
-                    .collect();
-                eprintln!("[AST] Removing unary proxy var declaration: var {};", names.join(", "));
-                *stmt = Statement::new_empty_statement(SPAN, ctx);
-            }
         }
     }
 }
@@ -254,5 +241,28 @@ mod tests {
         let out = run("function f(x) { return x + 1; } var r = f(y);");
         assert!(out.contains("function f"), "non-proxy must be kept: {out}");
         assert!(out.contains("f(y)"), "non-proxy call must be kept: {out}");
+    }
+
+    #[test]
+    fn delete_proxy_is_not_inlined() {
+        let out = run("function d(x) { return delete x; }\nvar o = { p: 1 };\nd(o.p);");
+        assert!(out.contains("d(o.p)"), "got: {out}");
+    }
+
+    #[test]
+    fn proxy_used_as_a_value_is_kept() {
+        let out = run("function not(x) { return !x; }\nvar r = [0, 1].filter(not);\nvar s = not(1);");
+        assert!(out.contains("function not"), "got: {out}");
+        assert!(out.contains("not(1)"), "got: {out}");
+        let out = run("function neg(x) { return -x; }\nneg(1);\nneg(1, 2);");
+        assert!(out.contains("function neg"), "other arities keep the proxy: {out}");
+    }
+
+    #[test]
+    fn same_name_in_another_scope_is_untouched() {
+        let out =
+            run("function f() { function neg(x) { return -x; } return neg(1); }\nfunction g(neg) { return neg(2); }");
+        assert!(out.contains("return -1"), "got: {out}");
+        assert!(out.contains("return neg(2)"), "got: {out}");
     }
 }

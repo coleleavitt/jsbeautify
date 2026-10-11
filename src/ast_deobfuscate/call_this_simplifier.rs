@@ -1,29 +1,52 @@
 //! `.call(this, ...)` → direct call simplifier for plain identifiers.
 //!
-//! Rewrites `X.call(this, ARG1, ARG2, ...)` → `X(ARG1, ARG2, ...)`
-//! when `X` is a plain identifier (not a member expression).
-//!
-//! Targets the Akamai BMP pattern where trampoline-inlined call sites produce
-//! `P6.call(this, NA, [U8.length, ZW])` — the `.call(this, ...)` is redundant
-//! because `P6` is a top-level function that doesn't use `this`.
+//! Rewrites `X.call(this, ARG1, ARG2, ...)` → `X(ARG1, ARG2, ...)` when `X`
+//! is a never-reassigned binding of an arrow function, or of a function whose
+//! own `this` is never observed. Any other callee would see a different `this`.
 
 use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
-use oxc_ast::ast::{Argument, Expression};
+use oxc_ast::ast::{Argument, Expression, Program};
 use oxc_span::SPAN;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
+use rustc_hash::FxHashSet;
 
-use crate::ast_deobfuscate::pass::counter_pass;
+use crate::ast_deobfuscate::function_context::this_free_functions;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct CallThisSimplifier {
     rewrites: usize,
+    this_free: FxHashSet<SymbolId>,
 }
 
-counter_pass!(CallThisSimplifier, rewrites, rewrites);
+impl CallThisSimplifier {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            rewrites: 0,
+            this_free: FxHashSet::default(),
+        }
+    }
+
+    #[must_use]
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
+    }
+}
+
+impl Default for CallThisSimplifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<'a> Traverse<'a, DeobfuscateState> for CallThisSimplifier {
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.this_free = this_free_functions(program, ctx.scoping());
+    }
+
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
         let Expression::CallExpression(call) = expr else {
             return;
@@ -37,6 +60,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallThisSimplifier {
         let Expression::Identifier(ref ident) = sme.object else {
             return;
         };
+        let Some(symbol) = ident
+            .reference_id
+            .get()
+            .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+        else {
+            return;
+        };
+        if !self.this_free.contains(&symbol) {
+            return;
+        }
         if call.arguments.is_empty() {
             return;
         }
@@ -89,14 +122,53 @@ mod tests {
         Codegen::new().build(&program).code
     }
 
-    #[test]
-    fn identifier_call_this_simplified() {
-        let out = run("P6.call(this, a, b);");
-        assert!(!out.contains(".call"), "expected no .call, got: {out}");
+    fn assert_unchanged(code: &str) {
+        let out = run(code);
         assert!(
-            out.contains("P6(a, b)") || out.contains("P6(a,b)"),
-            "expected P6(a, b), got: {out}"
+            out.contains(".call(this"),
+            "expected .call(this, ...) preserved, got: {out}"
         );
+    }
+
+    #[test]
+    fn this_free_function_call_simplified() {
+        let out = run("function P6(a, b) { return a + b; }\nP6.call(this, a, b);");
+        assert!(out.contains("P6(a, b);"), "expected P6(a, b), got: {out}");
+    }
+
+    #[test]
+    fn this_inside_nested_function_does_not_count() {
+        let out = run("function f(a) { return function () { return this; }; }\nf.call(this, 1);");
+        assert!(out.contains("f(1);"), "got: {out}");
+    }
+
+    #[test]
+    fn arrow_ignores_this_argument() {
+        let out = run("const f = () => this;\nf.call(this, 1);");
+        assert!(out.contains("f(1);"), "got: {out}");
+    }
+
+    #[test]
+    fn function_reading_this_preserved() {
+        assert_unchanged(
+            "function fl() { return { ...this.opts }; }\nfunction Ajv(o) { this.opts = o; this._metaOpts = fl.call(this); }",
+        );
+        assert_unchanged("var f = function () { return this.x; };\nf.call(this);");
+        assert_unchanged("function f() { return () => this.x; }\nf.call(this);");
+        assert_unchanged("function f(a = this) { return a; }\nf.call(this);");
+    }
+
+    #[test]
+    fn direct_eval_preserved() {
+        assert_unchanged("function f(s) { return eval(s); }\nf.call(this, \"this\");");
+    }
+
+    #[test]
+    fn unknown_or_rebound_callee_preserved() {
+        assert_unchanged("P6.call(this, a, b);");
+        assert_unchanged("function f() { return 1; }\nf = g;\nf.call(this);");
+        assert_unchanged("function f() { return 1; }\nfunction h(f) { return f.call(this); }");
+        assert_unchanged("var f = () => 1;\nvar f = function () { return this; };\nf.call(this);");
     }
 
     #[test]
@@ -107,7 +179,7 @@ mod tests {
 
     #[test]
     fn call_null_not_affected() {
-        let out = run("f.call(null, a);");
+        let out = run("function f(a) { return a; }\nf.call(null, a);");
         assert!(
             out.contains(".call"),
             "expected .call preserved for null receiver, got: {out}"
@@ -116,7 +188,7 @@ mod tests {
 
     #[test]
     fn spread_arg_preserved() {
-        let out = run("f.call(this, ...args);");
+        let out = run("function f(a) { return a; }\nf.call(this, ...args);");
         assert!(out.contains(".call"), "expected .call preserved for spread, got: {out}");
     }
 }

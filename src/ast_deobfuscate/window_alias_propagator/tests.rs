@@ -261,3 +261,11 @@ fn rewrites_known_spec_and_browser_globals() {
         );
     }
 }
+
+#[test]
+fn local_named_window_is_not_the_global_object() {
+    let out = run("function f(window) { var w = window; return w.console; }");
+    assert!(out.contains("w.console"), "got: {out}");
+    let out = run("var self = {};\nvar s = self;\nexport const c = s.console;");
+    assert!(out.contains("s.console"), "got: {out}");
+}
