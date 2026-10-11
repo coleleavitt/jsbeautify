@@ -835,7 +835,6 @@ dependencies = [
  "base64",
  "clap",
  "dhat",
- "lazy_static",
  "md5",
  "oxc_allocator",
  "oxc_ast",
