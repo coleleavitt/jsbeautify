@@ -38,7 +38,7 @@ pub use bun_extract::{
 pub use chunk_detector::{ChunkDetector, ChunkMetadata};
 pub use chunk_splitter::{ChunkManifest, ChunkSplitter};
 pub use cross_version::{AlignConfig, AlignmentStats, CrossVersionAligner, StatementMatcher};
-pub use options::Options;
+pub use options::{BraceStyle, Eol, Options};
 pub use oxc_opts::OxcOptimizer;
 pub use token::{Token, TokenType};
 

@@ -97,6 +97,7 @@ oxc_diagnostics = { git = "https://github.com/oxc-project/oxc.git", rev = "ca710
 clap = { version = "4.6.1", features = ["derive"] }
 md5 = "0.7"
 dhat = { version = "0.3", optional = true }
+ec4rs = "1"
 
 [features]
 # Heap profiling with dhat. Build/run with `--features dhat-heap` to swap in

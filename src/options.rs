@@ -5,12 +5,20 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct Options {
     pub indent_size: usize,
-    pub indent_char: String,
+    /// One tab per indentation level; `indent_size` is then ignored.
     pub indent_with_tabs: bool,
-    pub eol: String,
+    /// Extra indentation levels prefixed to every line. When zero, the
+    /// input's own leading whitespace is used as the base indent.
+    pub indent_level: usize,
+    pub eol: Eol,
+    pub end_with_newline: bool,
     pub preserve_newlines: bool,
+    /// Cap on preserved consecutive line breaks; `0` means no cap.
     pub max_preserve_newlines: usize,
     pub space_after_anon_function: bool,
+    pub space_after_named_function: bool,
+    /// `function ()` spacing plus `case` labels aligned with their `switch`.
+    pub jslint_happy: bool,
     pub brace_style: BraceStyle,
     pub break_webpack_imports: bool,
     pub add_webpack_module_separators: bool,
@@ -21,7 +29,6 @@ pub struct Options {
     /// require→module name, new Foo→instance, …) instead of `v{n}` slots.
     /// Effective only with `deobfuscate` (the renamer lives in that pipeline).
     pub readable_names: bool,
-    pub max_line_length: usize,
     pub generate_source_map: bool,
     pub source_map_file_name: Option<String>,
     pub split_chunks: bool,
@@ -33,24 +40,56 @@ pub struct Options {
     pub skip_annotations: bool,
 }
 
+/// Line terminator written between output lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eol {
+    /// The input's first line break (`\r\n`, `\r` or `\n`), else `\n`.
+    Auto,
+    Lf,
+    CrLf,
+    Cr,
+}
+
+impl Eol {
+    #[must_use]
+    pub fn resolve(self, input: &str) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+            Self::Cr => "\r",
+            Self::Auto => match input.find(['\r', '\n']) {
+                Some(i) if input[i..].starts_with("\r\n") => "\r\n",
+                Some(i) if input.as_bytes()[i] == b'\r' => "\r",
+                _ => "\n",
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BraceStyle {
+    /// Opening braces stay on the statement line: `if (a) {`.
     Collapse,
+    /// Opening braces of blocks, bodies and classes go on their own line;
+    /// `else` / `catch` / `finally` start a new line.
     Expand,
+    /// Like `Collapse`, but `else` / `catch` / `finally` start a new line.
     EndExpand,
-    None,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             indent_size: 4,
-            indent_char: " ".to_string(),
             indent_with_tabs: false,
-            eol: "\n".to_string(),
+            indent_level: 0,
+            eol: Eol::Auto,
+            end_with_newline: false,
             preserve_newlines: true,
-            max_preserve_newlines: 2,
+            max_preserve_newlines: 10,
             space_after_anon_function: false,
+            space_after_named_function: false,
+            jslint_happy: false,
             brace_style: BraceStyle::Collapse,
             break_webpack_imports: true,
             add_webpack_module_separators: true,
@@ -58,7 +97,6 @@ impl Default for Options {
             asset_size_threshold: 10_000,
             deobfuscate: false,
             readable_names: false,
-            max_line_length: 120,
             generate_source_map: false,
             source_map_file_name: None,
             split_chunks: false,

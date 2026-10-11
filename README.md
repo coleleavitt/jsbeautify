@@ -70,7 +70,7 @@ jsbeautify cfg input.js --function main | dot -Tsvg > main.svg
 ## CLI Reference
 
 ```
-Usage: jsbeautify [OPTIONS] [FILE] [COMMAND]
+Usage: jsbeautify [OPTIONS] [FILE]... [COMMAND]
 
 Commands:
   extract-modules  Extract webpack modules into separate files
@@ -84,21 +84,69 @@ Commands:
   cfg              Print the oxc_semantic control-flow graph
 
 Arguments:
-  [FILE]  Input JavaScript file, or "-" for stdin [default: -]
+  [FILE]...  Input JavaScript files, or "-" for stdin [default: -]. Several files
+             are beautified in place, as with --replace
 
 Options:
-  -o, --output <FILE>      Write output to a file instead of stdout
-  -d, --deobfuscate        Enable AST-based deobfuscation (multi-phase pipeline)
-      --rename-vars        Infer readable names for minified locals. Implies --deobfuscate
-      --rename-llm         LLM-assisted naming of residual locals (env-configured). Implies --rename-vars
-  -i, --indent <N>         Indentation size in spaces [default: 4]
-      --tabs               Use tabs for indentation instead of spaces
-      --sourcemap <FILE>   Apply original variable names from a sourcemap (.map) file
-      --names-json <FILE>  Apply full name mappings from a names.json file
-      --bun-extract        Recover names from Bun bundle patterns
-  -h, --help               Print help
-  -V, --version            Print version
+  -f, --file <FILE>                 Input file; may be repeated (same as a positional FILE)
+  -o, --output <FILE>               Write output to a file instead of stdout
+  -r, --replace                     Write output in place, replacing each input file
+  -q, --quiet                       Do not report written files on stderr
+  -d, --deobfuscate                 Enable AST-based deobfuscation (multi-phase pipeline)
+      --rename-vars                 Infer readable names for minified locals. Implies --deobfuscate
+      --rename-llm                  LLM-assisted naming of residual locals (env-configured). Implies --rename-vars
+  -s, --indent-size <N>             Indentation size [default: 4] (also -i, --indent)
+  -c, --indent-char <CHAR>          Indentation character: a space or a tab ("\t")
+  -t, --indent-with-tabs            One tab per indentation level (also --tabs)
+  -l, --indent-level <N>            Initial indentation level [default: 0 = keep the input's leading whitespace]
+  -e, --eol <EOL>                   "\n", "\r\n", "\r" or "auto" (the input's first line break) [default: auto]
+  -n, --end-with-newline            End the output with a newline
+  -p, --preserve-newlines           Preserve blank lines from the input (default; not with --deobfuscate)
+      --no-preserve-newlines        Drop the input's blank lines
+  -m, --max-preserve-newlines <N>   Maximum consecutive line breaks to preserve; 0 = no limit [default: 10]
+  -a, --space-after-anon-function   function () instead of function()
+      --space-after-named-function  function f () and m () {} for methods
+  -j, --jslint-happy                function () plus case labels aligned with their switch
+  -b, --brace-style <STYLE>         collapse | expand | end-expand [default: collapse]
+      --config <FILE>               Read settings from a JSON file (.jsbeautifyrc format)
+      --editorconfig                Apply .editorconfig indent, end-of-line and final-newline settings
+      --sourcemap <FILE>            Apply original variable names from a sourcemap (.map) file
+      --names-json <FILE>           Apply full name mappings from a names.json file
+      --bun-extract                 Recover names from Bun bundle patterns
+  -h, --help                        Print help
+  -V, --version                     Print version (also -v)
 ```
+
+### js-beautify compatibility
+
+The formatting flags use js-beautify's names, short flags and defaults, and
+long flags also accept js-beautify's underscore spelling (`--indent_size`).
+Output has no trailing newline unless `-n` is given, as in js-beautify.
+
+Settings are read, highest priority first, from command-line flags,
+`--config FILE`, the nearest `.jsbeautifyrc` from the working directory
+upwards, and `~/.jsbeautifyrc`. Config keys may use `_` or `-`; a `"js"`
+section overrides top-level keys. Keys this tool does not honor (CSS/HTML
+options, `wrap_line_length`, ...) are ignored, so a file can be shared with
+js-beautify. `--editorconfig` overrides all of these for the properties the
+`.editorconfig` sets.
+
+Differences from js-beautify:
+
+- Short flags that collide keep this tool's meaning: `-d` is
+  `--deobfuscate` (js-beautify: HTML `--inline`) and `-i` is the indent size
+  (js-beautify: HTML `--wrap-attributes-indent-size`). `-o` means the same in
+  both.
+- Output is printed by oxc's code generator: it normalizes quotes to `"`,
+  number literals, redundant parentheses and string escapes, and always
+  terminates statements with `;`. js-beautify keeps the input's tokens.
+- Only JavaScript is supported (no `--type css|html`).
+- Not supported: `--brace-style none` and `preserve-inline`,
+  `--wrap-line-length`, `--break-chained-methods`,
+  `--unindent-chained-methods`, `--keep-array-indentation`,
+  `--space-in-paren`, `--space-in-empty-paren`, `--comma-first`,
+  `--operator-position`, `--indent-empty-lines`, `--unescape-strings`
+  (escapes are always decoded), `--e4x`, `--templating`.
 
 ### Inspection commands
 

@@ -20,6 +20,7 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
 
+use crate::beautifier::Layout;
 use crate::{BeautifyError, Result};
 
 use super::{
@@ -86,4 +87,5 @@ pub struct AstDeobfuscator {
     /// When set, Phase 12.5 infers readable names for minified locals
     /// (`heuristic_rename`) instead of opaque `v{n}` slots.
     readable_names: bool,
+    layout: Option<Layout>,
 }
