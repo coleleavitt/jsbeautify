@@ -54,7 +54,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ReturnSequenceSplitter {
     }
 }
 
-pub(crate) fn is_return_sequence(stmt: &Statement<'_>) -> bool {
+pub fn is_return_sequence(stmt: &Statement<'_>) -> bool {
     matches!(
         stmt,
         Statement::ReturnStatement(ret)

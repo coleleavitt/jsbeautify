@@ -112,7 +112,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MinifierIdiomReverser {
 }
 
 /// Builtins for which `F(...)` and `new F(...)` are the same operation: their
-/// spec steps replace an undefined NewTarget with the active function. `RegExp`
+/// spec steps replace an undefined `NewTarget` with the active function. `RegExp`
 /// is excluded here because a call returns an existing regexp argument as is.
 /// `Array(n)` and `Object(x)` are equivalent too, but those call forms are the
 /// idiomatic spelling, not a minifier artifact.
@@ -150,9 +150,8 @@ fn is_constructible_builtin_call(call: &CallExpression<'_>, ctx: &Ctx<'_>) -> bo
 /// `RegExp(p)` returns `p` itself when `p` is a regexp, and `new RegExp(p)`
 /// copies it, so only a primitive pattern makes the two equivalent.
 fn regexp_call_is_construct(call: &CallExpression<'_>) -> bool {
-    match call.arguments.first() {
-        None => true,
-        Some(argument) => argument.as_expression().is_some_and(|pattern| {
+    call.arguments.first().is_none_or(|argument| {
+        argument.as_expression().is_some_and(|pattern| {
             matches!(
                 pattern,
                 Expression::StringLiteral(_)
@@ -162,8 +161,8 @@ fn regexp_call_is_construct(call: &CallExpression<'_>) -> bool {
                     | Expression::BigIntLiteral(_)
                     | Expression::TemplateLiteral(_)
             )
-        }),
-    }
+        })
+    })
 }
 
 fn strip_double_not<'a>(test: &mut Expression<'a>, ctx: &Ctx<'a>) -> bool {

@@ -38,7 +38,9 @@
 //! left untouched.
 
 use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
-use oxc_ast::ast::{BlockStatement, ConditionalExpression, Expression, FunctionBody, Program, Statement, SwitchCase};
+use oxc_ast::ast::{
+    BlockStatement, ConditionalExpression, Expression, FunctionBody, IfStatement, Program, Statement, SwitchCase,
+};
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
 use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
@@ -73,7 +75,7 @@ fn is_nested_branch(expr: &Expression<'_>) -> bool {
     )
 }
 
-pub(crate) fn is_convertible(stmt: &Statement<'_>) -> bool {
+pub fn is_convertible(stmt: &Statement<'_>) -> bool {
     matches!(
         stmt,
         Statement::ExpressionStatement(expr_stmt)
@@ -121,7 +123,9 @@ impl TernaryToIfElse {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::ConditionalExpression(cond) = &expr_stmt.expression
             {
-                new_stmts.push(build_if_stmt(cond, ctx));
+                let mut converted = build_if_stmt(cond, ctx);
+                self.convert_branches(&mut converted, ctx);
+                new_stmts.push(converted);
                 self.converted_count += 1;
                 continue;
             }
@@ -137,14 +141,35 @@ impl TernaryToIfElse {
                     .without_parentheses()
                     .clone_in_with_semantic_ids(allocator);
                 let early_return = block_of(Statement::new_return_statement(SPAN, Some(consequent), &ctx.ast), ctx);
-                new_stmts.push(Statement::new_if_statement(SPAN, test, early_return, None, &ctx.ast));
-                new_stmts.push(Statement::new_return_statement(SPAN, Some(alternate), &ctx.ast));
+                let mut converted = Statement::new_if_statement(SPAN, test, early_return, None, &ctx.ast);
+                self.convert_branches(&mut converted, ctx);
+                new_stmts.push(converted);
+                let mut rest = ArenaVec::new_in(&ctx.ast);
+                rest.push(Statement::new_return_statement(SPAN, Some(alternate), &ctx.ast));
+                self.convert_statements(&mut rest, ctx);
+                new_stmts.extend(rest);
                 self.converted_count += 1;
                 continue;
             }
             new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.ast.allocator()));
         }
         *stmts = new_stmts;
+    }
+
+    /// Converts the blocks just built for a ternary's branches, so nested
+    /// ternaries do not wait for another traversal.
+    fn convert_branches<'a>(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
+        let Statement::IfStatement(if_stmt) = stmt else {
+            return;
+        };
+        let IfStatement {
+            consequent, alternate, ..
+        } = &mut **if_stmt;
+        for branch in std::iter::once(consequent).chain(alternate.as_mut()) {
+            if let Statement::BlockStatement(block) = branch {
+                self.convert_statements(&mut block.body, ctx);
+            }
+        }
     }
 }
 
@@ -294,5 +319,14 @@ mod tests {
         let (output, count) = run_convert("switch (k) { case 1: a ? b() : c(); }");
         assert_eq!(count, 1);
         assert!(output.contains("if (a)"), "got: {output}");
+    }
+
+    #[test]
+    fn converts_nested_ternaries_in_one_traversal() {
+        let (output, count) =
+            run_convert("a ? (b ? c() : d()) : e(); function f() { return a ? b : c ? d : e ? g : h; }");
+        assert_eq!(count, 4, "got: {output}");
+        assert!(!output.contains("b ?"), "got: {output}");
+        assert!(output.contains("\treturn e ? g : h;"), "got: {output}");
     }
 }

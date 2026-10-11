@@ -35,7 +35,7 @@ pub struct SequenceExpressionSplitter {
 
 counter_pass!(SequenceExpressionSplitter, split_count, split_count);
 
-pub(crate) fn is_sequence_stmt(stmt: &Statement<'_>) -> bool {
+pub fn is_sequence_stmt(stmt: &Statement<'_>) -> bool {
     matches!(
         stmt,
         Statement::ExpressionStatement(expr_stmt) if matches!(expr_stmt.expression, Expression::SequenceExpression(_))

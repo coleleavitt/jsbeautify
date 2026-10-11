@@ -18,7 +18,7 @@ pub struct ShortCircuitToIf {
 
 counter_pass!(ShortCircuitToIf, converted_count, converted_count);
 
-pub(crate) fn is_short_circuit_expr_stmt(stmt: &Statement<'_>) -> bool {
+pub fn is_short_circuit_expr_stmt(stmt: &Statement<'_>) -> bool {
     matches!(
         stmt,
         Statement::ExpressionStatement(expr_stmt)
@@ -94,7 +94,7 @@ fn cancels_negation(expr: &Expression<'_>) -> bool {
 
 /// `!(a OP b)` is exactly `a NOP b` for the equality operators; relational
 /// operators have no such complement because of `NaN`.
-pub(crate) const fn negated_equality(operator: BinaryOperator) -> Option<BinaryOperator> {
+pub const fn negated_equality(operator: BinaryOperator) -> Option<BinaryOperator> {
     match operator {
         BinaryOperator::Equality => Some(BinaryOperator::Inequality),
         BinaryOperator::Inequality => Some(BinaryOperator::Equality),
@@ -116,7 +116,13 @@ impl ShortCircuitToIf {
                 && let Expression::LogicalExpression(logical) = &expr_stmt.expression
                 && matches!(logical.operator, LogicalOperator::And | LogicalOperator::Or)
             {
-                new_stmts.push(build_if_from_logical(logical, ctx));
+                let mut converted = build_if_from_logical(logical, ctx);
+                if let Statement::IfStatement(if_stmt) = &mut converted
+                    && let Statement::BlockStatement(block) = &mut if_stmt.consequent
+                {
+                    self.convert_statements(&mut block.body, ctx);
+                }
+                new_stmts.push(converted);
                 self.converted_count += 1;
                 continue;
             }
@@ -286,6 +292,13 @@ mod tests {
     fn converts_in_switch_case() {
         let (output, count) = run_convert("switch (k) { case 1: a && b(); break; }");
         assert_eq!(count, 1, "got: {output}");
+        assert!(!output.contains("&&"), "got: {output}");
+    }
+
+    #[test]
+    fn converts_nested_short_circuits_in_one_traversal() {
+        let (output, count) = run_convert("a && (b && c());");
+        assert_eq!(count, 2, "got: {output}");
         assert!(!output.contains("&&"), "got: {output}");
     }
 }
