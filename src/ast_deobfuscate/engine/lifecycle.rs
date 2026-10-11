@@ -4,9 +4,8 @@ use super::{
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
     JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
-    SourceType, StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
-    TernaryToIfElse, TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval,
-    semantic_baseline,
+    SourceType, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
+    TryCatchRemover, UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
 };
 
 /// Maximum accepted delimiter nesting.
@@ -58,7 +57,6 @@ impl AstDeobfuscator {
             expression_simplifier: ExpressionSimplifier::new(),
             algebraic_simplifier: AlgebraicSimplifier::new(),
             array_coerce_fold: ArrayCoerceFold::new(),
-            strength_reducer: StrengthReducer::new(),
             comma_return_simplifier: CommaReturnSimplifier::new(),
             dead_code_eliminator: DeadCodeEliminator::new(),
             array_unpacker: ArrayUnpacker::new(),

@@ -1,24 +1,27 @@
-//! String-coercion canonicaliser.
+//! String `.concat` canonicaliser.
 //!
-//! Obfuscators (and TypeScript targeting ES5) frequently rewrite `a + "=" + b`
-//! as `"".concat(a, "=", b)` to hide the concatenation operator. This pass
-//! detects any call where the receiver is a string literal or a chain of `.concat()`
-//! calls and rewrites it as a plain binary `+` chain:
+//! Obfuscators and TypeScript targeting ES5 rewrite template literals as
+//! `.concat` chains. This pass turns them back into template literals:
 //!
 //! ```text
-//! "".concat(a, "=", b)   ->  "" + a + "=" + b   ->  a + "=" + b (after const-folding)
-//! "prefix".concat(x)     ->  "prefix" + x
-//! a.concat(b)            ->  (left alone if `a` is not provably a string)
+//! "".concat(a, "=").concat(b)   ->  `${a}=${b}`
+//! "prefix".concat(x)            ->  `prefix${x}`
+//! a.concat(b)                   ->  (left alone: `a` is not provably a string)
 //! ```
 //!
-//! The pass is conservative: it only fires when the receiver is a string literal,
-//! or when the receiver is itself a `.concat` call (nested concat chains collapse).
+//! Both forms convert each value with `ToString`, unlike `+`, which uses
+//! `ToPrimitive` with the `default` hint. They differ in order: `.concat`
+//! evaluates every argument before converting any, while a template converts
+//! each substitution right after evaluating it. The rewrite therefore only
+//! fires when at most one argument of a call is not a primitive literal, so no
+//! conversion can observe or affect the evaluation of a later argument.
 
-use oxc_allocator::{CloneIn, GetAllocator};
-use oxc_ast::ast::{BinaryOperator, Expression};
+use oxc_allocator::{CloneIn, GetAllocator, Vec as ArenaVec};
+use oxc_ast::ast::{Argument, Expression, TemplateElement};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
+use crate::ast_deobfuscate::dyn_concat_resolver::literal::make_template_element;
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -30,28 +33,89 @@ pub struct ConcatCanonicaliser {
 
 counter_pass!(ConcatCanonicaliser, rewrites, rewrites);
 
-fn receiver_is_string_like(expr: &Expression<'_>) -> bool {
-    match expr {
-        Expression::StringLiteral(_) => true,
-        Expression::ParenthesizedExpression(p) => receiver_is_string_like(&p.expression),
-        Expression::BinaryExpression(b) if matches!(b.operator, BinaryOperator::Addition) => {
-            receiver_is_string_like(&b.left) || receiver_is_string_like(&b.right)
-        }
-        Expression::CallExpression(call) => {
-            if let Expression::StaticMemberExpression(sme) = &call.callee
-                && sme.property.name.as_str() == "concat"
-            {
-                receiver_is_string_like(&sme.object)
-            } else {
-                false
+const fn is_primitive_literal(expr: &Expression<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::StringLiteral(_)
+            | Expression::NumericLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+    )
+}
+
+/// Template pieces: `quasis.len() == expressions.len() + 1`.
+struct Pieces<'a> {
+    quasis: Vec<String>,
+    expressions: Vec<Expression<'a>>,
+}
+
+impl<'a> Pieces<'a> {
+    fn from_receiver(receiver: &Expression<'a>, ctx: &Ctx<'a>) -> Option<Self> {
+        match receiver {
+            Expression::StringLiteral(lit) if !lit.lone_surrogates => Some(Self {
+                quasis: vec![lit.value.to_string()],
+                expressions: Vec::new(),
+            }),
+            Expression::TemplateLiteral(tmpl) => {
+                let quasis = tmpl
+                    .quasis
+                    .iter()
+                    .map(|quasi| {
+                        quasi
+                            .value
+                            .cooked
+                            .filter(|_| !quasi.lone_surrogates)
+                            .map(|c| c.to_string())
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let expressions = tmpl
+                    .expressions
+                    .iter()
+                    .map(|expr| expr.clone_in_with_semantic_ids(ctx.allocator()))
+                    .collect();
+                Some(Self { quasis, expressions })
             }
+            _ => None,
         }
-        _ => false,
+    }
+
+    fn push(&mut self, arg: &Expression<'a>, ctx: &Ctx<'a>) {
+        if let Expression::StringLiteral(lit) = arg {
+            self.quasis
+                .last_mut()
+                .expect("pieces always hold a quasi")
+                .push_str(&lit.value);
+        } else {
+            self.expressions.push(arg.clone_in_with_semantic_ids(ctx.allocator()));
+            self.quasis.push(String::new());
+        }
+    }
+
+    fn into_expression(self, ctx: &Ctx<'a>) -> Expression<'a> {
+        if self.expressions.is_empty() {
+            return Expression::new_string_literal(SPAN, ctx.allocator().alloc_str(&self.quasis[0]), None, ctx);
+        }
+        let last = self.quasis.len() - 1;
+        let mut quasis: ArenaVec<'a, TemplateElement<'a>> = ArenaVec::new_in(ctx);
+        for (i, quasi) in self.quasis.iter().enumerate() {
+            quasis.push(make_template_element(quasi, i == last, ctx));
+        }
+        let mut expressions = ArenaVec::new_in(ctx);
+        expressions.extend(self.expressions);
+        Expression::new_template_literal(SPAN, quasis, expressions, ctx)
     }
 }
 
-fn make_plus<'a>(left: Expression<'a>, right: Expression<'a>, ctx: &Ctx<'a>) -> Expression<'a> {
-    Expression::new_binary_expression(SPAN, left, BinaryOperator::Addition, right, ctx)
+fn concat_arguments<'b, 'a>(arguments: &'b [Argument<'a>]) -> Option<Vec<&'b Expression<'a>>> {
+    let args = arguments
+        .iter()
+        .map(|arg| arg.as_expression())
+        .collect::<Option<Vec<_>>>()?;
+    let lone_surrogate = args
+        .iter()
+        .any(|arg| matches!(arg, Expression::StringLiteral(lit) if lit.lone_surrogates));
+    let non_literals = args.iter().filter(|arg| !is_primitive_literal(arg)).count();
+    (!lone_surrogate && non_literals <= 1).then_some(args)
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
@@ -65,25 +129,23 @@ impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
         if sme.property.name.as_str() != "concat" {
             return;
         }
-        if !receiver_is_string_like(&sme.object) {
+        let Some(args) = concat_arguments(&call.arguments) else {
             return;
-        }
-        if call.arguments.iter().any(|a| a.as_expression().is_none()) {
+        };
+        let Some(mut pieces) = Pieces::from_receiver(&sme.object, ctx) else {
             return;
+        };
+        for arg in args {
+            pieces.push(arg, ctx);
         }
         if self.rewrites < 10 {
             eprintln!(
-                "[AST/concat] rewriting <str>.concat({} args) -> binary '+'",
+                "[AST/concat] rewriting <str>.concat({} args) -> template literal",
                 call.arguments.len()
             );
         }
         self.rewrites += 1;
-        let mut acc = sme.object.clone_in_with_semantic_ids(ctx.allocator());
-        for arg in &call.arguments {
-            let rhs = arg.as_expression().unwrap().clone_in_with_semantic_ids(ctx.allocator());
-            acc = make_plus(acc, rhs, ctx);
-        }
-        *expr = acc;
+        *expr = pieces.into_expression(ctx);
     }
 }
 
@@ -110,29 +172,40 @@ mod tests {
     }
 
     #[test]
-    fn empty_string_concat() {
-        let out = run("var x = \"\".concat(a, \"=\", b);");
-        assert!(!out.contains(".concat"), "got: {out}");
-        assert!(out.contains('+'), "must use +, got: {out}");
+    fn typescript_concat_chain() {
+        assert_eq!(run("x = \"\".concat(a, \"=\").concat(b);"), "x = `${a}=${b}`;\n");
     }
 
     #[test]
     fn prefix_concat() {
-        let out = run("var x = \"prefix\".concat(y);");
-        assert!(!out.contains(".concat"), "got: {out}");
-        assert!(out.contains("\"prefix\""));
-        assert!(out.contains('y'));
+        assert_eq!(run("x = \"prefix\".concat(y);"), "x = `prefix${y}`;\n");
+    }
+
+    #[test]
+    fn literal_only_concat() {
+        assert_eq!(run("x = \"a\".concat(\"`${b}\\\\\");"), "x = \"a`${b}\\\\\";\n");
+    }
+
+    #[test]
+    fn escapes_template_syntax_in_quasis() {
+        assert_eq!(run("x = \"`\".concat(y, \"${z}\\\\\");"), "x = `\\`${y}\\${z}\\\\`;\n");
     }
 
     #[test]
     fn leaves_non_string_receiver_alone() {
-        let out = run("var x = arr.concat(y, z);");
-        assert!(out.contains(".concat"), "non-string receiver kept: {out}");
+        let code = "x = arr.concat(y, z);\n";
+        assert_eq!(run(code), code);
     }
 
     #[test]
-    fn collapses_nested_concat() {
-        let out = run("var x = \"\".concat(a).concat(b);");
-        assert!(!out.contains(".concat"), "got: {out}");
+    fn leaves_two_non_literal_arguments_alone() {
+        let code = "x = \"\".concat(a, b, c, d, e);\n";
+        assert_eq!(run(code), code);
+    }
+
+    #[test]
+    fn leaves_spread_alone() {
+        let code = "x = \"\".concat(...a);\n";
+        assert_eq!(run(code), code);
     }
 }

@@ -55,7 +55,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
             return;
         }
 
-        let Some(truthy) = js_truthiness(&unary.argument) else {
+        let Some(truthy) = js_truthiness(&unary.argument, ctx) else {
             return;
         };
         let result = !truthy;
@@ -65,19 +65,28 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
     }
 }
 
-fn js_truthiness(expr: &Expression<'_>) -> Option<bool> {
+/// Truthiness of an operand whose evaluation has no side effects.
+fn js_truthiness(expr: &Expression<'_>, ctx: &Ctx<'_>) -> Option<bool> {
     match expr {
         Expression::NumericLiteral(n) => Some(n.value != 0.0 && !n.value.is_nan()),
         Expression::StringLiteral(s) => Some(!s.value.is_empty()),
         Expression::BooleanLiteral(b) => Some(b.value),
         Expression::NullLiteral(_) => Some(false),
-        Expression::Identifier(id) => match id.name.as_str() {
-            "undefined" | "NaN" => Some(false),
-            "Infinity" => Some(true),
-            _ => None,
-        },
-        Expression::ArrayExpression(_) | Expression::ObjectExpression(_) => Some(true),
-        Expression::ParenthesizedExpression(p) => js_truthiness(&p.expression),
+        Expression::Identifier(id)
+            if id
+                .reference_id
+                .get()
+                .is_some_and(|reference| ctx.scoping().get_reference(reference).symbol_id().is_none()) =>
+        {
+            match id.name.as_str() {
+                "undefined" | "NaN" => Some(false),
+                "Infinity" => Some(true),
+                _ => None,
+            }
+        }
+        Expression::ArrayExpression(a) if a.elements.is_empty() => Some(true),
+        Expression::ObjectExpression(o) if o.properties.is_empty() => Some(true),
+        Expression::ParenthesizedExpression(p) => js_truthiness(&p.expression, ctx),
         _ => None,
     }
 }
@@ -146,6 +155,18 @@ mod tests {
         assert!(run_boolean_literals("var x = !undefined;").contains("true"));
         assert!(run_boolean_literals("var x = !NaN;").contains("true"));
         assert!(run_boolean_literals("var x = !null;").contains("true"));
+    }
+
+    #[test]
+    fn test_preserve_not_side_effecting_array() {
+        assert_eq!(run_boolean_literals("v = ![f()] == x;"), "v = ![f()] == x;\n");
+        assert_eq!(run_boolean_literals("v = !{ a: f() };"), "v = !{ a: f() };\n");
+    }
+
+    #[test]
+    fn test_preserve_not_shadowed_undefined() {
+        let code = "function g(undefined) {\n\treturn !undefined;\n}\n";
+        assert_eq!(run_boolean_literals(code), code);
     }
 
     #[test]

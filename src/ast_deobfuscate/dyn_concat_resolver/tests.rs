@@ -194,3 +194,15 @@ fn deeply_nested_template_literal() {
     );
     assert!(out.contains("/Authorization/User/Privileges/"), "got: {out}");
 }
+
+#[test]
+fn keeps_lone_surrogate_literals_unfolded() {
+    for code in [
+        "NOOP(x = \"\\ud800\" + \"y\");\n",
+        "var s = \"\\udc00\";\nf(s + \"y\");\n",
+        "var s = \"a\";\nf(`\\ud800${s}`);\n",
+    ] {
+        let out = run(code);
+        assert!(out.contains("\\ud800") || out.contains("\\udc00"), "{code} -> {out}");
+    }
+}
