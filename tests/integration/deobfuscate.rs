@@ -93,3 +93,13 @@ fn statement_splitting_reaches_nested_minifier_output() {
     let expected = "function f(v0, v1) {\n\tif (v0) {\n\t\tif (v1) {\n\t\t\tg();\n\t\t} else {\n\t\t\th();\n\t\t}\n\t}\n\tif (!v1) {\n\t\tg();\n\t\th();\n\t}\n\tif (v0) {\n\t\tg();\n\t\treturn 1;\n\t}\n\treturn v1 ? 2 : 3;\n}\n";
     assert_eq!(out.trim_end(), expected.trim_end());
 }
+
+#[test]
+fn preserves_string_contents_with_confusable_and_zero_width_characters() {
+    let src = "var r = new RegExp(\"[\\u038E-\\u03A1]\");\nvar z = \"a\\u200Cb\\u200B\\uFEFF\\u0410\";\nf(r, z);\n";
+    let mut deob = AstDeobfuscator::new();
+    let out = deob.deobfuscate(src).expect("deobfuscate unicode strings");
+    for ch in ['\u{038E}', '\u{03A1}', '\u{200C}', '\u{200B}', '\u{FEFF}', '\u{0410}'] {
+        assert!(out.contains(ch), "U+{:04X} must survive: {out}", ch as u32);
+    }
+}

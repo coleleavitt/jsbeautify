@@ -55,7 +55,6 @@ These are mostly syntax normalizations:
 17. **try_catch** - Remove empty try-catch
 18. **ternary** - Simplify ternary chains
 19. **object_sparsing** - Consolidate sparse objects
-20. **unicode_mangling** - Normalize unicode
 21. **boolean_literals** - Replace !0/!1
 22. **void_replacer** - Replace void 0
 

@@ -102,8 +102,8 @@ impl AstDeobfuscator {
 
         // Rebuild scoping after try_catch_remover and dead_code_eliminator
         // which create new BlockStatement nodes during traversal.
-        mem_ck("enter Phase 11 (unicode/bool/void/sparsing)");
-        eprintln!("[DEOBFUSCATE] Phase 11: SemanticBuilder for unicode/boolean/void/object_sparsing");
+        mem_ck("enter Phase 11 (bool/void/sparsing)");
+        eprintln!("[DEOBFUSCATE] Phase 11: SemanticBuilder for boolean/void/object_sparsing");
         let semantic_result = SemanticBuilder::new().build(program);
         eprintln!(
             "[DEOBFUSCATE] Phase 11: SemanticBuilder completed, errors: {}",
@@ -114,9 +114,6 @@ impl AstDeobfuscator {
         }
         let scoping = semantic_result.semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        eprintln!("[DEOBFUSCATE] Phase 11: Running unicode_normalizer");
-        traverse_mut_with_ctx(&mut self.unicode_normalizer, program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 11: unicode_normalizer DONE");
         eprintln!("[DEOBFUSCATE] Phase 11: Running boolean_literal_converter");
         traverse_mut_with_ctx(&mut self.boolean_literal_converter, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 11: Running void_replacer");

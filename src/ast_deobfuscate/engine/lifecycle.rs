@@ -5,7 +5,7 @@ use super::{
     JsonParseEvaluator, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
     StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover,
-    UnicodeNormalizer, VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
+    VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
 };
 use crate::ParseGoal;
 
@@ -64,7 +64,6 @@ impl AstDeobfuscator {
             dynamic_property_converter: DynamicPropertyConverter::new(),
             ternary_simplifier: TernarySimplifier::new(),
             try_catch_remover: TryCatchRemover::new(),
-            unicode_normalizer: UnicodeNormalizer::new(),
             boolean_literal_converter: BooleanLiteralConverter::new(),
             void_replacer: VoidReplacer::new(),
             object_sparsing_consolidator: ObjectSparsingConsolidator::new(),
