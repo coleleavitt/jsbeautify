@@ -1,17 +1,19 @@
-//! `.apply(null, [...])` / `.call(null, ...)` → direct call simplifier.
+//! `.apply(undefined, [...])` / `.call(undefined, ...)` → direct call simplifier.
 //!
 //! Rewrites:
-//! - `fn.apply(null, [a, b, c])`       → `fn(a, b, c)`
 //! - `fn.apply(undefined, [a, b, c])`  → `fn(a, b, c)`
-//! - `fn.call(null, a, b, c)`          → `fn(a, b, c)`
-//! - `fn.call(undefined, a, b, c)`     → `fn(a, b, c)`
+//! - `fn.call(void 0, a, b, c)`        → `fn(a, b, c)`
 //!
 //! ONLY fires when:
-//! 1. The first argument is the literal `null` or the identifier `undefined`.
-//! 2. For `apply`, the 2nd argument is a literal `ArrayExpression` with no spread elements.
+//! 1. The first argument is `undefined` (an unresolved reference) or `void` of
+//!    a literal. A `null` receiver is kept: a strict-mode callee sees `null`,
+//!    not `undefined`.
+//! 2. The callee is not a member expression: `o.f(a)` would bind `this` to `o`.
+//! 3. For `apply`, the 2nd argument is a literal `ArrayExpression` with no
+//!    spread elements or holes.
 //!
 use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
-use oxc_ast::ast::{Argument, ArrayExpressionElement, Expression};
+use oxc_ast::ast::{Argument, ArrayExpressionElement, Expression, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -26,11 +28,16 @@ pub struct ApplyCallSimplifier {
 
 counter_pass!(ApplyCallSimplifier, rewrites, rewrites);
 
-fn is_null_or_undefined(expr: &Expression<'_>) -> bool {
+fn is_undefined(expr: &Expression<'_>, ctx: &Ctx<'_>) -> bool {
     match expr {
-        Expression::NullLiteral(_) => true,
-        Expression::Identifier(id) => id.name.as_str() == "undefined",
-        Expression::UnaryExpression(u) if matches!(u.operator, oxc_ast::ast::UnaryOperator::Void) => true,
+        Expression::Identifier(id) => {
+            id.name.as_str() == "undefined"
+                && id
+                    .reference_id
+                    .get()
+                    .is_some_and(|reference| ctx.scoping().get_reference(reference).symbol_id().is_none())
+        }
+        Expression::UnaryExpression(u) if u.operator == UnaryOperator::Void => u.argument.is_literal(),
         _ => false,
     }
 }
@@ -53,7 +60,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
         let Some(first_arg) = call.arguments[0].as_expression() else {
             return;
         };
-        if !is_null_or_undefined(first_arg) {
+        let callee = sme.object.without_parentheses();
+        if !is_undefined(first_arg, ctx)
+            || callee.is_member_expression()
+            || matches!(callee, Expression::ChainExpression(_))
+        {
             return;
         }
 
@@ -129,23 +140,44 @@ mod tests {
     }
 
     #[test]
-    fn apply_with_null_and_array() {
-        let out = run("fn.apply(null, [a, b, c]);");
-        assert!(!out.contains(".apply"), "got: {out}");
-        assert!(out.contains("fn(a, b, c)") || out.contains("fn(a,b,c)"));
+    fn apply_with_undefined_and_array() {
+        assert_eq!(run("fn.apply(undefined, [a, b, c]);"), "fn(a, b, c);\n");
     }
 
     #[test]
-    fn apply_with_undefined() {
-        let out = run("fn.apply(undefined, [x]);");
-        assert!(!out.contains(".apply"), "got: {out}");
+    fn call_with_void_zero() {
+        assert_eq!(run("fn.call(void 0, a, b);"), "fn(a, b);\n");
     }
 
     #[test]
-    fn call_with_null() {
-        let out = run("fn.call(null, a, b);");
-        assert!(!out.contains(".call"), "got: {out}");
-        assert!(out.contains("fn(a, b)") || out.contains("fn(a,b)"));
+    fn leaves_null_receiver_alone() {
+        for code in ["fn.call(null, a, b);\n", "fn.apply(null, [x]);\n"] {
+            assert_eq!(run(code), code);
+        }
+    }
+
+    #[test]
+    fn leaves_member_callee_alone() {
+        for code in [
+            "v = 2 - this._x.call(undefined, node.data);\n",
+            "obj.method.apply(void 0, [a, b]);\n",
+            "D8()[x19()[Rj]].call(undefined, Hn, QS, fw);\n",
+            "(a?.b).call(undefined, x);\n",
+        ] {
+            assert_eq!(run(code), code);
+        }
+    }
+
+    #[test]
+    fn leaves_side_effecting_receiver_alone() {
+        let code = "fn.call(void g(), a);\n";
+        assert_eq!(run(code), code);
+    }
+
+    #[test]
+    fn leaves_shadowed_undefined_alone() {
+        let code = "function h(undefined) {\n\tfn.call(undefined, a);\n}\n";
+        assert_eq!(run(code), code);
     }
 
     #[test]
@@ -156,40 +188,13 @@ mod tests {
 
     #[test]
     fn leaves_apply_with_non_literal_args_alone() {
-        let out = run("fn.apply(null, args);");
+        let out = run("fn.apply(undefined, args);");
         assert!(out.contains(".apply"), "got: {out}");
     }
 
     #[test]
     fn leaves_spread_in_array_alone() {
-        let out = run("fn.apply(null, [a, ...b]);");
+        let out = run("fn.apply(undefined, [a, ...b]);");
         assert!(out.contains(".apply"), "got: {out}");
-    }
-
-    #[test]
-    fn static_member_receiver() {
-        let out = run("obj.method.apply(null, [a, b]);");
-        assert!(!out.contains(".apply"), "got: {out}");
-        assert!(out.contains("obj.method(a, b)") || out.contains("obj.method(a,b)"));
-    }
-
-    #[test]
-    fn call_null_computed_member_callee() {
-        let out = run("D8()[x19()[Rj]].call(null, Hn, QS, fw);");
-        assert!(!out.contains(".call"), "got: {out}");
-        assert!(
-            out.contains("D8()[x19()[Rj]](Hn, QS, fw)") || out.contains("D8()[x19()[Rj]](Hn,QS,fw)"),
-            "expected direct call, got: {out}"
-        );
-    }
-
-    #[test]
-    fn call_null_many_args() {
-        let out = run("f.call(null, 1, 2, 3);");
-        assert!(!out.contains(".call"), "got: {out}");
-        assert!(
-            out.contains("f(1, 2, 3)") || out.contains("f(1,2,3)"),
-            "expected f(1, 2, 3), got: {out}"
-        );
     }
 }

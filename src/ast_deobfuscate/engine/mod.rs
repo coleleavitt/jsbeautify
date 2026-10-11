@@ -36,12 +36,12 @@ use super::{
     MinifierIdiomReverser, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
     OperatorProxyCollector, OperatorProxyInliner, OptionalChainingNormalizer, ParamHeuristicRenamer,
     ReturnSequenceSplitter, SelfDefendingStringArray, SelfInitAccessorFlattener, SequenceExpressionSplitter,
-    ShortCircuitToIf, StrengthReducer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier,
-    TernaryToIfElse, TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner,
-    UnicodeNormalizer, VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator,
-    annotate_bun_modules, annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums, bun,
-    collect_case_bodies, collect_constants, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences,
-    flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards, resolve_compound_transitions,
+    ShortCircuitToIf, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
+    TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, UnicodeNormalizer,
+    VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator, annotate_bun_modules,
+    annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums, bun, collect_case_bodies,
+    collect_constants, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences, flatten_top_level_cjs_wrapper,
+    heuristic_rename, rename_guards, resolve_compound_transitions,
 };
 use annotations::annotate_webpack_modules;
 use checkpoint::{SemanticBaseline, checkpoint_error_context, log_output_validity, semantic_baseline};
@@ -60,7 +60,6 @@ pub struct AstDeobfuscator {
     expression_simplifier: ExpressionSimplifier,
     algebraic_simplifier: AlgebraicSimplifier,
     array_coerce_fold: ArrayCoerceFold,
-    strength_reducer: StrengthReducer,
     comma_return_simplifier: CommaReturnSimplifier,
     dead_code_eliminator: DeadCodeEliminator,
     array_unpacker: ArrayUnpacker,

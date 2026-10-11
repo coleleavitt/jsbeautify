@@ -155,3 +155,9 @@ fn test_preserve_iife_with_direct_eval() {
     let (output, count) = run_unwrap("(() => { eval(\"var leak = 1\"); })();");
     assert_eq!(count, 0, "direct eval must keep its scope: {output}");
 }
+
+#[test]
+fn test_rest_param_iife_is_not_unwrapped() {
+    let (_, count) = run_unwrap("((...a) => { a(); })();");
+    assert_eq!(count, 0, "rest parameter binds an array inside the arrow");
+}

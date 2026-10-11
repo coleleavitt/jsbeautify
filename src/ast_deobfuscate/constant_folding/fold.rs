@@ -2,7 +2,13 @@ use oxc_ast::ast::{
     BinaryExpression, BinaryOperator, Expression, LogicalExpression, LogicalOperator, UnaryExpression, UnaryOperator,
 };
 
+use super::values::fraction_digits;
 use super::{ConstantFolder, Ctx};
+
+/// ECMAScript `ToInt32` for an integer-valued, safe-range `f64`.
+const fn to_int32(val: f64) -> i32 {
+    val as i64 as i32
+}
 
 impl ConstantFolder {
     pub(super) fn try_fold_binary<'a>(
@@ -14,38 +20,25 @@ impl ConstantFolder {
         let right_val = Self::extract_number(&expr.right)?;
 
         let result = match expr.operator {
-            BinaryOperator::Addition => left_val.checked_add(right_val)?,
-            BinaryOperator::Subtraction => left_val.checked_sub(right_val)?,
-            BinaryOperator::Multiplication => left_val.checked_mul(right_val)?,
-            BinaryOperator::Division => {
-                if right_val == 0 {
-                    return None;
-                }
-                left_val.checked_div(right_val)?
-            }
-            BinaryOperator::Remainder => {
-                if right_val == 0 {
-                    return None;
-                }
-                left_val.checked_rem(right_val)?
-            }
-            BinaryOperator::BitwiseAnd => left_val & right_val,
-            BinaryOperator::BitwiseOR => left_val | right_val,
-            BinaryOperator::BitwiseXOR => left_val ^ right_val,
-            BinaryOperator::ShiftLeft => {
-                let shift = (right_val & 0x1F) as u32;
-                (left_val as i32).checked_shl(shift)? as i64
-            }
-            BinaryOperator::ShiftRight => {
-                let shift = (right_val & 0x1F) as u32;
-                (left_val as i32).checked_shr(shift)? as i64
-            }
+            BinaryOperator::Addition => left_val + right_val,
+            BinaryOperator::Subtraction => left_val - right_val,
+            BinaryOperator::Multiplication => left_val * right_val,
+            BinaryOperator::Division => left_val / right_val,
+            BinaryOperator::Remainder => left_val % right_val,
+            BinaryOperator::BitwiseAnd => f64::from(to_int32(left_val) & to_int32(right_val)),
+            BinaryOperator::BitwiseOR => f64::from(to_int32(left_val) | to_int32(right_val)),
+            BinaryOperator::BitwiseXOR => f64::from(to_int32(left_val) ^ to_int32(right_val)),
+            BinaryOperator::ShiftLeft => f64::from(to_int32(left_val).wrapping_shl(to_int32(right_val) as u32)),
+            BinaryOperator::ShiftRight => f64::from(to_int32(left_val).wrapping_shr(to_int32(right_val) as u32)),
             BinaryOperator::ShiftRightZeroFill => {
-                let shift = (right_val & 0x1F) as u32;
-                ((left_val as u32) >> shift) as i64
+                f64::from((to_int32(left_val) as u32).wrapping_shr(to_int32(right_val) as u32))
             }
             _ => return None,
         };
+        if fraction_digits(result) > fraction_digits(left_val) + fraction_digits(right_val) {
+            return None;
+        }
+        let number = Self::make_number(result, ctx)?;
 
         eprintln!(
             "[AST] Folding: {} {:?} {} = {}",
@@ -53,7 +46,7 @@ impl ConstantFolder {
         );
 
         self.changed = true;
-        Some(Self::make_number(result, ctx))
+        Some(number)
     }
 
     pub(super) fn try_fold_comparison<'a>(
@@ -112,19 +105,20 @@ impl ConstantFolder {
         ctx: &mut Ctx<'a>,
     ) -> Option<Expression<'a>> {
         match expr.operator {
-            UnaryOperator::UnaryNegation => {
+            UnaryOperator::UnaryNegation if !matches!(expr.argument, Expression::NumericLiteral(_)) => {
                 let val = Self::extract_number(&expr.argument)?;
-                let result = val.checked_neg()?;
-                eprintln!("[AST] Folding unary: -{val} = {result}");
+                let number = Self::make_number(-val, ctx)?;
+                eprintln!("[AST] Folding unary: -{val}");
                 self.changed = true;
-                Some(Self::make_number(result, ctx))
+                Some(number)
             }
             UnaryOperator::BitwiseNot => {
                 let val = Self::extract_number(&expr.argument)?;
-                let result = !val;
+                let result = !to_int32(val);
+                let number = Self::make_number(f64::from(result), ctx)?;
                 eprintln!("[AST] Folding unary: ~{val} = {result}");
                 self.changed = true;
-                Some(Self::make_number(result, ctx))
+                Some(number)
             }
             UnaryOperator::LogicalNot => {
                 let val = Self::extract_boolean(&expr.argument)?;
@@ -135,9 +129,10 @@ impl ConstantFolder {
             }
             UnaryOperator::UnaryPlus => {
                 let val = Self::extract_number(&expr.argument)?;
-                eprintln!("[AST] Folding unary: +{val} = {val}");
+                let number = Self::make_number(val, ctx)?;
+                eprintln!("[AST] Folding unary: +{val}");
                 self.changed = true;
-                Some(Self::make_number(val, ctx))
+                Some(number)
             }
             _ => None,
         }

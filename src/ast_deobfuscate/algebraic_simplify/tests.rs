@@ -25,73 +25,37 @@ fn run_simplify(code: &str) -> String {
 }
 
 #[test]
-fn test_self_subtract() {
-    let output = run_simplify("var r = x - x;");
-    assert!(output.contains("= 0"), "Should simplify x - x to 0, got: {output}");
+fn test_literal_left_operand() {
+    assert_eq!(run_simplify("r = true && x;"), "r = x;\n");
+    assert_eq!(run_simplify("r = false && x;"), "r = false;\n");
+    assert_eq!(run_simplify("r = true || x;"), "r = true;\n");
+    assert_eq!(run_simplify("r = false || x;"), "r = x;\n");
 }
 
 #[test]
-fn test_multiply_zero_left() {
-    let output = run_simplify("var r = 0 * y;");
-    assert!(output.contains("= 0"), "Should simplify 0 * y to 0, got: {output}");
+fn test_literal_right_operand_kept() {
+    for code in [
+        "r = x && true;\n",
+        "r = x && false;\n",
+        "r = x || true;\n",
+        "r = x || false;\n",
+        "r = foo() || true;\n",
+    ] {
+        assert_eq!(run_simplify(code), code);
+    }
 }
 
 #[test]
-fn test_multiply_zero_right() {
-    let output = run_simplify("var r = x * 0;");
-    assert!(output.contains("= 0"), "Should simplify x * 0 to 0, got: {output}");
-}
-
-#[test]
-fn test_self_divide() {
-    let output = run_simplify("var r = z / z;");
-    assert!(output.contains("= 1"), "Should simplify z / z to 1, got: {output}");
-}
-
-#[test]
-fn test_self_modulo() {
-    let output = run_simplify("var r = a % a;");
-    assert!(output.contains("= 0"), "Should simplify a % a to 0, got: {output}");
-}
-
-#[test]
-fn test_self_xor() {
-    let output = run_simplify("var r = b ^ b;");
-    assert!(output.contains("= 0"), "Should simplify b ^ b to 0, got: {output}");
-}
-
-#[test]
-fn test_add_zero_left() {
-    let output = run_simplify("var r = 0 + x;");
-    assert!(output.contains("= x"), "Should simplify 0 + x to x, got: {output}");
-}
-
-#[test]
-fn test_add_zero_right() {
-    let output = run_simplify("var r = x + 0;");
-    assert!(output.contains("= x"), "Should simplify x + 0 to x, got: {output}");
-}
-
-#[test]
-fn test_multiply_one_left() {
-    let output = run_simplify("var r = 1 * x;");
-    assert!(output.contains("= x"), "Should simplify 1 * x to x, got: {output}");
-}
-
-#[test]
-fn test_multiply_one_right() {
-    let output = run_simplify("var r = x * 1;");
-    assert!(output.contains("= x"), "Should simplify x * 1 to x, got: {output}");
-}
-
-#[test]
-fn test_divide_one() {
-    let output = run_simplify("var r = x / 1;");
-    assert!(output.contains("= x"), "Should simplify x / 1 to x, got: {output}");
-}
-
-#[test]
-fn test_no_simplification() {
-    let output = run_simplify("var r = x - y;");
-    assert!(output.contains("x - y"), "Should not simplify x - y, got: {output}");
+fn test_arithmetic_identities_kept() {
+    for code in [
+        "r = [b] + 0;\n",
+        "r = 0 + [b];\n",
+        "r = y / 1;\n",
+        "r = y * 1;\n",
+        "r = f() * 0;\n",
+        "r = x - x;\n",
+        "r = x / x;\n",
+    ] {
+        assert_eq!(run_simplify(code), code);
+    }
 }

@@ -91,7 +91,7 @@ impl Default for DeadVarCollector {
 
 impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, _ctx: &mut Ctx<'a>) {
-        if matches!(&call.callee, Expression::Identifier(id) if id.name == "eval") {
+        if matches!(call.callee.without_parentheses(), Expression::Identifier(id) if id.name == "eval") {
             self.has_direct_eval_syntax = true;
         }
     }

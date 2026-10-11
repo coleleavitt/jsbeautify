@@ -99,6 +99,52 @@ enum Command {
     /// Statically inspect a JavaScript-hosted VM and embedded WebAssembly.
     /// Never executes JavaScript or instantiates WebAssembly.
     AnalyzeVm(AnalyzeVmArgs),
+
+    #[command(about = "Print the program as ESTree JSON (oxc's serializer)")]
+    Ast(InspectArgs),
+
+    /// Print oxc's semantic symbol table as JSON: scopes, symbols with
+    /// their references, and unresolved (global) references.
+    Scope(InspectArgs),
+
+    /// Print oxc's semantic control-flow graph.
+    Cfg(CfgArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct InspectArgs {
+    /// Input JavaScript file, or "-" for stdin.
+    #[arg(value_name = "FILE", default_value = "-")]
+    input: String,
+
+    /// Write output to a file instead of stdout.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<String>,
+
+    /// Parse as TypeScript with JSX instead of module JavaScript.
+    #[arg(long)]
+    ts: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct CfgArgs {
+    #[command(flatten)]
+    inspect: InspectArgs,
+
+    /// Only the functions with this name (declaration, or the variable,
+    /// property, method or assignment target it is bound to).
+    #[arg(long, value_name = "NAME")]
+    function: Option<String>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = CfgFormat::Dot)]
+    format: CfgFormat,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum CfgFormat {
+    Dot,
+    Json,
 }
 
 #[derive(clap::Args, Debug)]

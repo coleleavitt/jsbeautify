@@ -190,8 +190,6 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.constant_folder, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 6: Running algebraic_simplifier");
         traverse_mut_with_ctx(&mut self.algebraic_simplifier, program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 6: Running strength_reducer");
-        traverse_mut_with_ctx(&mut self.strength_reducer, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 6: Running array_coerce_fold");
         traverse_mut_with_ctx(&mut self.array_coerce_fold, program, &mut ctx);
         eprintln!(

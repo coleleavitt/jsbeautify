@@ -1,5 +1,5 @@
 use oxc_allocator::{CloneIn, GetAllocator};
-use oxc_ast::ast::{Expression, MemberExpression};
+use oxc_ast::ast::{ComputedMemberExpression, Expression};
 use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::flag_pass;
@@ -11,42 +11,41 @@ pub struct ArrayUnpacker {
     changed: bool,
 }
 
+/// Literals whose evaluation has no side effects. Only these may be selected
+/// or discarded: any other element could be observable when dropped, or (as a
+/// callee) would change `this` once taken out of the array.
+const fn is_primitive_literal(expr: &Expression<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::StringLiteral(_)
+            | Expression::NumericLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::BigIntLiteral(_)
+    )
+}
+
 impl ArrayUnpacker {
-    fn try_unpack<'a>(&mut self, member: &MemberExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
-        let MemberExpression::ComputedMemberExpression(computed) = member else {
+    fn try_unpack<'a>(&mut self, member: &ComputedMemberExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
+        let Expression::ArrayExpression(array) = &member.object else {
             return None;
         };
-
-        let Expression::ArrayExpression(array) = &computed.object else {
+        let Expression::NumericLiteral(index_lit) = &member.expression else {
             return None;
         };
-
-        let Expression::NumericLiteral(index_lit) = &computed.expression else {
-            return None;
-        };
-
-        let index = index_lit.value as usize;
-
-        if index >= array.elements.len() {
+        let index = index_lit.value;
+        if index.fract() != 0.0 || index < 0.0 || index >= array.elements.len() as f64 {
             return None;
         }
-
-        let element = &array.elements[index];
-
-        if element.is_elision() || element.is_spread() {
-            return None;
-        }
-
-        let expr = element.to_expression();
+        let elements = array
+            .elements
+            .iter()
+            .map(|element| element.as_expression().filter(|expr| is_primitive_literal(expr)))
+            .collect::<Option<Vec<_>>>()?;
 
         eprintln!("[AST] Unpacking array access at index {index}");
         self.changed = true;
-
-        Some(Self::clone_expression(expr, ctx))
-    }
-
-    fn clone_expression<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-        expr.clone_in_with_semantic_ids(ctx.ast.allocator())
+        Some(elements[index as usize].clone_in_with_semantic_ids(ctx.ast.allocator()))
     }
 }
 
@@ -54,12 +53,10 @@ flag_pass!(ArrayUnpacker, changed, has_changed);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ArrayUnpacker {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
-        if let Expression::ComputedMemberExpression(member) = expr {
-            let member_expr =
-                MemberExpression::ComputedMemberExpression(member.clone_in_with_semantic_ids(ctx.ast.allocator()));
-            if let Some(unpacked) = self.try_unpack(&member_expr, ctx) {
-                *expr = unpacked;
-            }
+        if let Expression::ComputedMemberExpression(member) = expr
+            && let Some(unpacked) = self.try_unpack(member, ctx)
+        {
+            *expr = unpacked;
         }
     }
 }
@@ -112,13 +109,23 @@ mod tests {
     }
 
     #[test]
-    fn test_unpack_array_identifier() {
-        let output = run_array_unpack("var x = [foo, bar][0];");
-        eprintln!("Output: {output}");
-        assert!(
-            output.contains("= foo") || output.contains("=foo"),
-            "Should unpack to identifier, got: {output}"
-        );
+    fn test_preserve_non_literal_elements() {
+        for code in ["x = [foo, bar][0];\n", "x = [1, f()][0];\n", "x = [o.m][0]();\n"] {
+            assert_eq!(run_array_unpack(code), code);
+        }
+    }
+
+    #[test]
+    fn test_preserve_non_index_keys() {
+        for code in [
+            "v = [1][-1];\n",
+            "v = [1][1.5];\n",
+            "v = [...a, 1][1];\n",
+            "v = [1, ...a][0];\n",
+            "v = [, 1][0];\n",
+        ] {
+            assert_eq!(run_array_unpack(code), code);
+        }
     }
 
     #[test]

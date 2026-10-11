@@ -8,8 +8,10 @@
 //! Add a new area by dropping a `tests/integration/<area>.rs` file and listing
 //! it in the `mod` block below.
 
+mod angular;
 mod beautify;
 mod cli;
 mod deobfuscate;
 mod fixtures;
+mod inspect;
 mod webpack_modules;

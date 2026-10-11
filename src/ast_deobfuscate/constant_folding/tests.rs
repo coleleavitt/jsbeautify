@@ -144,3 +144,49 @@ fn test_no_fold_division_by_zero() {
     let output = run_fold("var x = 10 / 0;");
     assert!(output.contains('/'), "Should NOT fold division by zero, got: {output}");
 }
+
+#[test]
+fn test_no_fold_negative_zero() {
+    assert_eq!(run_fold("x = -0;"), "x = -0;\n");
+    assert_eq!(run_fold("x = 0 * -1;"), "x = 0 * -1;\n");
+    assert_eq!(run_fold("x = -4 % 2;"), "x = -4 % 2;\n");
+    assert_eq!(run_fold("x = +-0;"), "x = +-0;\n");
+}
+
+#[test]
+fn test_no_fold_non_integer_division() {
+    assert_eq!(run_fold("x = 7 / 2;"), "x = 7 / 2;\n");
+    assert_eq!(run_fold("x = 2 / 4;"), "x = 2 / 4;\n");
+    assert_eq!(run_fold("x = 0 / 0;"), "x = 0 / 0;\n");
+}
+
+#[test]
+fn test_fold_fraction_only_when_no_longer() {
+    assert_eq!(run_fold("x = 0 + .5;"), "x = .5;\n");
+    assert_eq!(run_fold("x = 1.5 * 2;"), "x = 3;\n");
+    assert_eq!(run_fold("x = .1 + .2;"), "x = .1 + .2;\n");
+}
+
+#[test]
+fn test_fold_remainder_keeps_dividend_sign() {
+    assert_eq!(run_fold("x = -7 % 2;"), "x = -1;\n");
+}
+
+#[test]
+fn test_fold_bitwise_uses_int32() {
+    assert_eq!(run_fold("x = 4294967296 | 0;"), "x = 0;\n");
+    assert_eq!(run_fold("x = ~4294967296;"), "x = -1;\n");
+    assert_eq!(run_fold("x = 1 << 31;"), "x = -2147483648;\n");
+    assert_eq!(run_fold("x = -1 >>> 0;"), "x = 4294967295;\n");
+    assert_eq!(run_fold("x = 1 << 33;"), "x = 2;\n");
+}
+
+#[test]
+fn test_no_fold_beyond_safe_integer() {
+    assert_eq!(run_fold("x = 9007199254740991 + 2;"), "x = 9007199254740991 + 2;\n");
+}
+
+#[test]
+fn test_fold_negative_result_stays_valid() {
+    assert_eq!(run_fold("x = a - 4 * -1;"), "x = a - -4;\n");
+}

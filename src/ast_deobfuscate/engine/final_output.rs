@@ -17,6 +17,13 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Generating output code");
         let output = Codegen::new().build(program).code;
         eprintln!("[DEOBFUSCATE] Output generated, {} bytes", output.len());
+        // A cleanly parsed program may legitimately deobfuscate to nothing; an
+        // unparseable input that recovers to nothing has no result to report.
+        if output.trim().is_empty() && baseline == SemanticBaseline::Unknown {
+            return Err(crate::BeautifyError::BeautificationFailed(
+                "deobfuscation produced empty output from a recovered AST".to_string(),
+            ));
+        }
         // Consistency with the arena-split checkpoints: an AST -> codegen boundary
         // that emits unparseable JS indicates a real defect in a prior pass, so
         // surface it rather than returning invalid output as success.
@@ -72,6 +79,9 @@ impl AstDeobfuscator {
         eprintln!(
             "[DEOBFUSCATE] Phase 21: {enum_count} enum annotations, {ns_count} namespace annotations, {arrow_count} arrow expansions"
         );
+        let (output, template_count) =
+            crate::ast_deobfuscate::angular::annotate_angular_templates(&output, source_type);
+        eprintln!("[DEOBFUSCATE] Phase 21: {template_count} Angular template annotations");
         // The Phase 20/21 post-codegen transforms (module annotations, arrow
         // expansion) rewrite the output string, so the final result is held to
         // the same parse-validity bar as the AST checkpoints: invalid JS is a

@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Expression, Function, Statement};
+use oxc_ast::ast::{BindingPattern, Expression, Function, Statement};
 
 use crate::ast_deobfuscate::esbuild::helper::EsbuildHelperCollector;
 
@@ -25,18 +25,39 @@ impl EsbuildHelperCollector {
         false
     }
 
-    /// `__assign`: `Object.assign || function(t) { for (var p in s) ... }`
+    /// `__assign`: tslib's `Object.assign` polyfill,
+    /// `function (t) { for (...) { s = arguments[i]; for (var p in s) ... t[p] = s[p]; } return t; }`.
     pub(in crate::ast_deobfuscate::esbuild::helper) fn is_assign_pattern(func: &Function<'_>) -> bool {
         let Some(body) = &func.body else { return false };
-        if func.params.items.is_empty() {
+        if func.r#async || func.generator {
             return false;
         }
-        for stmt in &body.statements {
-            if let Statement::ForInStatement(_) = stmt {
-                return true;
+        let [param] = func.params.items.as_slice() else {
+            return false;
+        };
+        let BindingPattern::BindingIdentifier(target) = &param.pattern else {
+            return false;
+        };
+        let [loops @ .., Statement::ReturnStatement(ret)] = body.statements.as_slice() else {
+            return false;
+        };
+        let returns_target = matches!(
+            ret.argument.as_ref(),
+            Some(Expression::Identifier(id)) if id.name == target.name
+        );
+        let copies_in_loop = loops.iter().any(|stmt| {
+            let Statement::ForStatement(for_stmt) = stmt else {
+                return false;
+            };
+            match &for_stmt.body {
+                Statement::BlockStatement(block) => block
+                    .body
+                    .iter()
+                    .any(|stmt| matches!(stmt, Statement::ForInStatement(_))),
+                other => matches!(other, Statement::ForInStatement(_)),
             }
-        }
-        false
+        });
+        returns_target && copies_in_loop
     }
 
     /// `__rest`: `{ a, ...rest } = obj` rest extraction
