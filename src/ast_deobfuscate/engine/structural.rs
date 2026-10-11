@@ -44,6 +44,7 @@ impl AstDeobfuscator {
         let mut program = parse_result.program;
 
         self.run_structural_preamble(&allocator, &mut program);
+        crate::ast_deobfuscate::webpack::rename_webpack_bindings(&allocator, &mut program);
         let bun_helper_map = self.run_bun_naming_phases(&allocator, &mut program);
         self.run_structural_mid(&allocator, &mut program);
         self.run_structural_late(&allocator, &mut program);

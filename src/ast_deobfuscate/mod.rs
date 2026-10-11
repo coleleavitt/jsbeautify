@@ -128,6 +128,7 @@ pub(crate) mod unicode_mangling;
 pub(crate) mod variable_rename;
 #[allow(dead_code)]
 pub(crate) mod void_replacer;
+pub(crate) mod webpack;
 pub(crate) mod window_alias_propagator;
 
 pub(crate) use self::bun_runtime::{BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer};
