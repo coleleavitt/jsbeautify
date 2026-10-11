@@ -1,5 +1,5 @@
 use super::{
-    Allocator, AstDeobfuscator, BodyBlockWrapper, BunHelperMap, Codegen, DeobfuscateState, EsbuildHelperCollector,
+    Allocator, AstDeobfuscator, BodyBlockWrapper, BunRuntimeCollector, BundleRuntime, Codegen, DeobfuscateState,
     LetToConst, MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx,
     SemanticBaseline, SemanticBuilder, SourceType, checkpoint_error_context, eliminate_dead_vars, mem_ck,
     traverse_mut_with_ctx,
@@ -95,7 +95,7 @@ impl AstDeobfuscator {
         &mut self,
         intermediate2: &str,
         source_type: SourceType,
-        bun_helper_map: &BunHelperMap,
+        runtime: &BundleRuntime,
         baseline: SemanticBaseline,
     ) -> Result<String> {
         // ── Cosmetic-B half (Phases 16–21): fresh arena, re-parse Cosmetic-A output.
@@ -202,11 +202,12 @@ impl AstDeobfuscator {
             self.iife_unwrap.unwrapped_count()
         );
 
-        eprintln!("[DEOBFUSCATE] Phase 19: Detecting esbuild helpers");
+        eprintln!("[DEOBFUSCATE] Phase 19: Detecting bundler runtime helpers");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut esbuild_collector = EsbuildHelperCollector::new();
-        traverse_mut_with_ctx(&mut esbuild_collector, &mut program, &mut ctx);
+        let mut helper_collector = BunRuntimeCollector::new();
+        traverse_mut_with_ctx(&mut helper_collector, &mut program, &mut ctx);
+        let helpers = helper_collector.into_map();
 
         eprintln!("[DEOBFUSCATE] Phase 19.5: Final dead-var sweep");
         let result = eliminate_dead_vars(&allocator, &mut program);
@@ -217,7 +218,7 @@ impl AstDeobfuscator {
             result.was_rejected()
         );
 
-        self.generate_final_output(&program, source_type, &esbuild_collector, bun_helper_map, baseline)
+        self.generate_final_output(&program, source_type, &helpers, runtime.bundler, baseline)
     }
 
     /// Each statement-split pass rewrites only the statement lists it exits, so

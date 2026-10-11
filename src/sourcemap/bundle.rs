@@ -7,7 +7,8 @@ const MAX_EXTERNAL_SOURCE_MAP_BYTES: u64 = 32 * 1024 * 1024;
 /// Reconstruct a JS bundle's original source tree under `output_dir/reversed/`.
 ///
 /// Uses the bundle's trailing `sourceMappingURL` when present. If the bundle has
-/// no source map footer, falls back to synthetic Bun module/function boundaries.
+/// no source map footer, falls back to synthetic boundaries: esbuild / Bun lazy
+/// module wrappers, else named functions and classes.
 ///
 /// # Errors
 /// Returns an error when a referenced map cannot be read/decoded, or when the
@@ -159,24 +160,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn reconstruct_bundle_tree_splits_bun_modules_without_source_map() {
-        let dir = std::env::temp_dir().join(format!("jsb-bundle-bun-nosmtest-{}", std::process::id()));
+    fn split_paths(name: &str, bundle: &str) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("jsb-bundle-{name}-nosmtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let bundle = concat!(
-            "var Q=(e,t)=>()=>(t||e((t={exports:{}}).exports,t),t.exports);",
-            "var E=(e,t)=>()=>(e&&(t=e(e=0)),t);",
-            "var alpha=Q((exports,module)=>{exports.answer=1});",
-            "var beta=E(()=>{console.log('beta')});",
-            "alpha();beta();"
-        );
-
         let written = reconstruct_bundle_tree(bundle, None, &dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        written
+    }
 
-        assert!(written.contains(&"synthetic/bun/commonjs/alpha.js".to_string()));
-        assert!(written.contains(&"synthetic/bun/esm/beta.js".to_string()));
+    const LAZY_MODULES: &str = concat!(
+        "var Q=(e,t)=>()=>(t||e((t={exports:{}}).exports,t),t.exports);",
+        "var E=(e,t)=>()=>(e&&(t=e(e=0)),t);",
+        "var alpha=Q((exports,module)=>{exports.answer=1});",
+        "var beta=E(()=>{console.log('beta')});",
+        "alpha();beta();"
+    );
+
+    #[test]
+    fn reconstruct_bundle_tree_labels_esbuild_modules_without_source_map() {
+        let bundle = format!(
+            "var d=Object.defineProperty;var X=(e,t)=>{{for(var n in t)d(e,n,{{get:t[n],enumerable:!0}})}};{LAZY_MODULES}"
+        );
+        let written = split_paths("esbuild", &bundle);
         assert!(
-            std::fs::read_to_string(dir.join("reversed/synthetic/bun/commonjs/alpha.js"))
+            written.contains(&"synthetic/esbuild/commonjs/alpha.js".to_string()),
+            "{written:?}"
+        );
+        assert!(
+            written.contains(&"synthetic/esbuild/esm/beta.js".to_string()),
+            "{written:?}"
+        );
+    }
+
+    #[test]
+    fn reconstruct_bundle_tree_leaves_unidentified_lazy_modules_unlabelled() {
+        let dir = std::env::temp_dir().join(format!("jsb-bundle-lazy-nosmtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let written = reconstruct_bundle_tree(LAZY_MODULES, None, &dir).unwrap();
+
+        assert!(written.contains(&"synthetic/modules/commonjs/alpha.js".to_string()));
+        assert!(written.contains(&"synthetic/modules/esm/beta.js".to_string()));
+        assert!(
+            std::fs::read_to_string(dir.join("reversed/synthetic/modules/commonjs/alpha.js"))
                 .unwrap()
                 .contains("exports.answer=1")
         );

@@ -1,7 +1,7 @@
 /// JS reserved words + dangerous globals that must never become a binding name
 /// (renaming a symbol to one of these produces invalid JavaScript, e.g.
 /// `var instanceof = ...` from a Zod `z.instanceof` export key).
-pub(super) fn is_reserved_word(name: &str) -> bool {
+pub fn is_reserved_word(name: &str) -> bool {
     matches!(
         name,
         "break"

@@ -1,4 +1,5 @@
 use super::tree::{ReversedSource, write_reversed_sources};
+use crate::ast_deobfuscate::bun::{Bundler, detect_bundle_runtime};
 use crate::bun_extract::{ModuleType, split_bundle};
 use regex::Regex;
 use std::collections::BTreeMap;
@@ -18,9 +19,9 @@ pub(super) fn reconstruct_without_sourcemap(bundle_source: &str, output_dir: &Pa
 }
 
 fn synthetic_sources(bundle_source: &str) -> Vec<ReversedSource> {
-    let bun_sources = bun_module_sources(bundle_source);
-    if !bun_sources.is_empty() {
-        return bun_sources;
+    let lazy_sources = lazy_module_sources(bundle_source);
+    if !lazy_sources.is_empty() {
+        return lazy_sources;
     }
 
     let boundary_sources = named_boundary_sources(bundle_source);
@@ -34,20 +35,22 @@ fn synthetic_sources(bundle_source: &str) -> Vec<ReversedSource> {
     }]
 }
 
-fn bun_module_sources(bundle_source: &str) -> Vec<ReversedSource> {
+/// Splits the lazy `__esm` / `__commonJS` module wrappers that esbuild and Bun
+/// emit, under a folder named for the bundler the runtime helpers identify.
+fn lazy_module_sources(bundle_source: &str) -> Vec<ReversedSource> {
     let split = split_bundle(bundle_source);
     if split.modules.is_empty() {
         return Vec::new();
     }
+    let root = match detect_bundle_runtime(bundle_source).bundler {
+        Some(Bundler::Bun) => "synthetic/bun",
+        Some(Bundler::Esbuild) => "synthetic/esbuild",
+        None => "synthetic/modules",
+    };
 
     let mut out = Vec::with_capacity(split.modules.len() + 2);
     let mut paths = BTreeMap::new();
-    push_source(
-        &mut out,
-        &mut paths,
-        "synthetic/bun/runtime.js".to_string(),
-        split.runtime,
-    );
+    push_source(&mut out, &mut paths, format!("{root}/runtime.js"), split.runtime);
 
     for (module, code) in split.modules {
         let kind = match module.module_type {
@@ -58,12 +61,12 @@ fn bun_module_sources(bundle_source: &str) -> Vec<ReversedSource> {
         push_source(
             &mut out,
             &mut paths,
-            format!("synthetic/bun/{kind}/{}.js", safe_component(&module.name)),
+            format!("{root}/{kind}/{}.js", safe_component(&module.name)),
             code,
         );
     }
 
-    push_source(&mut out, &mut paths, "synthetic/bun/entry.js".to_string(), split.main);
+    push_source(&mut out, &mut paths, format!("{root}/entry.js"), split.main);
     out
 }
 

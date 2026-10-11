@@ -69,7 +69,6 @@ pub(crate) mod dyn_concat_resolver;
 pub(crate) mod dynamic_property;
 pub(crate) mod empty_statement_cleanup;
 pub(crate) mod encrypted_eval;
-pub(crate) mod esbuild;
 #[allow(dead_code)]
 pub(crate) mod expression_simplify;
 pub(crate) mod fromcharcode_fold;
@@ -132,7 +131,8 @@ pub(crate) use body_block_wrap::BodyBlockWrapper;
 pub(crate) use boolean_literals::BooleanLiteralConverter;
 pub(crate) use bun::{
     BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector, BunRuntimeRenamer,
-    BunSyntaxNormalizer, ExportNameCollector, ExportNameRenamer, annotate_bun_modules, flatten_top_level_cjs_wrapper,
+    BunSyntaxNormalizer, BundleRuntime, Bundler, ExportNameCollector, ExportNameRenamer, annotate_runtime,
+    flatten_top_level_cjs_wrapper,
 };
 pub(crate) use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub(crate) use call_this_simplifier::CallThisSimplifier;
@@ -157,7 +157,6 @@ pub use dowhile_switch_detector::{
 pub(crate) use dyn_concat_resolver::DynConcatResolver;
 pub(crate) use dynamic_property::DynamicPropertyConverter;
 pub(crate) use empty_statement_cleanup::EmptyStatementCleanup;
-pub(crate) use esbuild::{EsbuildHelperCollector, EsbuildHelperKind, annotate_esbuild_modules};
 pub(crate) use expression_simplify::ExpressionSimplifier;
 pub(crate) use fromcharcode_fold::FromCharCodeFolder;
 pub(crate) use function_inline::{FunctionCollector, FunctionInliner};

@@ -78,7 +78,7 @@ fn plan_renames(
         .keys()
         .map(oxc_ast::ast::Ident::as_str)
         .collect();
-    let mut plan = make_names_unique(desired, scoping);
+    let mut plan = make_names_unique(desired, scoping, &FxHashSet::default());
     plan.retain(|_, name| !globals.contains(name.as_str()));
 
     // The class's own binding takes the variable's name unless the

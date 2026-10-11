@@ -51,7 +51,27 @@ mod types;
 
 pub use collector::BunRuntimeCollector;
 pub use renamer::BunRuntimeRenamer;
-pub use types::{BunHelper, BunHelperMap};
+pub use types::{BunHelper, BunHelperMap, BundleRuntime, Bundler};
+
+/// Parses `source` and detects its runtime helpers and the bundler they
+/// identify, as the deobfuscation pipeline does in Phase 0.9.
+#[must_use]
+pub fn detect_bundle_runtime(source: &str) -> BundleRuntime {
+    crate::stack::run_on_sized_stack(source.len(), || {
+        let allocator = oxc_allocator::Allocator::default();
+        let mut program = oxc_parser::Parser::new(&allocator, source, oxc_span::SourceType::unambiguous())
+            .parse()
+            .program;
+        let scoping = oxc_semantic::SemanticBuilder::new()
+            .build(&program)
+            .semantic
+            .into_scoping();
+        let mut ctx = oxc_traverse::ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut collector = BunRuntimeCollector::new();
+        oxc_traverse::traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+        collector.into_runtime()
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -97,6 +117,58 @@ mod tests {
 
         let out = Codegen::new().build(&prog).code;
         (out, map)
+    }
+
+    fn bundler(code: &str) -> Option<Bundler> {
+        detect_bundle_runtime(code).bundler
+    }
+
+    #[test]
+    fn identifies_esbuild_from_its_export_descriptor() {
+        let code = "var d = Object.defineProperty;
+            var X = (e, t) => { for (var n in t) d(e, n, { get: t[n], enumerable: !0 }); };";
+        assert_eq!(bundler(code), Some(Bundler::Esbuild));
+    }
+
+    #[test]
+    fn identifies_bun_from_its_export_setter() {
+        let code = "var d = Object.defineProperty;
+            var X = (e, t) => { for (var n in t) d(e, n, { get: t[n], enumerable: !0, configurable: !0, set: (r) => t[n] = () => r }); };";
+        assert_eq!(bundler(code), Some(Bundler::Bun));
+    }
+
+    #[test]
+    fn identifies_bun_from_its_weak_map_cache() {
+        let code = r"var G, R = (e, r, t) => {
+                var c = G ??= new WeakMap, d = c.get(e);
+                if (d) return d;
+                t = {};
+                return e && e.__esModule ? e : t;
+            };";
+        assert_eq!(bundler(code), Some(Bundler::Bun));
+    }
+
+    #[test]
+    fn identifies_bun_from_its_pragma() {
+        assert_eq!(bundler("// @bun @bytecode @bun-cjs\nvar a = 1;"), Some(Bundler::Bun));
+        assert_eq!(bundler("var a = 1; // @bun"), None);
+    }
+
+    #[test]
+    fn leaves_the_bundler_unknown_without_a_distinguishing_helper() {
+        assert_eq!(bundler("var E = (e, t) => () => (e && (t = e(e = 0)), t);"), None);
+        let both = "var d = Object.defineProperty;
+            var X = (e, t) => { for (var n in t) d(e, n, { get: t[n], enumerable: !0 }); };
+            var Y = (e, t) => { for (var n in t) d(e, n, { get: t[n], enumerable: !0, set: (r) => r }); };";
+        assert_eq!(bundler(both), None);
+    }
+
+    #[test]
+    fn rejects_for_in_lookalikes_as_export_helper() {
+        let map = collect("var X = (e, t) => { for (var n in t) e[n] = t[n]; };");
+        assert_eq!(map.get("X"), None);
+        let map = collect("var X = (e, t) => { for (var n in t) d(t, n, { get: e[n] }); };");
+        assert_eq!(map.get("X"), None);
     }
 
     #[test]

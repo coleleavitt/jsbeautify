@@ -124,12 +124,12 @@ impl AstDeobfuscator {
             },
         );
 
-        let (intermediate, bun_helper_map, source_type) = self.run_structural_half(&code);
+        let (intermediate, runtime, source_type) = self.run_structural_half(&code);
         // Measured against the source type the structural half settled on, so
         // the final checkpoints compare like with like.
         let baseline = semantic_baseline(&code, source_type);
         let intermediate2 = self.run_cosmetic_a(&intermediate, source_type)?;
-        self.run_cosmetic_b_and_final_output(&intermediate2, source_type, &bun_helper_map, baseline)
+        self.run_cosmetic_b_and_final_output(&intermediate2, source_type, &runtime, baseline)
     }
 }
 impl Default for AstDeobfuscator {

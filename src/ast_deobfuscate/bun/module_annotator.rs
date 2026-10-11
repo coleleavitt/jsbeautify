@@ -1,160 +1,141 @@
-//! Bun module boundary detection and annotation
-//!
-//! Detects Bun's lazy module wrapper patterns and annotates boundaries with comments.
-//! This is a post-codegen string pass similar to the webpack module annotator.
-//!
-//! Bun patterns detected:
-//! - `var MODULE_NAME = E(() => { ... })` where E is `__esm` helper
-//! - `var MODULE_NAME = V(() => { ... })` (minified form)
-//! - `var MODULE_NAME = B(() => { ... })` where B is `__commonJS` helper
+//! Post-codegen annotation of the esbuild / Bun runtime: a header naming the
+//! bundler and the detected runtime helpers, and a comment above each lazy
+//! `__esm` / `__commonJS` module wrapper.
+
+use std::fmt::Write as _;
 
 use regex::Regex;
 
-/// Annotates Bun module boundaries in the generated code.
-///
-/// This function scans the output code for Bun's lazy module wrapper patterns
-/// and inserts comment annotations to mark module boundaries.
-///
-/// # Arguments
-/// * `code` - The generated JavaScript code
-/// * `esm_helpers` - Names of detected `__esm` helper functions
-/// * `cjs_helpers` - Names of detected `__commonJS` helper functions
-///
-/// # Returns
-/// The annotated code with module boundary comments
-#[must_use]
-pub fn annotate_bun_modules(code: &str, esm_helpers: &[String], cjs_helpers: &[String]) -> String {
-    let mut result = String::with_capacity(code.len() + 4096);
-    let mut count = 0u32;
+use super::runtime::{BunHelper, BunHelperMap, Bundler};
 
-    let helper_pattern = build_helper_pattern(esm_helpers, cjs_helpers);
-    let Ok(re) = Regex::new(&helper_pattern) else {
+/// Annotates `code` with the runtime `helpers` (current name → helper, as
+/// detected by `BunRuntimeCollector`) and the `bundler` whose runtime variant
+/// they are. A bundle built by another tool can embed that runtime through a
+/// prebuilt dependency, so the header names the runtime, not the build tool.
+#[must_use]
+pub fn annotate_runtime(code: &str, helpers: &BunHelperMap, bundler: Option<Bundler>) -> String {
+    if helpers.is_empty() {
         return code.to_string();
+    }
+
+    let (hashbang, body) = match code.strip_prefix("#!") {
+        Some(_) => code.split_at(code.find('\n').map_or(code.len(), |newline| newline + 1)),
+        None => ("", code),
     };
 
-    for line in code.lines() {
-        let trimmed = line.trim_start();
+    let mut result = String::with_capacity(code.len() + 4096);
+    result.push_str(hashbang);
+    result.push_str(&runtime_header(helpers, bundler));
 
-        if let Some(caps) = re.captures(trimmed)
-            && let Some(module_name) = caps.get(1)
-        {
-            let name = module_name.as_str();
-            if is_valid_module_name(name) {
-                result.push_str("// ═══════════════════════════════════════\n");
-                result.push_str("// Bun Module: ");
-                result.push_str(name);
-                result.push('\n');
-                result.push_str("// ═══════════════════════════════════════\n");
-                count = count.wrapping_add(1);
-            }
+    let wrappers: Vec<String> = helpers
+        .iter()
+        .filter(|(_, helper)| matches!(helper, BunHelper::Esm | BunHelper::CommonJs))
+        .map(|(name, _)| regex::escape(name))
+        .collect();
+    let re = (!wrappers.is_empty())
+        .then(|| {
+            Regex::new(&format!(
+                r"^var\s+([A-Za-z_$][\w$]*)\s*=\s*({})\s*\(",
+                wrappers.join("|")
+            ))
+        })
+        .and_then(Result::ok);
+    let label = bundler.map_or(String::new(), |bundler| format!("{} ", bundler.name()));
+
+    let mut count = 0u32;
+    for line in body.lines() {
+        if let Some(caps) = re.as_ref().and_then(|re| re.captures(line.trim_start())) {
+            let kind = match helpers.get(&caps[2]) {
+                Some(BunHelper::Esm) => "ESM",
+                _ => "CommonJS",
+            };
+            result.push_str("// ═══════════════════════════════════════\n");
+            let _ = writeln!(result, "// {label}{kind} module: {}", &caps[1]);
+            result.push_str("// ═══════════════════════════════════════\n");
+            count += 1;
         }
-
         result.push_str(line);
         result.push('\n');
     }
 
     if count > 0 {
-        eprintln!("[DEOBFUSCATE] Annotated {count} Bun modules");
+        eprintln!("[DEOBFUSCATE] Annotated {count} lazy module wrappers");
     }
-
     result
 }
 
-fn build_helper_pattern(esm_helpers: &[String], cjs_helpers: &[String]) -> String {
-    let mut helpers: Vec<&str> = Vec::new();
+fn runtime_header(helpers: &BunHelperMap, bundler: Option<Bundler>) -> String {
+    let mut entries: Vec<(&str, &str)> = helpers
+        .iter()
+        .map(|(name, helper)| (helper.canonical(), name.as_str()))
+        .collect();
+    entries.sort_unstable();
 
-    for h in esm_helpers {
-        helpers.push(h.as_str());
+    let mut header = String::from("// ═══ Bundler runtime ═══\n");
+    if let Some(bundler) = bundler {
+        let _ = writeln!(header, "// Runtime: {}", bundler.name());
     }
-    for h in cjs_helpers {
-        helpers.push(h.as_str());
+    header.push_str("// Helpers:\n");
+    for (canonical, name) in entries {
+        let _ = writeln!(header, "//   {name} → {canonical}");
     }
-
-    if helpers.is_empty() {
-        helpers.push("__esm");
-        helpers.push("__commonJS");
-        helpers.push("E");
-        helpers.push("V");
-        helpers.push("B");
-        helpers.push("L");
-    }
-
-    let escaped: Vec<String> = helpers.iter().map(|h| regex::escape(h)).collect();
-    let helper_group = escaped.join("|");
-
-    format!(r"^var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:{helper_group})\s*\(\s*\(\s*\)\s*=>")
-}
-
-fn is_valid_module_name(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-
-    let first = name.chars().next().expect("non-empty module name");
-    if !first.is_ascii_alphabetic() && first != '_' && first != '$' {
-        return false;
-    }
-
-    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    header.push('\n');
+    header
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_annotate_esm_module() {
-        let code = "var myModule = E(() => {\n  console.log('hello');\n});";
-        let result = annotate_bun_modules(code, &[], &[]);
-
-        assert!(result.contains("Bun Module: myModule"), "Should annotate module");
-        assert!(result.contains("═══"), "Should have separator");
+    fn helpers(entries: &[(&str, BunHelper)]) -> BunHelperMap {
+        entries
+            .iter()
+            .map(|(name, helper)| ((*name).to_string(), *helper))
+            .collect()
     }
 
     #[test]
-    fn test_annotate_commonjs_module() {
-        let code = "var myModule = B(() => {\n  module.exports = {};\n});";
-        let result = annotate_bun_modules(code, &[], &[]);
-
-        assert!(result.contains("Bun Module: myModule"), "Should annotate module");
-    }
-
-    #[test]
-    fn test_annotate_with_custom_helpers() {
-        let code = "var myModule = customEsm(() => {\n  console.log('hello');\n});";
-        let result = annotate_bun_modules(code, &["customEsm".to_string()], &[]);
-
+    fn labels_modules_with_the_detected_bundler() {
+        let map = helpers(&[("E", BunHelper::Esm), ("C", BunHelper::CommonJs)]);
+        let code = "var a = E(() => {});\nvar b = C((exports, module) => {});\n";
+        let out = annotate_runtime(code, &map, Some(Bundler::Esbuild));
+        assert!(out.contains("// Runtime: esbuild\n"), "{out}");
         assert!(
-            result.contains("Bun Module: myModule"),
-            "Should annotate with custom helper"
+            out.contains("//   E → __esm\n") && out.contains("//   C → __commonJS\n"),
+            "{out}"
+        );
+        assert!(out.contains("// esbuild ESM module: a\n"), "{out}");
+        assert!(out.contains("// esbuild CommonJS module: b\n"), "{out}");
+    }
+
+    #[test]
+    fn omits_the_bundler_when_unknown() {
+        let map = helpers(&[("E", BunHelper::Esm)]);
+        let out = annotate_runtime("var a = E(() => {});\n", &map, None);
+        assert!(!out.contains("Runtime:"), "{out}");
+        assert!(out.contains("// ESM module: a\n"), "{out}");
+    }
+
+    #[test]
+    fn annotates_only_calls_to_detected_wrappers() {
+        let map = helpers(&[("E", BunHelper::Esm)]);
+        let out = annotate_runtime("var a = B(() => {});\nvar b = Ex(() => {});\n", &map, None);
+        assert!(!out.contains("module:"), "{out}");
+    }
+
+    #[test]
+    fn keeps_the_hashbang_first() {
+        let map = helpers(&[("E", BunHelper::Esm)]);
+        let out = annotate_runtime("#!/usr/bin/env node\nvar a = E(() => {});\n", &map, Some(Bundler::Bun));
+        assert!(
+            out.starts_with("#!/usr/bin/env node\n// ═══ Bundler runtime ═══\n"),
+            "{out}"
         );
     }
 
     #[test]
-    fn test_no_annotation_for_regular_code() {
-        let code = "var x = 42;\nvar y = function() { return x; };";
-        let result = annotate_bun_modules(code, &[], &[]);
-
-        assert!(!result.contains("Bun Module"), "Should not annotate regular code");
-    }
-
-    #[test]
-    fn test_multiple_modules() {
-        let code = "var mod1 = E(() => {});\nvar mod2 = E(() => {});\nvar mod3 = B(() => {});";
-        let result = annotate_bun_modules(code, &[], &[]);
-
-        assert!(result.contains("Bun Module: mod1"), "Should annotate mod1");
-        assert!(result.contains("Bun Module: mod2"), "Should annotate mod2");
-        assert!(result.contains("Bun Module: mod3"), "Should annotate mod3");
-    }
-
-    #[test]
-    fn test_valid_module_names() {
-        assert!(is_valid_module_name("myModule"));
-        assert!(is_valid_module_name("_private"));
-        assert!(is_valid_module_name("$jquery"));
-        assert!(is_valid_module_name("mod123"));
-        assert!(!is_valid_module_name(""));
-        assert!(!is_valid_module_name("123abc"));
+    fn leaves_code_without_helpers_untouched() {
+        let code = "var a = E(() => {});";
+        assert_eq!(annotate_runtime(code, &BunHelperMap::default(), None), code);
     }
 }

@@ -1,4 +1,5 @@
 use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_span::GetSpan;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
@@ -8,15 +9,20 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use super::Ctx;
 use super::ast_utils::{decl_binding, unwrap_cjs_iife};
 use super::matchers::{
-    is_commonjs_helper, is_esm_helper, is_export_helper, is_name_helper_arrow, is_tocommonjs_helper, is_toesm_helper,
+    constructs_weak_map, export_descriptor_keys, is_commonjs_helper, is_esm_helper, is_export_helper,
+    is_name_helper_arrow, is_tocommonjs_helper, is_toesm_helper,
 };
 use super::reexport::{is_copyprops_helper, is_reexport_helper};
-use super::types::{BunHelper, BunHelperMap};
+use super::types::{BunHelper, BunHelperMap, BundleRuntime, Bundler};
 
-/// Collector phase: walks program (incl. CJS-wrapper IIFE body) and identifies helpers.
+/// Collector phase: walks program (incl. CJS-wrapper IIFE body) and identifies
+/// the runtime helpers esbuild and Bun share, plus the variants that tell the
+/// two bundlers apart.
 pub struct BunRuntimeCollector {
     map: BunHelperMap,
     symbols: FxHashMap<SymbolId, BunHelper>,
+    bun_evidence: bool,
+    esbuild_evidence: bool,
 }
 
 impl BunRuntimeCollector {
@@ -25,12 +31,37 @@ impl BunRuntimeCollector {
         Self {
             map: BunHelperMap::default(),
             symbols: FxHashMap::default(),
+            bun_evidence: false,
+            esbuild_evidence: false,
         }
     }
 
     #[must_use]
     pub fn into_map(self) -> BunHelperMap {
         self.map
+    }
+
+    #[must_use]
+    pub fn into_runtime(self) -> BundleRuntime {
+        let bundler = self.bundler();
+        BundleRuntime {
+            helpers: self.map,
+            bundler,
+        }
+    }
+
+    /// The bundler identified by a helper variant only it emits: Bun's
+    /// `// @bun` pragma, its `__export` with a `set` accessor, or its
+    /// `WeakMap`-cached `__toESM` / `__toCommonJS`; esbuild's `__export`
+    /// descriptor of exactly `{ get, enumerable }`. `None` when there is no
+    /// such evidence, or evidence for both.
+    #[must_use]
+    pub const fn bundler(&self) -> Option<Bundler> {
+        match (self.bun_evidence, self.esbuild_evidence) {
+            (true, false) => Some(Bundler::Bun),
+            (false, true) => Some(Bundler::Esbuild),
+            _ => None,
+        }
     }
 
     #[must_use]
@@ -54,12 +85,8 @@ impl BunRuntimeCollector {
         if let Some(symbol) = binding.symbol_id.get() {
             self.symbols.entry(symbol).or_insert(helper);
         }
-        let mangled = binding.name.as_str();
         // Don't overwrite — first detection wins (helpers defined exactly once).
-        if !self.map.contains_key(mangled) {
-            eprintln!("[BUN] {mangled} = {} ({:?})", helper.canonical(), helper);
-            self.map.insert(mangled.to_string(), helper);
-        }
+        self.map.entry(binding.name.to_string()).or_insert(helper);
     }
 
     /// Walk a list of statements and detect helpers. Used both for top-level
@@ -81,10 +108,6 @@ impl BunRuntimeCollector {
                 Statement::ExpressionStatement(es) => {
                     // Look inside (function(...) { ... })(...) — Bun's CJS wrapper.
                     if let Some(body_stmts) = unwrap_cjs_iife(&es.expression) {
-                        eprintln!(
-                            "[BUN] descending into CJS wrapper IIFE ({} statements)",
-                            body_stmts.len()
-                        );
                         self.scan_statements(body_stmts);
                     }
                 }
@@ -178,10 +201,19 @@ impl BunRuntimeCollector {
         } else if is_commonjs_helper(arrow) {
             self.record(binding, BunHelper::CommonJs);
         } else if is_export_helper(arrow) {
+            let mut keys = export_descriptor_keys(arrow);
+            keys.sort_unstable();
+            if keys.iter().any(|key| key == "set") {
+                self.bun_evidence = true;
+            } else if keys == ["enumerable", "get"] {
+                self.esbuild_evidence = true;
+            }
             self.record(binding, BunHelper::Export);
         } else if is_toesm_helper(arrow) {
+            self.bun_evidence |= constructs_weak_map(arrow);
             self.record(binding, BunHelper::ToEsm);
         } else if is_tocommonjs_helper(arrow) {
+            self.bun_evidence |= constructs_weak_map(arrow);
             self.record(binding, BunHelper::ToCommonJs);
         } else if is_reexport_helper(arrow, &self.map) {
             self.record(binding, BunHelper::ReExport);
@@ -230,6 +262,18 @@ impl Default for BunRuntimeCollector {
 
 impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeCollector {
     fn enter_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
+        let body_start = program.body.first().map_or(u32::MAX, |stmt| stmt.span().start);
+        self.bun_evidence |= program
+            .comments
+            .iter()
+            .take_while(|comment| comment.span.end <= body_start)
+            .any(|comment| {
+                comment
+                    .content_span()
+                    .source_text(program.source_text)
+                    .trim_start()
+                    .starts_with("@bun")
+            });
         self.scan_statements(&program.body);
     }
 }

@@ -1,34 +1,53 @@
 use super::*;
 use crate::ast_deobfuscate::DeobfuscateState;
+use crate::ast_deobfuscate::bun::{BunHelper, BunRuntimeCollector};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
+use rustc_hash::FxHashSet;
+
+/// esbuild's minified `__export` helper, bound to `__export`.
+const EXPORT_HELPER: &str =
+    "var __export = (e, t) => { for (var n in t) Object.defineProperty(e, n, { get: t[n], enumerable: !0 }); };\n";
+
+fn collect<'a>(alloc: &'a Allocator, code: &'a str) -> (oxc_ast::ast::Program<'a>, ExportNameMap) {
+    let parsed = Parser::new(alloc, code, SourceType::mjs()).parse();
+    let mut prog = parsed.program;
+    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, alloc);
+    let mut helpers = BunRuntimeCollector::new();
+    traverse_mut_with_ctx(&mut helpers, &mut prog, &mut ctx);
+    let export_helpers = helpers
+        .helper_symbols()
+        .iter()
+        .filter(|(_, helper)| **helper == BunHelper::Export)
+        .map(|(symbol, _)| *symbol)
+        .collect();
+    let mut collector = ExportNameCollector::new(export_helpers);
+    traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+    (prog, collector.into_map())
+}
 
 fn collect_names(code: &str) -> ExportNameMap {
     let alloc = Allocator::default();
-    let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
-    let mut prog = parsed.program;
-    let mut collector = ExportNameCollector::new();
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
-    collector.into_map()
+    let code = format!("{EXPORT_HELPER}{code}");
+    collect(&alloc, &code).1
 }
 
 fn collect_and_rename(code: &str) -> (String, usize) {
     let alloc = Allocator::default();
-    let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
-    let mut prog = parsed.program;
-
-    let mut collector = ExportNameCollector::new();
+    let code = format!("{EXPORT_HELPER}{code}");
+    let (mut prog, map) = collect(&alloc, &code);
     let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
-    let map = make_names_unique(collector.into_map(), &scoping);
+    let reserved: FxHashSet<&str> = scoping
+        .root_unresolved_references()
+        .keys()
+        .map(oxc_ast::ast::Ident::as_str)
+        .collect();
+    let map = make_names_unique(map, &scoping, &reserved);
 
     let mut renamer = ExportNameRenamer::new(map);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
@@ -89,13 +108,60 @@ fn renames_throughout_program() {
 }
 
 #[test]
-fn handles_j_dollar_form() {
+fn follows_the_helper_by_symbol_under_any_name() {
     let code = r"
-            j$(target, { fetchData: () => abc });
+            var Ao = (e, t) => { for (var n in t) Object.defineProperty(e, n, { get: t[n], enumerable: !0 }); };
+            Ao(target, { fetchData: () => abc });
             var abc = async () => {};
         ";
     let map = collect_names(code);
     assert!(map.values().any(|name| name == "fetchData"));
+}
+
+#[test]
+fn ignores_calls_through_a_shadowing_binding() {
+    let code = r"
+            function f(__export) {
+                var abc;
+                __export(target, { fetchData: () => abc });
+            }
+        ";
+    assert!(collect_names(code).is_empty());
+}
+
+#[test]
+fn ignores_a_lookalike_that_is_not_the_helper() {
+    let code = r"
+            function MR(a, b) { return [a, b]; }
+            var abc;
+            MR(target, { fetchData: () => abc });
+        ";
+    assert!(collect_names(code).is_empty());
+}
+
+#[test]
+fn finds_export_calls_inside_sequences() {
+    let code = r"
+            var abc, xyz;
+            (__export(a, { fetchData: () => abc }), __export(b, { sendData: () => xyz }));
+        ";
+    let map = collect_names(code);
+    assert!(map.values().any(|name| name == "fetchData"));
+    assert!(map.values().any(|name| name == "sendData"));
+}
+
+#[test]
+fn export_rename_does_not_capture_a_global() {
+    let code = r#"
+            var H = 1;
+            __export(target, { fetch: () => H });
+            fetch("x");
+            H;
+        "#;
+    let (out, _count) = collect_and_rename(code);
+    assert!(out.contains("var fetch$1 = 1"), "{out}");
+    assert!(out.contains("fetch(\"x\")"), "global call must stay global: {out}");
+    assert!(out.contains("fetch$1;"), "{out}");
 }
 
 #[test]

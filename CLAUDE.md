@@ -21,9 +21,9 @@ deobfuscation, bundle splitting/alignment, and static VM analysis.
   cosmetic-A, and cosmetic-B arenas are separated by Phase 12.6 and 15.6
   codegen/re-parse checkpoints.
 - `src/ast_deobfuscate/` owns the individual Oxc passes. Bundler-specific passes
-  live in per-bundler folders: `bun/` (runtime helpers, CJS flattening, module
-  handles, export/local renamers, alphabet) and `esbuild/` (runtime helper
-  detection and annotation).
+  live in per-bundler folders. `bun/` holds the runtime helpers esbuild and
+  Bun share (detection, the bundler they identify, renaming, annotation), CJS
+  flattening, module handles, export/local renamers, and the alphabet.
 - `src/vm_analysis/` performs bounded static JavaScript/Wasm inspection. It must
   never execute JavaScript or instantiate WebAssembly.
 - `src/bin/jsbeautify_app/` owns CLI argument parsing and command runners.

@@ -12,6 +12,7 @@ mod angular;
 mod beautify;
 mod cli;
 mod deobfuscate;
+mod esbuild_bundles;
 mod fixtures;
 mod format_cli;
 mod inspect;

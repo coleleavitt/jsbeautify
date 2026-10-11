@@ -17,9 +17,9 @@ use super::names::{is_reserved_word, is_valid_identifier, sanitize_identifier};
 /// legal identifier and unique along the relevant scope chain: existing
 /// bindings in the declaration scope, ancestor bindings/assigned names, and
 /// descendant bindings that could capture rewritten references. It suffixes
-/// with `$N` on collision.
+/// with `$N` on collision, and also whenever the name is in `reserved`.
 #[must_use]
-pub fn make_names_unique(map: ExportNameMap, scoping: &Scoping) -> ExportNameMap {
+pub fn make_names_unique(map: ExportNameMap, scoping: &Scoping, reserved: &FxHashSet<&str>) -> ExportNameMap {
     if map.is_empty() {
         return map;
     }
@@ -85,7 +85,7 @@ pub fn make_names_unique(map: ExportNameMap, scoping: &Scoping) -> ExportNameMap
         }
         let mut candidate = base.clone();
         let mut n = 1u32;
-        while blocked.contains(&candidate) {
+        while blocked.contains(&candidate) || reserved.contains(candidate.as_str()) {
             candidate = format!("{base}${n}");
             n += 1;
         }

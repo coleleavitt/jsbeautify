@@ -1,16 +1,16 @@
-use super::{Allocator, AstDeobfuscator, BunHelperMap, Codegen, Parser, SourceType, mem_ck};
+use super::{Allocator, AstDeobfuscator, BundleRuntime, Codegen, Parser, SourceType, mem_ck};
 
 impl AstDeobfuscator {
-    /// Returns the structural checkpoint output, the Bun helpers, and the
+    /// Returns the structural checkpoint output, the bundler runtime, and the
     /// source type every later parse must use: the resolved parse goal, made
     /// `CommonJS` when a Bun CJS wrapper was flattened.
-    pub(super) fn run_structural_half(&mut self, code: &str) -> (String, BunHelperMap, SourceType) {
+    pub(super) fn run_structural_half(&mut self, code: &str) -> (String, BundleRuntime, SourceType) {
         // ── Structural half (Phases 0–12.5) runs in its own arena that is freed
         // before the cosmetic half re-parses. The transform passes accumulate a
         // large volume of dead intermediate AST in oxc's bump arena (which never
         // frees mid-run); codegen-ing at the Phase 12.6 checkpoint, dropping this
         // arena, then re-parsing the (valid) output into a fresh arena roughly
-        // halves peak RSS. `bun_helper_map` is the only state that must cross.
+        // halves peak RSS. `runtime` is the only state that must cross.
         let allocator = Allocator::default();
 
         let source_type = self.parse_goal.resolve(code, self.isolated);
@@ -43,7 +43,7 @@ impl AstDeobfuscator {
 
         self.run_structural_preamble(&allocator, &mut program);
         crate::ast_deobfuscate::webpack::rename_webpack_bindings(&allocator, &mut program);
-        let bun_helper_map = self.run_bun_naming_phases(&allocator, &mut program);
+        let runtime = self.run_bun_naming_phases(&allocator, &mut program);
         let angular_renamed = crate::ast_deobfuscate::angular::rename_angular_symbols(&allocator, &mut program);
         eprintln!("[DEOBFUSCATE] Phase 0.995: Angular class/action naming renamed {angular_renamed} identifiers");
         self.run_structural_mid(&allocator, &mut program);
@@ -54,7 +54,7 @@ impl AstDeobfuscator {
         // dead intermediate AST accumulated by Phases 0–12.5.
         mem_ck("Phase 12.6: structural checkpoint codegen");
         eprintln!("[DEOBFUSCATE] Phase 12.6: structural checkpoint (codegen + arena reset)");
-        (Codegen::new().build(&program).code, bun_helper_map, program.source_type)
+        (Codegen::new().build(&program).code, runtime, program.source_type)
     }
 
     fn parse_with_source_type_fallback<'a>(

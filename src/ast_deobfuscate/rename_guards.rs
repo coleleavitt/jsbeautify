@@ -9,7 +9,9 @@
 //! 1. **Direct `eval`** — `eval("…H…")` resolves `H` by *name* against the live
 //!    scope chain, not by `SymbolId`, so renaming `H` leaves a dangling
 //!    reference inside the eval string. Every binding a direct eval can observe
-//!    (its own scope and all ancestors) is therefore unsafe to rename. Only the
+//!    (its own scope and all ancestors) is therefore unsafe to rename, except
+//!    that `eval("name")` reads one identifier: [`RenameGuardCollector::into_guards`]
+//!    guards only the binding `name` resolves to and reserves `name`. Only the
 //!    bare `eval(...)` callee form (parenthesized or not) is a direct eval; indirect forms
 //!    (`(0,eval)(x)`, `window.eval(x)`, `new Function(...)`) run in global scope
 //!    and cannot see locals, so they are intentionally *not* flagged.
@@ -36,8 +38,8 @@
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingIdentifier, CallExpression, Declaration, ExportDeclaration, ExportNamedDeclaration, Expression, Function,
-    IdentifierReference, ModuleExportName, Program,
+    Argument, BindingIdentifier, CallExpression, Declaration, ExportDeclaration, ExportNamedDeclaration, Expression,
+    Function, IdentifierReference, ModuleExportName, Program,
 };
 use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::SourceType;
@@ -46,6 +48,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Ancestor, ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashSet;
 
+use crate::ast_deobfuscate::bun::export_renamer::names::{is_reserved_word, is_valid_identifier};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -99,11 +102,24 @@ pub fn binds_global<State>(ctx: &TraverseCtx<'_, State>, id: &BindingIdentifier<
     id.symbol_id.get().is_some_and(|symbol| is_global_symbol(ctx, symbol))
 }
 
+/// The identifier `name` when `call` is `eval("name")`: the evaluated code is
+/// one identifier reference, so the eval reads that name and nothing else.
+fn eval_identifier<'c>(call: &'c CallExpression<'_>) -> Option<&'c str> {
+    let [Argument::StringLiteral(code)] = call.arguments.as_slice() else {
+        return None;
+    };
+    let name = code.value.as_str();
+    (is_valid_identifier(name) && !is_reserved_word(name)).then_some(name)
+}
+
 /// Collects the soundness-guard inputs in a single read-only traversal.
 #[derive(Default)]
 pub struct RenameGuardCollector {
     /// Scopes that lexically contain a direct `eval(...)` call.
     eval_scopes: Vec<ScopeId>,
+    /// Direct evals whose code is a single identifier, such as `eval("require")`,
+    /// with the scope they run in. Such an eval reads only that one name.
+    identifier_evals: Vec<(ScopeId, String)>,
     /// Bindings whose name is observable as a public ES module export, or
     /// through Annex B block-function hoisting.
     preserved: FxHashSet<SymbolId>,
@@ -125,10 +141,23 @@ impl RenameGuardCollector {
     /// traversed; `SymbolId`/`ScopeId` assignment is deterministic across
     /// rebuilds, which the surrounding pipeline already relies on.
     #[must_use]
-    pub fn into_guarded(self, scoping: &Scoping) -> FxHashSet<SymbolId> {
-        let mut guarded = self.preserved;
+    pub fn into_guarded(mut self, scoping: &Scoping) -> FxHashSet<SymbolId> {
+        let identifier_evals = std::mem::take(&mut self.identifier_evals);
+        self.eval_scopes
+            .extend(identifier_evals.into_iter().map(|(scope, _)| scope));
+        self.into_guards(scoping).symbols
+    }
+
+    /// Like [`Self::into_guarded`], except that a direct eval of a single
+    /// identifier (`eval("require")`) guards only the binding that name
+    /// resolves to and reports the name in [`RenameGuards::eval_names`]. The
+    /// caller must then never give any binding one of those names, or the
+    /// eval would read the renamed binding instead.
+    #[must_use]
+    pub fn into_guards(self, scoping: &Scoping) -> RenameGuards {
+        let mut symbols = self.preserved;
         if self.source_type.is_script() {
-            guarded.extend(scoping.get_bindings(scoping.root_scope_id()).values().copied());
+            symbols.extend(scoping.get_bindings(scoping.root_scope_id()).values().copied());
         }
 
         if !self.eval_scopes.is_empty() {
@@ -138,13 +167,27 @@ impl RenameGuardCollector {
             }
             for sym in scoping.symbol_ids() {
                 if poisoned.contains(&scoping.symbol_scope_id(sym)) {
-                    guarded.insert(sym);
+                    symbols.insert(sym);
                 }
             }
         }
 
-        guarded
+        let mut eval_names = FxHashSet::default();
+        for (scope, name) in self.identifier_evals {
+            symbols.extend(scoping.find_binding(scope, name.as_str().into()));
+            eval_names.insert(name);
+        }
+
+        RenameGuards { symbols, eval_names }
     }
+}
+
+/// The result of [`RenameGuardCollector::into_guards`].
+pub struct RenameGuards {
+    /// Bindings that must keep their name.
+    pub symbols: FxHashSet<SymbolId>,
+    /// Names read by `eval("name")`, which no binding may be renamed to.
+    pub eval_names: FxHashSet<String>,
 }
 
 /// Runs [`RenameGuardCollector`] over `program` and resolves its guarded set.
@@ -154,6 +197,16 @@ pub fn guarded_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>) 
     let mut collector = RenameGuardCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     collector.into_guarded(&ctx.into_scoping())
+}
+
+/// Runs [`RenameGuardCollector`] over `program` and resolves its
+/// [`RenameGuards`].
+pub fn guards<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> RenameGuards {
+    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+    let mut collector = RenameGuardCollector::new();
+    traverse_mut_with_ctx(&mut collector, program, &mut ctx);
+    collector.into_guards(&ctx.into_scoping())
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
@@ -174,7 +227,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
         if let Expression::Identifier(id) = call.callee.without_parentheses()
             && id.name == "eval"
         {
-            self.eval_scopes.push(ctx.current_scope_id());
+            let scope = ctx.current_scope_id();
+            match eval_identifier(call) {
+                Some(name) => self.identifier_evals.push((scope, name.to_string())),
+                None => self.eval_scopes.push(scope),
+            }
         }
     }
 
@@ -251,6 +308,53 @@ mod tests {
         // Direct eval inside `f` can observe `f`'s param `H` and the outer `g`.
         let names = guarded_names("function g(){ function f(H){ return eval('H') } }");
         assert!(names.contains("H"), "eval-visible param must be guarded: {names:?}");
+    }
+
+    fn guards_of(code: &str) -> (FxHashSet<String>, FxHashSet<String>) {
+        let alloc = Allocator::default();
+        let mut prog = Parser::new(&alloc, code, SourceType::cjs()).parse().program;
+        let guards = super::guards(&alloc, &mut prog);
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let names = guards
+            .symbols
+            .into_iter()
+            .map(|sym| scoping.symbol_name(sym).to_string())
+            .collect();
+        (names, guards.eval_names)
+    }
+
+    #[test]
+    fn identifier_eval_guards_only_the_binding_it_reads() {
+        let code = "var a, b; function f(c) { return eval('a'); }";
+        let (names, eval_names) = guards_of(code);
+        assert_eq!(names, FxHashSet::from_iter(["a".to_string()]));
+        assert_eq!(eval_names, FxHashSet::from_iter(["a".to_string()]));
+        let conservative = guarded_names_as(code, SourceType::cjs());
+        assert!(
+            ["a", "b", "c", "f"].iter().all(|name| conservative.contains(*name)),
+            "{conservative:?}"
+        );
+    }
+
+    #[test]
+    fn identifier_eval_of_a_global_reserves_its_name() {
+        let (names, eval_names) = guards_of("var a; function f() { return eval('require')('fs'); }");
+        assert!(names.is_empty(), "{names:?}");
+        assert_eq!(eval_names, FxHashSet::from_iter(["require".to_string()]));
+    }
+
+    #[test]
+    fn other_literal_evals_still_guard_the_scope_chain() {
+        for code in [
+            "var a; function f() { return eval('a + 1'); }",
+            "var a; function f() { return eval('var a'); }",
+            "var a; function f() { return eval('this'); }",
+            "var a; function f() { return eval('a', 1); }",
+        ] {
+            let (names, eval_names) = guards_of(code);
+            assert!(names.contains("a") && names.contains("f"), "{code}: {names:?}");
+            assert!(eval_names.is_empty(), "{code}: {eval_names:?}");
+        }
     }
 
     #[test]

@@ -1,22 +1,27 @@
-use oxc_ast::ast::{Expression, ObjectPropertyKind};
+use oxc_ast::ast::{CallExpression, Expression, ObjectPropertyKind};
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::names::is_generic_name;
 use super::{Ctx, ExportNameMap};
 
-/// Collects mangled→original mappings from `__export()` / `j$()` / `MR()` calls.
+/// Collects mangled→original mappings from calls to the `__export` runtime
+/// helper, whichever name it has.
 pub struct ExportNameCollector {
+    /// The bindings of the detected `__export` helpers.
+    export_helpers: FxHashSet<SymbolId>,
     /// Map from the resolved exported symbol → original export name.
     name_map: ExportNameMap,
 }
 
 impl ExportNameCollector {
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(export_helpers: FxHashSet<SymbolId>) -> Self {
         Self {
+            export_helpers,
             name_map: FxHashMap::default(),
         }
     }
@@ -31,17 +36,13 @@ impl ExportNameCollector {
         &self.name_map
     }
 
-    /// Check if a call expression is `__export(target, { ... })` or similar.
-    fn try_extract_from_call(&mut self, expr: &Expression<'_>, ctx: &Ctx<'_>) {
-        let Expression::CallExpression(call) = expr else { return };
-
-        // Callee must be an identifier named __export, j$, or MR
-        let callee_name = match &call.callee {
-            Expression::Identifier(id) => id.name.as_str(),
-            _ => return,
+    /// Records the names of an `__export(target, { name: () => local })` call.
+    fn try_extract_from_call(&mut self, call: &CallExpression<'_>, ctx: &Ctx<'_>) {
+        let Expression::Identifier(callee) = &call.callee else {
+            return;
         };
-
-        if !matches!(callee_name, "__export" | "j$" | "MR" | "__exportValue") {
+        let callee_symbol = ctx.scoping().get_reference(callee.reference_id()).symbol_id();
+        if !callee_symbol.is_some_and(|symbol| self.export_helpers.contains(&symbol)) {
             return;
         }
 
@@ -99,14 +100,8 @@ impl ExportNameCollector {
     }
 }
 
-impl Default for ExportNameCollector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<'a> Traverse<'a, DeobfuscateState> for ExportNameCollector {
-    fn enter_expression_statement(&mut self, es: &mut oxc_ast::ast::ExpressionStatement<'a>, ctx: &mut Ctx<'a>) {
-        self.try_extract_from_call(&es.expression, ctx);
+    fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
+        self.try_extract_from_call(call, ctx);
     }
 }

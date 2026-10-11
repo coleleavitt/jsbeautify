@@ -1,7 +1,7 @@
 use super::{
-    AstDeobfuscator, BunHelper, BunHelperMap, Codegen, EsbuildHelperCollector, EsbuildHelperKind, Program, Result,
-    SemanticBaseline, SourceType, annotate_bun_modules, annotate_esbuild_modules, annotate_namespace_modules,
-    annotate_ts_enums, annotate_webpack_modules, expand_arrow_sequences, log_output_validity, mem_ck,
+    AstDeobfuscator, BunHelperMap, Bundler, Codegen, Program, Result, SemanticBaseline, SourceType,
+    annotate_namespace_modules, annotate_runtime, annotate_ts_enums, annotate_webpack_modules, expand_arrow_sequences,
+    log_output_validity, mem_ck,
 };
 
 impl AstDeobfuscator {
@@ -9,8 +9,8 @@ impl AstDeobfuscator {
         &self,
         program: &Program<'_>,
         source_type: SourceType,
-        esbuild_collector: &EsbuildHelperCollector,
-        bun_helper_map: &BunHelperMap,
+        helpers: &BunHelperMap,
+        bundler: Option<Bundler>,
         baseline: SemanticBaseline,
     ) -> Result<String> {
         mem_ck("before codegen (peak structural)");
@@ -40,37 +40,7 @@ impl AstDeobfuscator {
 
         eprintln!("[DEOBFUSCATE] Phase 20: Annotating modules");
         let output = annotate_webpack_modules(&output);
-        let output = annotate_esbuild_modules(&output, esbuild_collector);
-
-        let mut esm_helpers: Vec<String> = esbuild_collector
-            .get_helpers()
-            .iter()
-            .filter(|(_, info)| matches!(info.kind, EsbuildHelperKind::Esm))
-            .map(|(name, _)| name.clone())
-            .collect();
-        let mut cjs_helpers: Vec<String> = esbuild_collector
-            .get_helpers()
-            .iter()
-            .filter(|(_, info)| matches!(info.kind, EsbuildHelperKind::CommonJs))
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        // Augment from Bun runtime collector if esbuild didn't find anything
-        if esm_helpers.is_empty() {
-            for (name, helper) in bun_helper_map {
-                if matches!(helper, BunHelper::Esm) {
-                    esm_helpers.push(name.clone());
-                }
-            }
-        }
-        if cjs_helpers.is_empty() {
-            for (name, helper) in bun_helper_map {
-                if matches!(helper, BunHelper::CommonJs) {
-                    cjs_helpers.push(name.clone());
-                }
-            }
-        }
-        let output = annotate_bun_modules(&output, &esm_helpers, &cjs_helpers);
+        let output = annotate_runtime(&output, helpers, bundler);
 
         eprintln!("[DEOBFUSCATE] Phase 21: Post-codegen annotations (enums, namespaces, arrows)");
         let (output, enum_count) = annotate_ts_enums(&output);

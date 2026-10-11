@@ -45,3 +45,27 @@ impl BunHelper {
 
 /// Map from mangled name → canonical helper.
 pub type BunHelperMap = FxHashMap<String, BunHelper>;
+
+/// A bundler identified from a runtime helper variant only it emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bundler {
+    Bun,
+    Esbuild,
+}
+
+impl Bundler {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bun => "Bun",
+            Self::Esbuild => "esbuild",
+        }
+    }
+}
+
+/// The runtime helpers detected in a program and the bundler they identify.
+#[derive(Debug, Default)]
+pub struct BundleRuntime {
+    pub helpers: BunHelperMap,
+    pub bundler: Option<Bundler>,
+}
