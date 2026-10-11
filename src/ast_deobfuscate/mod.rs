@@ -117,6 +117,7 @@ pub(crate) mod unicode_mangling;
 pub(crate) mod variable_rename;
 #[allow(dead_code)]
 pub(crate) mod void_replacer;
+pub(crate) mod webpack;
 pub(crate) mod window_alias_propagator;
 
 pub use akamai::{

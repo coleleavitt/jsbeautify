@@ -13,6 +13,12 @@ pub fn obfuscated(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
 }
 
+/// Read a real webpack build fixture by file name (e.g. `"webpack5_prod_main.js"`).
+pub fn webpack(name: &str) -> String {
+    let path = fixtures_dir().join("webpack").join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
+}
+
 /// Every obfuscated fixture as `(file_name, contents)` pairs.
 pub fn all_obfuscated() -> Vec<(String, String)> {
     let dir = fixtures_dir().join("obfuscated");
