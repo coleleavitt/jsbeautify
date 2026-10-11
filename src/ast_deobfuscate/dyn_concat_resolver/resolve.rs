@@ -11,7 +11,7 @@ pub(super) fn try_resolve_to_string(
     ctx: &Ctx<'_>,
 ) -> Option<String> {
     match expr {
-        Expression::StringLiteral(lit) => Some(lit.value.as_str().to_string()),
+        Expression::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.as_str().to_string()),
         Expression::ParenthesizedExpression(p) => try_resolve_to_string(&p.expression, resolver, ctx),
         Expression::Identifier(id) => {
             let symbol_id = ctx.scoping().get_reference(id.reference_id()).symbol_id()?;
@@ -95,7 +95,10 @@ pub(super) fn fold_adjacent_literals<'a>(expr: &mut Expression<'a>, ctx: &Ctx<'a
     let mut changed = fold_adjacent_literals(&mut b.left, ctx);
     changed |= fold_adjacent_literals(&mut b.right, ctx);
 
-    if let (Expression::StringLiteral(l), Expression::StringLiteral(r)) = (&b.left, &b.right) {
+    if let (Expression::StringLiteral(l), Expression::StringLiteral(r)) = (&b.left, &b.right)
+        && !l.lone_surrogates
+        && !r.lone_surrogates
+    {
         let combined = format!("{}{}", l.value.as_str(), r.value.as_str());
         if combined.len() <= MAX_INLINE_LEN {
             *expr = make_string_literal(&combined, ctx);
@@ -110,13 +113,20 @@ pub(super) fn substitute_in_template<'a>(
     resolver: &DynConcatResolver,
     ctx: &Ctx<'a>,
 ) -> usize {
+    if tmpl
+        .quasis
+        .iter()
+        .any(|quasi| quasi.lone_surrogates || quasi.value.cooked.is_none())
+    {
+        return 0;
+    }
     let mut count = 0;
     let mut new_quasis: Vec<TemplateElement<'a>> = Vec::with_capacity(tmpl.quasis.len());
     let mut rebuilt_expressions: Vec<Expression<'a>> = Vec::new();
     let mut pending_text = String::new();
 
     for (i, quasi) in tmpl.quasis.iter().enumerate() {
-        pending_text.push_str(quasi.value.cooked.as_ref().unwrap_or(&quasi.value.raw).as_str());
+        pending_text.push_str(quasi.value.cooked.as_ref().expect("checked above").as_str());
         if i < tmpl.expressions.len() {
             let interp = &tmpl.expressions[i];
             let replacement_value = match interp {

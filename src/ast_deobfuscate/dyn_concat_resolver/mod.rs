@@ -33,7 +33,7 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub(super) const MAX_INLINE_LEN: usize = 256;
 
-mod literal;
+pub mod literal;
 mod member;
 mod resolve;
 mod types;
@@ -113,6 +113,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
         }
 
         if let Expression::StringLiteral(lit) = &assign.right
+            && !lit.lone_surrogates
             && lit.value.len() <= MAX_INLINE_LEN
         {
             if let Some(prev) = self.members.insert(key.clone(), lit.value.as_str().to_string())

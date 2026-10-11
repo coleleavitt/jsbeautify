@@ -1,7 +1,12 @@
+use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{Expression, LogicalExpression, LogicalOperator};
+use oxc_span::SPAN;
 
 use super::{AlgebraicSimplifier, Ctx};
 
+/// Only a literal left operand is folded: `x && true` evaluates to `x` (not
+/// `true`) and `f() || true` must still call `f`, so a literal right operand
+/// says nothing about the result.
 impl AlgebraicSimplifier {
     pub(super) fn try_simplify_logical_and<'a>(
         &mut self,
@@ -11,32 +16,17 @@ impl AlgebraicSimplifier {
         if logical.operator != LogicalOperator::And {
             return None;
         }
-
-        if Self::is_true(&logical.left) {
+        let Expression::BooleanLiteral(left) = &logical.left else {
+            return None;
+        };
+        self.changed = true;
+        if left.value {
             eprintln!("[AST] Simplifying true && x to x");
-            self.changed = true;
-            return Some(Self::clone_expression(&logical.right, ctx));
-        }
-
-        if Self::is_false(&logical.left) {
+            Some(logical.right.clone_in_with_semantic_ids(ctx.ast.allocator()))
+        } else {
             eprintln!("[AST] Simplifying false && x to false");
-            self.changed = true;
-            return Some(Self::make_boolean(false, ctx));
+            Some(Expression::new_boolean_literal(SPAN, false, ctx))
         }
-
-        if Self::is_true(&logical.right) {
-            eprintln!("[AST] Simplifying x && true to x");
-            self.changed = true;
-            return Some(Self::clone_expression(&logical.left, ctx));
-        }
-
-        if Self::is_false(&logical.right) {
-            eprintln!("[AST] Simplifying x && false to false");
-            self.changed = true;
-            return Some(Self::make_boolean(false, ctx));
-        }
-
-        None
     }
 
     pub(super) fn try_simplify_logical_or<'a>(
@@ -47,31 +37,16 @@ impl AlgebraicSimplifier {
         if logical.operator != LogicalOperator::Or {
             return None;
         }
-
-        if Self::is_true(&logical.left) {
+        let Expression::BooleanLiteral(left) = &logical.left else {
+            return None;
+        };
+        self.changed = true;
+        if left.value {
             eprintln!("[AST] Simplifying true || x to true");
-            self.changed = true;
-            return Some(Self::make_boolean(true, ctx));
-        }
-
-        if Self::is_false(&logical.left) {
+            Some(Expression::new_boolean_literal(SPAN, true, ctx))
+        } else {
             eprintln!("[AST] Simplifying false || x to x");
-            self.changed = true;
-            return Some(Self::clone_expression(&logical.right, ctx));
+            Some(logical.right.clone_in_with_semantic_ids(ctx.ast.allocator()))
         }
-
-        if Self::is_true(&logical.right) {
-            eprintln!("[AST] Simplifying x || true to true");
-            self.changed = true;
-            return Some(Self::make_boolean(true, ctx));
-        }
-
-        if Self::is_false(&logical.right) {
-            eprintln!("[AST] Simplifying x || false to x");
-            self.changed = true;
-            return Some(Self::clone_expression(&logical.left, ctx));
-        }
-
-        None
     }
 }

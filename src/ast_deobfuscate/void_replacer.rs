@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Expression, UnaryOperator};
+use oxc_ast::ast::{Expression, Ident, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -22,6 +22,13 @@ impl<'a> Traverse<'a, DeobfuscateState> for VoidReplacer {
             return;
         }
         if !is_pure_operand(&unary.argument) {
+            return;
+        }
+        if ctx
+            .scoping()
+            .find_binding(ctx.current_scope_id(), Ident::from_str_in("undefined", ctx))
+            .is_some()
+        {
             return;
         }
         eprintln!("[AST] Converting void <pure-expr> -> undefined");
@@ -101,6 +108,12 @@ mod tests {
             output.contains("void"),
             "must preserve side-effecting void, got: {output}"
         );
+    }
+
+    #[test]
+    fn test_preserve_void_under_shadowed_undefined() {
+        let code = "function g(undefined) {\n\treturn void 0;\n}\n";
+        assert_eq!(run_void_replacer(code), code);
     }
 
     #[test]

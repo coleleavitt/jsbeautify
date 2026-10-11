@@ -21,8 +21,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExpressionSimplifier {
             Expression::UnaryExpression(unary) => self
                 .try_simplify_double_not(unary, ctx)
                 .or_else(|| self.try_simplify_plus_array(unary, ctx))
-                .or_else(|| self.try_simplify_not_number(unary, ctx))
-                .or_else(|| self.try_simplify_void(unary, ctx)),
+                .or_else(|| self.try_simplify_not_number(unary, ctx)),
             Expression::ComputedMemberExpression(member) => self.try_simplify_bracket_to_dot(member, ctx),
             Expression::BinaryExpression(binary) => self.try_simplify_string_concat(binary, ctx),
             _ => None,

@@ -96,20 +96,6 @@ impl ExpressionSimplifier {
         None
     }
 
-    pub(super) fn try_simplify_void<'a>(
-        &mut self,
-        unary: &UnaryExpression<'a>,
-        ctx: &mut Ctx<'a>,
-    ) -> Option<Expression<'a>> {
-        if unary.operator != UnaryOperator::Void {
-            return None;
-        }
-
-        eprintln!("[AST] Simplifying void expr to undefined");
-        self.changed = true;
-        Some(Expression::new_identifier(SPAN, "undefined", ctx))
-    }
-
     pub(super) fn try_simplify_bracket_to_dot<'a>(
         &mut self,
         member: &ComputedMemberExpression<'a>,
@@ -146,7 +132,10 @@ impl ExpressionSimplifier {
             return None;
         }
 
-        if let (Expression::StringLiteral(left), Expression::StringLiteral(right)) = (&binary.left, &binary.right) {
+        if let (Expression::StringLiteral(left), Expression::StringLiteral(right)) = (&binary.left, &binary.right)
+            && !left.lone_surrogates
+            && !right.lone_surrogates
+        {
             let combined = format!("{}{}", left.value.as_str(), right.value.as_str());
             eprintln!(
                 "[AST] Concatenating \"{}\" + \"{}\" = \"{}\"",
