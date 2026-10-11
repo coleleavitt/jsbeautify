@@ -84,3 +84,12 @@ fn deobfuscator_never_panics_on_any_fixture() {
             .unwrap_or_else(|e| panic!("deobfuscate {name} returned hard error: {e}"));
     }
 }
+
+#[test]
+fn statement_splitting_reaches_nested_minifier_output() {
+    let src = "function f(x, y) { x && (y ? g() : h()); y || (g(), h()); return x ? (g(), 1) : y ? 2 : 3; }";
+    let mut deob = AstDeobfuscator::new();
+    let out = deob.deobfuscate(src).expect("deobfuscate nested statement idioms");
+    let expected = "function v0(v1, v2) {\n\tif (v1) {\n\t\tif (v2) {\n\t\t\tg();\n\t\t} else {\n\t\t\th();\n\t\t}\n\t}\n\tif (!v2) {\n\t\tg();\n\t\th();\n\t}\n\tif (v1) {\n\t\tg();\n\t\treturn 1;\n\t}\n\treturn v2 ? 2 : 3;\n}\n";
+    assert_eq!(out.trim_end(), expected.trim_end());
+}

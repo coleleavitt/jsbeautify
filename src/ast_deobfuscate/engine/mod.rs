@@ -23,7 +23,7 @@ use rustc_hash::FxHashMap;
 use crate::{BeautifyError, Result};
 
 use super::{
-    AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker,
+    AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker, BodyBlockWrapper,
     BooleanLiteralConverter, BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer,
     BunRuntimeCollector, BunRuntimeRenamer, BunSyntaxNormalizer, CallProxyCollector, CallProxyInliner,
     CallThisSimplifier, CffUnflattener, ClassNameCollector, ClassNameRenamer, CommaReturnSimplifier,
@@ -31,12 +31,12 @@ use super::{
     DispatchInlinerCollector, DispatchInlinerRewriter, DispatcherDetector, DispatcherInliner, DisplayNameCollector,
     DoWhileSwitchCleaner, DoWhileSwitchDetector, DynConcatResolver, DynamicPropertyConverter, EmptyStatementCleanup,
     EsbuildHelperCollector, EsbuildHelperKind, ExportNameCollector, ExportNameRenamer, ExpressionSimplifier,
-    FromCharCodeFolder, FunctionCollector, FunctionInliner, IfBodyCommaSplitter, IifeUnwrap, JsonParseEvaluator,
+    FromCharCodeFolder, FunctionCollector, FunctionInliner, IifeUnwrap, JsonParseEvaluator, LetToConst,
     LookupForwarderCollector, LookupForwarderInliner, MethodCallForwarderCollector, MethodCallForwarderInliner,
-    MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator, OperatorProxyCollector,
-    OperatorProxyInliner, OptionalChainingNormalizer, ParamHeuristicRenamer, ReturnSequenceSplitter,
-    SelfDefendingStringArray, SelfInitAccessorFlattener, SequenceExpressionSplitter, ShortCircuitToIf,
-    StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
+    MinifierIdiomReverser, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
+    OperatorProxyCollector, OperatorProxyInliner, OptionalChainingNormalizer, ParamHeuristicRenamer,
+    ReturnSequenceSplitter, SelfDefendingStringArray, SelfInitAccessorFlattener, SequenceExpressionSplitter,
+    ShortCircuitToIf, StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
     TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, UnicodeNormalizer,
     VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator, annotate_bun_modules,
     annotate_esbuild_modules, annotate_namespace_modules, annotate_ts_enums, bun, collect_case_bodies,

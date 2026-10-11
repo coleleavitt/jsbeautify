@@ -25,7 +25,7 @@
 //! where we can insert preceding statements.
 
 use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
-use oxc_ast::ast::{Expression, FunctionBody, Statement};
+use oxc_ast::ast::{Expression, FunctionBody, Statement, SwitchCase};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -48,20 +48,23 @@ impl<'a> Traverse<'a, DeobfuscateState> for ReturnSequenceSplitter {
     fn exit_block_statement(&mut self, block: &mut oxc_ast::ast::BlockStatement<'a>, ctx: &mut Ctx<'a>) {
         self.split_in_stmts(&mut block.body, ctx);
     }
+
+    fn exit_switch_case(&mut self, case: &mut SwitchCase<'a>, ctx: &mut Ctx<'a>) {
+        self.split_in_stmts(&mut case.consequent, ctx);
+    }
+}
+
+pub fn is_return_sequence(stmt: &Statement<'_>) -> bool {
+    matches!(
+        stmt,
+        Statement::ReturnStatement(ret)
+            if matches!(&ret.argument, Some(Expression::SequenceExpression(seq)) if seq.expressions.len() >= 2)
+    )
 }
 
 impl ReturnSequenceSplitter {
     fn split_in_stmts<'a>(&mut self, stmts: &mut oxc_allocator::Vec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
-        let has_return_seq = stmts.iter().any(|s| {
-            if let Statement::ReturnStatement(ret) = s
-                && let Some(Expression::SequenceExpression(seq)) = &ret.argument
-            {
-                return seq.expressions.len() >= 2;
-            }
-            false
-        });
-
-        if !has_return_seq {
+        if !stmts.iter().any(is_return_sequence) {
             return;
         }
 
@@ -150,5 +153,12 @@ mod tests {
         let (out, count) = run("function f() { return (a); }");
         assert_eq!(count, 0);
         assert!(out.contains("return"), "Should preserve return: {out}");
+    }
+
+    #[test]
+    fn splits_in_switch_case() {
+        let (out, count) = run("function f() { switch (k) { case 1: return a(), b; } }");
+        assert_eq!(count, 1);
+        assert!(out.contains("a();") && out.contains("return b;"), "got: {out}");
     }
 }

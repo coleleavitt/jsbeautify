@@ -20,7 +20,7 @@
 //! conditions, etc. are left untouched.
 
 use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
-use oxc_ast::ast::{BlockStatement, Expression, FunctionBody, Program, Statement};
+use oxc_ast::ast::{BlockStatement, Expression, FunctionBody, Program, Statement, SwitchCase};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -35,107 +35,24 @@ pub struct SequenceExpressionSplitter {
 
 counter_pass!(SequenceExpressionSplitter, split_count, split_count);
 
-impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
-    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        let has_sequence = program.body.iter().any(|s| {
-            matches!(
-                s,
-                Statement::ExpressionStatement(expr_stmt)
-                    if matches!(expr_stmt.expression, Expression::SequenceExpression(_))
-            )
-        });
-        if !has_sequence {
+pub fn is_sequence_stmt(stmt: &Statement<'_>) -> bool {
+    matches!(
+        stmt,
+        Statement::ExpressionStatement(expr_stmt) if matches!(expr_stmt.expression, Expression::SequenceExpression(_))
+    )
+}
+
+impl SequenceExpressionSplitter {
+    fn split_statements<'a>(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
+        if !stmts.iter().any(is_sequence_stmt) {
             return;
         }
 
-        let before = program.body.len();
-        let mut new_body = OxcVec::new_in(ctx);
-        for stmt in &program.body {
-            if let Statement::ExpressionStatement(expr_stmt) = stmt
-                && let Expression::SequenceExpression(seq) = &expr_stmt.expression
-            {
-                eprintln!(
-                    "[SEQ_SPLIT] Splitting sequence with {} expressions in program body",
-                    seq.expressions.len()
-                );
-                for expr in &seq.expressions {
-                    new_body.push(Statement::new_expression_statement(
-                        SPAN,
-                        expr.clone_in_with_semantic_ids(ctx.allocator()),
-                        &ctx.ast,
-                    ));
-                }
-                self.split_count += 1;
-                continue;
-            }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
-        }
-        let after = new_body.len();
-        eprintln!("[SEQ_SPLIT] Program body: {before} -> {after} statements");
-        program.body = new_body;
-    }
-
-    fn exit_block_statement(&mut self, block: &mut BlockStatement<'a>, ctx: &mut Ctx<'a>) {
-        let has_sequence = block.body.iter().any(|s| {
-            matches!(
-                s,
-                Statement::ExpressionStatement(expr_stmt)
-                    if matches!(expr_stmt.expression, Expression::SequenceExpression(_))
-            )
-        });
-        if !has_sequence {
-            return;
-        }
-
-        let before = block.body.len();
-        let mut new_body = OxcVec::new_in(ctx);
-        for stmt in &block.body {
-            if let Statement::ExpressionStatement(expr_stmt) = stmt
-                && let Expression::SequenceExpression(seq) = &expr_stmt.expression
-            {
-                eprintln!(
-                    "[SEQ_SPLIT] Splitting sequence with {} expressions in block",
-                    seq.expressions.len()
-                );
-                for expr in &seq.expressions {
-                    new_body.push(Statement::new_expression_statement(
-                        SPAN,
-                        expr.clone_in_with_semantic_ids(ctx.allocator()),
-                        &ctx.ast,
-                    ));
-                }
-                self.split_count += 1;
-                continue;
-            }
-            new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
-        }
-        let after = new_body.len();
-        eprintln!("[SEQ_SPLIT] Block body: {before} -> {after} statements");
-        block.body = new_body;
-    }
-
-    fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
-        let has_sequence = body.statements.iter().any(|s| {
-            matches!(
-                s,
-                Statement::ExpressionStatement(expr_stmt)
-                    if matches!(expr_stmt.expression, Expression::SequenceExpression(_))
-            )
-        });
-        if !has_sequence {
-            return;
-        }
-
-        let before = body.statements.len();
         let mut new_stmts = OxcVec::new_in(ctx);
-        for stmt in &body.statements {
+        for stmt in stmts.iter() {
             if let Statement::ExpressionStatement(expr_stmt) = stmt
                 && let Expression::SequenceExpression(seq) = &expr_stmt.expression
             {
-                eprintln!(
-                    "[SEQ_SPLIT] Splitting sequence with {} expressions in function body",
-                    seq.expressions.len()
-                );
                 for expr in &seq.expressions {
                     new_stmts.push(Statement::new_expression_statement(
                         SPAN,
@@ -148,9 +65,25 @@ impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
             }
             new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
-        let after = new_stmts.len();
-        eprintln!("[SEQ_SPLIT] Function body: {before} -> {after} statements");
-        body.statements = new_stmts;
+        *stmts = new_stmts;
+    }
+}
+
+impl<'a> Traverse<'a, DeobfuscateState> for SequenceExpressionSplitter {
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.split_statements(&mut program.body, ctx);
+    }
+
+    fn exit_block_statement(&mut self, block: &mut BlockStatement<'a>, ctx: &mut Ctx<'a>) {
+        self.split_statements(&mut block.body, ctx);
+    }
+
+    fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
+        self.split_statements(&mut body.statements, ctx);
+    }
+
+    fn exit_switch_case(&mut self, case: &mut SwitchCase<'a>, ctx: &mut Ctx<'a>) {
+        self.split_statements(&mut case.consequent, ctx);
     }
 }
 
@@ -230,5 +163,12 @@ mod tests {
             output.contains("return"),
             "Should preserve return statement, got: {output}"
         );
+    }
+
+    #[test]
+    fn splits_in_switch_case() {
+        let (output, count) = run_split("switch (k) { case 1: a(), b(); }");
+        assert_eq!(count, 1);
+        assert!(output.contains("a();\n") && output.contains("b();\n"), "got: {output}");
     }
 }
