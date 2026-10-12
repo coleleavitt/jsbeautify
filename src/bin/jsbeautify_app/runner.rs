@@ -1,6 +1,6 @@
 use super::{
     AlignArgs, AnalyzeVmArgs, BeautifyArgs, CfgFormat, Cli, Command, ExtractModulesArgs, InspectArgs, ReconstructArgs,
-    SplitChunksArgs, SplitSourcesArgs, align, sources,
+    SplitChunksArgs, SplitSourcesArgs, align, project, sources,
 };
 use clap::Parser;
 use js_beautify_rs::inspect::{self, Inspection};
@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-type Fallible = Result<(), Box<dyn std::error::Error>>;
+pub(super) type Fallible = Result<(), Box<dyn std::error::Error>>;
 
 pub(super) fn main() {
     #[cfg(feature = "dhat-heap")]
@@ -61,7 +61,7 @@ fn run() -> Fallible {
     }
 }
 
-fn read_input(input: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub(super) fn read_input(input: &str) -> Result<String, Box<dyn std::error::Error>> {
     if input == "-" {
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;
@@ -156,6 +156,12 @@ fn run_inspect<T>(
 }
 
 fn run_beautify(b: &BeautifyArgs) -> Fallible {
+    if let Some(job) = &b.project_job {
+        return project::run_job(b, job);
+    }
+    if let Some(root) = &b.project {
+        return project::run_project(b, root);
+    }
     let mut inputs: Vec<&str> = b.files.iter().chain(&b.inputs).map(String::as_str).collect();
     if inputs.is_empty() {
         inputs.push("-");
@@ -171,23 +177,34 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
         } else {
             b.output.clone()
         };
-        let editorconfig_target = PathBuf::from(match (input, &output) {
-            ("-", Some(path)) => path.as_str(),
-            ("-", None) => "stdin.js",
-            (path, _) => path,
-        });
-        let base = Options {
-            deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm,
-            readable_names: b.rename_vars || b.rename_llm,
-            parse_goal: b.goal.parse_goal(input),
-            isolated: b.isolated,
-            ..Options::default()
-        };
-        let mut options = b.format.options(&config, base, &editorconfig_target)?;
-        b.naming.apply(&config, &mut options)?;
+        let options = options_for(b, &config, input, output.as_deref())?;
         beautify_input(b, input, output.as_deref(), options)?;
     }
     Ok(())
+}
+
+/// The options for `input`: the command line, then the config chain and the
+/// `.editorconfig` of the file written (or read).
+pub(super) fn options_for(
+    b: &BeautifyArgs,
+    config: &super::config::ConfigChain,
+    input: &str,
+    output: Option<&str>,
+) -> Result<Options, Box<dyn std::error::Error>> {
+    let editorconfig_target = PathBuf::from(match (input, output) {
+        ("-", None) => "stdin.js",
+        ("-", Some(path)) | (path, _) => path,
+    });
+    let base = Options {
+        deobfuscate: b.deobfuscate || b.rename_vars || b.rename_llm || b.project.is_some(),
+        readable_names: b.rename_vars || b.rename_llm,
+        parse_goal: b.goal.parse_goal(input),
+        isolated: b.isolated,
+        ..Options::default()
+    };
+    let mut options = b.format.options(config, base, &editorconfig_target)?;
+    b.naming.apply(config, &mut options)?;
+    Ok(options)
 }
 
 fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut options: Options) -> Fallible {

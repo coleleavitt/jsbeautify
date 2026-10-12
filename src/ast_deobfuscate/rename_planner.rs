@@ -55,8 +55,23 @@ pub fn apply_rename_plan<'a>(
     let annex_b = guard.annex_b_blocks();
     let mut guarded = guard.into_guarded(&scoping);
     guarded.extend(symbols_visible_from(with_scopes, &scoping));
+    rename_unguarded(allocator, program, scoping, plan, &guarded, &annex_b)
+}
 
-    let names = assign_names(plan, &guarded, &annex_b, &scoping);
+/// Rename the symbols of `plan` (in priority order) to collision-free forms of
+/// their desired names, except the `guarded` ones. `annex_b` maps the Annex B
+/// block functions the plan may rename to their block scopes (see
+/// [`RenameGuardCollector::annex_b_blocks`]). `scoping` must describe
+/// `program`.
+pub fn rename_unguarded<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: Scoping,
+    plan: Vec<(SymbolId, String)>,
+    guarded: &FxHashSet<SymbolId>,
+    annex_b: &FxHashMap<SymbolId, ScopeId>,
+) -> RenameCounts {
+    let names = assign_names(plan, guarded, annex_b, &scoping);
     let planned = names.len();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut renamer = ExportNameRenamer::new(names);

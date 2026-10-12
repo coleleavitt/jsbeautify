@@ -17,6 +17,7 @@ mod fixtures;
 mod format_cli;
 mod inspect;
 mod nesting;
+mod project;
 mod script_mode;
 mod turbopack;
 mod webpack_modules;

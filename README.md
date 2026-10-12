@@ -118,6 +118,7 @@ Options:
       --bun-extract                 Recover names from Bun bundle patterns
       --source-type <TYPE>          auto | module | script | commonjs [default: auto]
       --isolated                    Allow renaming/removing a classic script's top-level bindings
+      --project <DIR>               Deobfuscate every .js/.mjs/.cjs under DIR together, naming bindings across files (-o <OUTDIR>)
   -h, --help                        Print help
   -V, --version                     Print version (also -v)
 ```
@@ -227,6 +228,27 @@ explicitly; all arena-owned AST data is discarded. See
 `src/ast_deobfuscate/engine/structural.rs`,
 `src/ast_deobfuscate/engine/cosmetic.rs`, and
 `src/ast_deobfuscate/engine/final_output.rs` for the authoritative order.
+
+### Project mode (several chunks of one build)
+
+`jsbeautify -d --project dist/assets -o deob/` deobfuscates the chunks of a
+code-split build (esbuild/rollup/vite `import { a as e } from "./chunk-X.js"`,
+Turbopack chunks) together. It reads every file first, resolves each import to
+the binding it links, and gives that binding one name in every file: the
+runtime helper it is (`__export`, `__commonJS`, … imported from another chunk,
+which also lets the importer's `__export(…)` calls and lazy modules be named),
+the name its own chunk gives it, its real export name, or `<chunk>_<export>`.
+Exports no file of the project imports are the public surface, so their short
+names count as names; `--short-export-names` is therefore ignored in project
+mode. `--keep-fn-names` and `--window-alias-es5` apply to every file; with
+`--keep-fn-names` a binding a function or class takes its `.name` from keeps
+its name, and the chunks that import it use that name too.
+Mangled Turbopack keys are named by the `esmReexport`
+(`S([…])`) lists of other chunks. Import and export names never change. The
+output folder mirrors the input (other files are copied), with per-file logs in
+`.jsbeautify/logs/` and `project-index.json` (module links, plan, counts and a
+check that every import still resolves to an export of its target). Single-file
+output is unchanged.
 
 ## Cross-Version Alignment
 

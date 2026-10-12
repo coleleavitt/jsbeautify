@@ -99,18 +99,37 @@ pub fn beautify(code: &str, options: &Options) -> Result<String> {
     crate::stack::run_on_sized_stack(code.len(), || beautify_on_current_stack(code, options))
 }
 
+/// Deobfuscate one file of a project with its part of the project naming
+/// plan (see [`crate::ast_deobfuscate::project`]); `options.deobfuscate` is
+/// implied.
+///
+/// # Errors
+/// Returns an error if deobfuscation fails.
+pub fn deobfuscate_with_project_seeds(
+    code: &str,
+    options: &Options,
+    seeds: crate::ast_deobfuscate::project::ProjectSeeds,
+) -> Result<String> {
+    crate::stack::run_on_sized_stack(code.len(), || {
+        deobfuscator(code, options).with_project_seeds(seeds).deobfuscate(code)
+    })
+}
+
+fn deobfuscator(code: &str, options: &Options) -> AstDeobfuscator {
+    AstDeobfuscator::new()
+        .with_skip_annotations(options.skip_annotations)
+        .with_readable_names(options.readable_names)
+        .with_parse_goal(options.parse_goal)
+        .with_isolated(options.isolated)
+        .with_keep_fn_names(options.keep_fn_names)
+        .with_short_export_names(options.short_export_names)
+        .with_window_alias_es5(options.window_alias_es5)
+        .with_layout(Layout::new(options, code))
+}
+
 fn beautify_on_current_stack(code: &str, options: &Options) -> Result<String> {
     if options.deobfuscate {
-        let mut deobfuscator = AstDeobfuscator::new()
-            .with_skip_annotations(options.skip_annotations)
-            .with_readable_names(options.readable_names)
-            .with_parse_goal(options.parse_goal)
-            .with_isolated(options.isolated)
-            .with_keep_fn_names(options.keep_fn_names)
-            .with_short_export_names(options.short_export_names)
-            .with_window_alias_es5(options.window_alias_es5)
-            .with_layout(Layout::new(options, code));
-        return deobfuscator.deobfuscate(code);
+        return deobfuscator(code, options).deobfuscate(code);
     }
 
     if options.split_chunks {

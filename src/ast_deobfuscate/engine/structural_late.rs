@@ -149,10 +149,13 @@ impl AstDeobfuscator {
         {
             let _trace = TraceSpan::new("Phase 12: variable_renamer");
             eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
-            if self.keep_fn_names {
-                let guards = rename_guards::guards(allocator, program, true);
-                self.variable_renamer.keep(guards.symbols);
-            }
+            let mut kept = if self.keep_fn_names {
+                rename_guards::guards(allocator, program, true).symbols
+            } else {
+                rustc_hash::FxHashSet::default()
+            };
+            kept.extend(crate::ast_deobfuscate::project::seeded_imports(program, &self.project));
+            self.variable_renamer.keep(kept);
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");

@@ -15,7 +15,7 @@ fn run(code: &str) -> String {
         parsed.diagnostics
     );
     let mut program = parsed.program;
-    rename_turbopack_bindings(&allocator, &mut program, false);
+    rename_turbopack_bindings(&allocator, &mut program, &[], false);
     let out = Codegen::new().build(&program).code;
     let reparsed = Parser::new(&allocator, &out, source_type).parse();
     assert!(reparsed.diagnostics.is_empty(), "output must parse: {out}");
@@ -469,7 +469,7 @@ fn keeps_authored_runtime_names() {
 fn run_script(code: &str) -> (String, SourceType) {
     let allocator = Allocator::default();
     let mut program = Parser::new(&allocator, code, SourceType::script()).parse().program;
-    rename_turbopack_bindings(&allocator, &mut program, false);
+    rename_turbopack_bindings(&allocator, &mut program, &[], false);
     let out = Codegen::new().build(&program).code;
     let reparsed = Parser::new(&allocator, &out, program.source_type).parse();
     assert!(reparsed.diagnostics.is_empty(), "output must parse: {out}");

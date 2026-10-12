@@ -65,6 +65,7 @@ use oxc_ast::ast::Program;
 use oxc_semantic::SemanticBuilder;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
+use crate::ast_deobfuscate::project::{TurbopackFacts, TurbopackReexport};
 use crate::ast_deobfuscate::rename_planner::apply_rename_plan;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -72,14 +73,22 @@ use collector::NameCollector;
 
 /// Rename Turbopack factory, export, import and runtime bindings in `program`.
 /// A classic-script Node.js chunk, entry or runtime becomes `CommonJS`, which
-/// is how Node.js loads it. Inert on other input. `keep_fn_names` as
+/// is how Node.js loads it. Inert on other input. `reexports` are the export
+/// names other chunks' `esmReexport` lists give module keys (empty for a
+/// single file); `keep_fn_names` as
 /// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
-pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) {
+pub fn rename_turbopack_bindings<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    reexports: &[TurbopackReexport],
+    keep_fn_names: bool,
+) {
     eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
     let mut names = NameCollector::default();
+    names.seed_reexports(reexports);
     traverse_mut_with_ctx(&mut names, program, &mut ctx);
     if names.found.is_empty() && !names.has_runtime() {
         eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check: not found");
@@ -135,4 +144,14 @@ pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Pro
         "[DEOBFUSCATE] Phase 0.86: Renamed {} Turbopack bindings ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references
     );
+}
+
+/// The Turbopack facts of `program` a project index needs (see
+/// [`crate::ast_deobfuscate::project`]), or `None` on other input.
+pub fn project_facts<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> Option<TurbopackFacts> {
+    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+    let mut names = NameCollector::default();
+    traverse_mut_with_ctx(&mut names, program, &mut ctx);
+    (!names.found.is_empty() || names.has_runtime()).then(|| names.project_facts())
 }
