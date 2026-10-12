@@ -182,3 +182,34 @@ fn names_the_runtime_helpers_a_split_chunk_exports() {
     assert!(out.contains("var __esm = "), "{out}");
     assert!(out.contains("export { __esm as a }"), "{out}");
 }
+
+#[test]
+fn keep_fn_names_keeps_every_function_and_class_name() {
+    let code = "function a(){return 1}var b=class{};const c=()=>a();class d{constructor(){this.name=\"AbortError\"}}\
+                export{a as useThing,b as Store,c as Button,d as Failure};";
+    let out = AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
+        .with_keep_fn_names(true)
+        .deobfuscate(code)
+        .expect("deobfuscate");
+    for kept in ["function a()", "var b = class", "const c = () => a()", "class d"] {
+        assert!(out.contains(kept), "{kept}: {out}");
+    }
+    assert!(
+        out.contains("a as useThing, b as Store, c as Button, d as Failure"),
+        "{out}"
+    );
+}
+
+#[test]
+fn short_export_names_name_their_locals_on_request() {
+    let code = "var r=1,s=2;export{r as ab,s as x};";
+    assert!(deobfuscate_module(code).contains("r as ab"));
+    let out = AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
+        .with_short_export_names(true)
+        .deobfuscate(code)
+        .expect("deobfuscate");
+    assert!(out.contains("var ab = 1") && out.contains("var x = 2"), "{out}");
+    assert!(out.contains("export { ab, x }"), "{out}");
+}

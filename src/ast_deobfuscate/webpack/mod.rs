@@ -43,8 +43,9 @@ use collector::NameCollector;
 use runtime::RuntimeCollector;
 
 /// Rename webpack runtime, factory, export and import bindings in `program`.
-/// Inert on non-webpack input.
-pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
+/// Inert on non-webpack input. `keep_fn_names` as
+/// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
+pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) {
     eprintln!("[DEOBFUSCATE] Phase 0.85: webpack check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -74,7 +75,7 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
         return;
     }
 
-    let counts = apply_rename_plan(allocator, program, ctx, plan, &opaque_scopes);
+    let counts = apply_rename_plan(allocator, program, ctx, plan, &opaque_scopes, keep_fn_names);
     eprintln!(
         "[DEOBFUSCATE] Phase 0.85: Renamed {} webpack bindings ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references

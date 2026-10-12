@@ -7,7 +7,7 @@ use super::{
 
 impl AstDeobfuscator {
     pub(super) fn run_structural_preamble<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
-        Self::run_window_alias_preamble(allocator, program);
+        Self::run_window_alias_preamble(allocator, program, self.window_alias_es5);
 
         eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP check");
         let mut akamai = AkamaiDeobfuscator::new();
@@ -18,7 +18,7 @@ impl AstDeobfuscator {
         }
     }
 
-    fn run_window_alias_preamble<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
+    fn run_window_alias_preamble<'a>(allocator: &'a Allocator, program: &mut Program<'a>, es5_only: bool) {
         eprintln!("[DEOBFUSCATE] Phase 0.4: Window-alias propagation");
         let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -33,7 +33,7 @@ impl AstDeobfuscator {
             );
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            let mut propagator = WindowAliasPropagator::new(aliases);
+            let mut propagator = WindowAliasPropagator::new(aliases).es5_only(es5_only);
             traverse_mut_with_ctx(&mut propagator, program, &mut ctx);
             eprintln!(
                 "[DEOBFUSCATE] Phase 0.4: Propagated {} window-alias accesses",

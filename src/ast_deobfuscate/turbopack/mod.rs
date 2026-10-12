@@ -69,8 +69,9 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use collector::NameCollector;
 
 /// Rename Turbopack factory, export, import and runtime bindings in `program`.
-/// Inert on other input.
-pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
+/// Inert on other input. `keep_fn_names` as
+/// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
+pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) {
     eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -115,7 +116,7 @@ pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Pro
     if plan.is_empty() {
         return;
     }
-    let counts = apply_rename_plan(allocator, program, ctx, plan, &with_scopes);
+    let counts = apply_rename_plan(allocator, program, ctx, plan, &with_scopes, keep_fn_names);
     eprintln!(
         "[DEOBFUSCATE] Phase 0.86: Renamed {} Turbopack bindings ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references

@@ -32,16 +32,18 @@ pub struct RenameCounts {
 }
 
 /// Rename the symbols of `plan` (in priority order) to collision-free forms of
-/// their desired names. Symbols the shared rename guards protect, and every
-/// symbol visible from one of `with_scopes`, keep their names.
+/// their desired names. Symbols the shared rename guards protect (with
+/// `keep_fn_names`, also function-name bindings), and every symbol visible
+/// from one of `with_scopes`, keep their names.
 pub fn apply_rename_plan<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     mut ctx: ReusableTraverseCtx<'a, DeobfuscateState>,
     plan: Vec<(SymbolId, String)>,
     with_scopes: &[ScopeId],
+    keep_fn_names: bool,
 ) -> RenameCounts {
-    let mut guard = RenameGuardCollector::new();
+    let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, program, &mut ctx);
     let scoping = ctx.into_scoping();
     let mut guarded = guard.into_guarded(&scoping);

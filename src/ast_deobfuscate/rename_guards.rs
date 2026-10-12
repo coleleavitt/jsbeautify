@@ -35,6 +35,12 @@
 //! 4. **Annex B block functions** — a sloppy-mode `function f(){}` inside a
 //!    block also assigns the enclosing scope's `var f`. See
 //!    [`is_annex_b_function`].
+//! 5. **Function names, on request** — with
+//!    [`RenameGuardCollector::keep_fn_names`] (`--keep-fn-names`), every binding
+//!    a function or class takes its `.name` from: declaration and expression
+//!    names (`function f`, `class C`) and bindings an anonymous function, arrow
+//!    or class is assigned to (`var f = () => {}`, `f = function () {}`,
+//!    `{ f = class {} }`, a parameter default).
 //!
 //! [`RenameGuardCollector`] runs one traversal and, via
 //! [`RenameGuardCollector::into_guarded`], returns the set of [`SymbolId`]s that
@@ -43,9 +49,11 @@
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, AssignmentTarget, BindingIdentifier, CallExpression, Declaration, ExportDeclaration,
-    ExportNamedDeclaration, Expression, Function, IdentifierReference, LogicalOperator, ModuleExportName,
-    ObjectExpression, ObjectPropertyKind, Program, Statement,
+    Argument, AssignmentExpression, AssignmentPattern, AssignmentTarget, AssignmentTargetMaybeDefault,
+    AssignmentTargetPropertyIdentifier, AssignmentTargetWithDefault, BindingIdentifier, BindingPattern, CallExpression,
+    Class, Declaration, ExportDeclaration, ExportNamedDeclaration, Expression, FormalParameter, Function,
+    IdentifierReference, LogicalOperator, ModuleExportName, ObjectExpression, ObjectPropertyKind, Program, Statement,
+    VariableDeclarator,
 };
 use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::SourceType;
@@ -192,12 +200,46 @@ pub struct RenameGuardCollector {
     /// Bindings exported by an `export { local as name }` specifier.
     specifier_exports: FxHashSet<SymbolId>,
     source_type: SourceType,
+    /// Guard every binding a function or class takes its `.name` from.
+    keep_fn_names: bool,
 }
 
 impl RenameGuardCollector {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Also guard every binding a function or class takes its `.name` from,
+    /// so `--keep-fn-names` output reports the same `.name` values.
+    #[must_use]
+    pub const fn keep_fn_names(mut self, keep: bool) -> Self {
+        self.keep_fn_names = keep;
+        self
+    }
+
+    /// Guard `binding` when `value` is an anonymous function, arrow or class,
+    /// which takes the binding's name as its `.name`.
+    fn guard_named_value(&mut self, binding: Option<&BindingIdentifier<'_>>, value: Option<&Expression<'_>>) {
+        if self.keep_fn_names
+            && value.is_some_and(Expression::is_anonymous_function_definition)
+            && let Some(symbol) = binding.and_then(|id| id.symbol_id.get())
+        {
+            self.preserved.insert(symbol);
+        }
+    }
+
+    /// [`Self::guard_named_value`] for an assignment to `target`.
+    fn guard_named_assignment(&mut self, target: &IdentifierReference<'_>, value: &Expression<'_>, ctx: &Ctx<'_>) {
+        if self.keep_fn_names
+            && value.is_anonymous_function_definition()
+            && let Some(symbol) = target
+                .reference_id
+                .get()
+                .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+        {
+            self.preserved.insert(symbol);
+        }
     }
 
     /// Resolve the collected signals into the set of [`SymbolId`]s that must
@@ -274,11 +316,11 @@ pub struct RenameGuards {
 }
 
 /// Runs [`RenameGuardCollector`] over `program` and resolves its
-/// [`RenameGuards`].
-pub fn guards<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> RenameGuards {
+/// [`RenameGuards`]; `keep_fn_names` as [`RenameGuardCollector::keep_fn_names`].
+pub fn guards<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) -> RenameGuards {
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut collector = RenameGuardCollector::new();
+    let mut collector = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     collector.into_guards(&ctx.into_scoping())
 }
@@ -289,10 +331,62 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
     }
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
-        if is_annex_b_function(ctx, func)
+        if (self.keep_fn_names || is_annex_b_function(ctx, func))
             && let Some(symbol_id) = func.id.as_ref().and_then(|id| id.symbol_id.get())
         {
             self.preserved.insert(symbol_id);
+        }
+    }
+
+    fn enter_class(&mut self, class: &mut Class<'a>, _ctx: &mut Ctx<'a>) {
+        if self.keep_fn_names
+            && let Some(symbol_id) = class.id.as_ref().and_then(|id| id.symbol_id.get())
+        {
+            self.preserved.insert(symbol_id);
+        }
+    }
+
+    fn enter_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &declarator.id {
+            self.guard_named_value(Some(id), declarator.init.as_ref());
+        }
+    }
+
+    fn enter_formal_parameter(&mut self, param: &mut FormalParameter<'a>, _ctx: &mut Ctx<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &param.pattern {
+            self.guard_named_value(Some(id), param.initializer.as_deref());
+        }
+    }
+
+    fn enter_assignment_pattern(&mut self, pattern: &mut AssignmentPattern<'a>, _ctx: &mut Ctx<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &pattern.left {
+            self.guard_named_value(Some(id), Some(&pattern.right));
+        }
+    }
+
+    fn enter_assignment_expression(&mut self, assign: &mut AssignmentExpression<'a>, ctx: &mut Ctx<'a>) {
+        if let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left {
+            self.guard_named_assignment(target, &assign.right, ctx);
+        }
+    }
+
+    fn enter_assignment_target_with_default(
+        &mut self,
+        target: &mut AssignmentTargetWithDefault<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        if let AssignmentTarget::AssignmentTargetIdentifier(binding) = &target.binding {
+            self.guard_named_assignment(binding, &target.init, ctx);
+        }
+    }
+
+    fn enter_assignment_target_property_identifier(
+        &mut self,
+        property: &mut AssignmentTargetPropertyIdentifier<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        if let Some(init) = &property.init {
+            self.guard_named_assignment(&property.binding, init, ctx);
         }
     }
 
@@ -388,7 +482,7 @@ mod tests {
     fn guards_of(code: &str) -> (FxHashSet<String>, FxHashSet<String>) {
         let alloc = Allocator::default();
         let mut prog = Parser::new(&alloc, code, SourceType::cjs()).parse().program;
-        let guards = super::guards(&alloc, &mut prog);
+        let guards = super::guards(&alloc, &mut prog, false);
         let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
         let names = guards
             .symbols
@@ -459,7 +553,7 @@ mod tests {
         let specifier_exports = |code: &str| -> FxHashSet<String> {
             let alloc = Allocator::default();
             let mut prog = Parser::new(&alloc, code, SourceType::mjs()).parse().program;
-            let guards = super::guards(&alloc, &mut prog);
+            let guards = super::guards(&alloc, &mut prog, false);
             let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
             assert!(guards.specifier_exports.is_subset(&guards.symbols));
             guards
@@ -516,6 +610,29 @@ mod tests {
         let code = "var v; function f() {}";
         assert!(guarded_names_as(code, SourceType::mjs()).is_empty());
         assert!(guarded_names_as(code, SourceType::cjs()).is_empty());
+    }
+
+    #[test]
+    fn keep_fn_names_guards_every_binding_a_function_takes_its_name_from() {
+        let code = "var a = function () {}, b = () => {}, c = class {}, p = (function () {}), plain = 1;
+            function d() {} class e {} let f; f = function () {};
+            const { g = () => {} } = {}; function h(i = function () {}, j = 1) {}
+            const k = function named() {}; let l, m; ({ l = class {} } = {}); [m = () => {}] = [];";
+        let alloc = Allocator::default();
+        let mut prog = Parser::new(&alloc, code, SourceType::mjs()).parse().program;
+        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
+        let mut collector = RenameGuardCollector::new().keep_fn_names(true);
+        traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
+        let scoping = ctx.into_scoping();
+        let names: FxHashSet<String> = collector
+            .into_guarded(&scoping)
+            .into_iter()
+            .map(|sym| scoping.symbol_name(sym).to_string())
+            .collect();
+        let expected = ["a", "b", "c", "p", "d", "e", "f", "g", "h", "i", "named", "l", "m"];
+        assert_eq!(names, FxHashSet::from_iter(expected.map(String::from)));
+        assert!(guarded_names(code).is_empty());
     }
 
     #[test]

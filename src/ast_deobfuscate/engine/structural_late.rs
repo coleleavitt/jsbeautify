@@ -1,7 +1,7 @@
 use super::{
     Allocator, AstDeobfuscator, DeobfuscateState, DispatchInlinerCollector, DispatchInlinerRewriter,
     DoWhileSwitchCleaner, DoWhileSwitchDetector, FunctionCollector, FunctionInliner, FxHashMap, Program,
-    ReusableTraverseCtx, SemanticBuilder, TraceSpan, collect_constants, eliminate_dead_vars, mem_ck,
+    ReusableTraverseCtx, SemanticBuilder, TraceSpan, collect_constants, eliminate_dead_vars, mem_ck, rename_guards,
     resolve_compound_transitions, traverse_mut_with_ctx,
 };
 
@@ -149,6 +149,10 @@ impl AstDeobfuscator {
         {
             let _trace = TraceSpan::new("Phase 12: variable_renamer");
             eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
+            if self.keep_fn_names {
+                let guards = rename_guards::guards(allocator, program, true);
+                self.variable_renamer.keep(guards.symbols);
+            }
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");

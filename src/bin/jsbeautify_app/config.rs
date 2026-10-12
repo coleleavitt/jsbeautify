@@ -86,6 +86,39 @@ pub(super) struct FormatArgs {
     editorconfig: bool,
 }
 
+/// Opt-in trade-offs of `--deobfuscate`. Each flag can also be set by its
+/// `.jsbeautifyrc` key (`keep_fn_names`, `short_export_names`,
+/// `window_alias_es5`).
+#[allow(clippy::struct_excessive_bools)]
+#[derive(clap::Args, Debug)]
+pub(super) struct DeobfuscationArgs {
+    /// Never rename a binding a function or class takes its `.name` from, so
+    /// every `.name` stays as in the input (like terser's `keep_fnames`).
+    #[arg(long, alias = "keep_fn_names")]
+    keep_fn_names: bool,
+
+    /// Let one or two character export names (`export { r as ab }`) name
+    /// their minified locals. Off by default because code-split chunks share
+    /// such names; use it for a single file whose export names are its own.
+    #[arg(long, alias = "short_export_names")]
+    short_export_names: bool,
+
+    /// Window-alias propagation (`var w = window; w.document` → `document`)
+    /// rewrites only names ES5-era browsers define, not ES2015 globals such
+    /// as Promise, Symbol, Map or crypto.
+    #[arg(long = "window-alias-es5", alias = "window_alias_es5")]
+    window_alias_es5: bool,
+}
+
+impl DeobfuscationArgs {
+    pub(super) fn apply(&self, chain: &ConfigChain, options: &mut Options) -> Fallible<()> {
+        options.keep_fn_names = self.keep_fn_names || chain.flag("keep_fn_names")?.unwrap_or(false);
+        options.short_export_names = self.short_export_names || chain.flag("short_export_names")?.unwrap_or(false);
+        options.window_alias_es5 = self.window_alias_es5 || chain.flag("window_alias_es5")?.unwrap_or(false);
+        Ok(())
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum BraceStyleArg {
     Collapse,
