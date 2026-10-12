@@ -119,8 +119,8 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     let mut collector = BunRuntimeCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     drop(ctx);
-    let mut helper_symbols = collector.helper_symbols().clone();
-    let runtime = collector.into_runtime();
+    let helper_symbols = collector.helper_symbols().clone();
+    let mut runtime = collector.into_runtime();
     eprintln!(
         "[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check: {}",
         runtime_check_result(&runtime)
@@ -132,16 +132,27 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
             eprintln!("[DEOBFUSCATE] Phase 0.9: {name} = {}", helper.canonical());
         }
         let guards = rename_guards::guards(allocator, program);
-        helper_symbols.retain(|symbol, _| !guards.symbols.contains(symbol));
         let desired = helper_symbols
-            .into_iter()
-            .map(|(symbol, helper)| (symbol, helper.canonical().to_string()))
+            .iter()
+            .filter(|(symbol, _)| !guards.symbols.contains(symbol))
+            .map(|(symbol, helper)| (*symbol, helper.canonical().to_string()))
             .collect();
         let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let globals: FxHashSet<&str> = scoping.root_unresolved_references().keys().map(Ident::as_str).collect();
         let reserved = guards.eval_names.iter().map(String::as_str).collect();
         let mut plan = bun::export_renamer::make_names_unique(desired, &scoping, &reserved);
         plan.retain(|_, name| !globals.contains(name.as_str()));
+        // Later phases (Phase 19's module annotation) find the helpers by these names.
+        runtime.helpers = helper_symbols
+            .iter()
+            .map(|(symbol, helper)| {
+                let name = plan
+                    .get(symbol)
+                    .cloned()
+                    .unwrap_or_else(|| scoping.symbol_name(*symbol).to_string());
+                (name, *helper)
+            })
+            .collect();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut renamer = BunRuntimeRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);

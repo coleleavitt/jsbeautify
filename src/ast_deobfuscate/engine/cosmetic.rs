@@ -5,6 +5,8 @@ use super::{
     traverse_mut_with_ctx,
 };
 
+use rustc_hash::FxHashSet;
+
 const STATEMENT_SPLIT_MAX_ROUNDS: usize = 8;
 
 impl AstDeobfuscator {
@@ -206,7 +208,16 @@ impl AstDeobfuscator {
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut helper_collector = BunRuntimeCollector::new();
         traverse_mut_with_ctx(&mut helper_collector, &mut program, &mut ctx);
-        let helpers = helper_collector.into_map();
+        let mut helpers = helper_collector.into_map();
+        // The cosmetic passes reshape helper bodies (`fn && (res = …)` → `if`),
+        // so also keep the helpers Phase 0.9 named that are still bound.
+        let scoping = ctx.into_scoping();
+        let bound: FxHashSet<&str> = scoping.symbol_names().collect();
+        for (name, helper) in &runtime.helpers {
+            if bound.contains(name.as_str()) {
+                helpers.entry(name.clone()).or_insert(*helper);
+            }
+        }
         eprintln!(
             "[DEOBFUSCATE] Phase 19: Collected {} runtime helpers for module annotation",
             helpers.len()

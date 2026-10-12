@@ -116,3 +116,20 @@ fn names_default_export_locals_after_the_module() {
     assert!(out.contains("var CodecError = class extends Error"), "{out}");
     assert!(out.contains("var anon_default = { a: 1 }"), "{out}");
 }
+
+#[test]
+fn names_the_lazy_modules_of_an_esbuild_0_28_bundle() {
+    // `esbuild 0.28.2 --bundle --format=cjs --minify --platform=node`: `__esm`
+    // and `__commonJS` wrap the module call in `try`.
+    let out = deobfuscate(
+        r#"var c=Object.defineProperty;var x=Object.getOwnPropertyDescriptor;var q=Object.getOwnPropertyNames;var b=Object.prototype.hasOwnProperty;var l=(r,e,t)=>()=>{if(t)throw t[0];try{return r&&(e=r(r=0)),e}catch(s){throw t=[s],s}};var d=(r,e)=>()=>{try{return e||r((e={exports:{}}).exports,e),e.exports}catch(t){throw e=0,t}},n=(r,e)=>{for(var t in e)c(r,t,{get:e[t],enumerable:!0})},f=(r,e,t,s)=>{if(e&&typeof e=="object"||typeof e=="function")for(let o of q(e))!b.call(r,o)&&o!==t&&c(r,o,{get:()=>e[o],enumerable:!(s=x(e,o))||s.enumerable});return r};var i=r=>f(c({},"__esModule",{value:!0}),r);var w={};n(w,{answer:()=>g});var g,a=l(()=>{g=42});var u=d((y,p)=>{var h=(a(),i(w));p.exports={twice:()=>h.answer*2}});var m={};n(m,{result:()=>k});module.exports=i(m);var j=u(),k=j.twice();0&&(module.exports={result});"#,
+    );
+    for helper in ["__esm", "__commonJS", "__export", "__copyProps", "__toCommonJS"] {
+        assert!(out.contains(&format!("var {helper} = ")), "{helper}: {out}");
+        assert!(out.contains(&format!("//   {helper}\n")), "{helper}: {out}");
+    }
+    assert!(out.contains("var init_1 = __esm("), "{out}");
+    assert!(out.contains("var require_1 = __commonJS("), "{out}");
+    assert!(out.contains("// esbuild ESM module: init_1"), "{out}");
+    assert!(out.contains("// esbuild CommonJS module: require_1"), "{out}");
+}
