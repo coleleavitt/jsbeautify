@@ -19,5 +19,6 @@ pub use module_annotator::annotate_runtime;
 pub use module_handles::{BunModuleHandleCollector, BunModuleHandleRenamer};
 pub use runtime::{
     BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer, BundleRuntime, Bundler, detect_bundle_runtime,
+    with_bundle_runtime,
 };
 pub use syntax_normalizer::BunSyntaxNormalizer;

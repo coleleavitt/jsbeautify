@@ -1,7 +1,8 @@
 //! Turbopack (Next.js 13.4+ / 16) chunk naming.
 //!
 //! Turbopack chunks register module factories with
-//! `(globalThis.TURBOPACK || (globalThis.TURBOPACK = [])).push([script, id, factory, …])`
+//! `(globalThis.TURBOPACK || (globalThis.TURBOPACK = [])).push([script, id, factory, …])`,
+//! or export them from a Node.js chunk with `module.exports = [id, factory, …]`
 //! (see [`shapes`]). Every factory receives the module's `__turbopack_context__`
 //! (minified to one letter), and `CommonJS` factories also `module` and `exports`.
 //! The context's one-letter members are the runtime API (from
@@ -19,9 +20,20 @@
 //! - locals exported through `__turbopack_context__.s([name, getter | 0, value, …])`
 //!   to their export name, and a minified `default` export local to a name
 //!   derived from its module id (see [`crate::ast_deobfuscate::default_export`]);
-//! - `x = __turbopack_context__.i(123)` / `.r(123)` to `module_123`;
+//! - `x = __turbopack_context__.i(123)` / `.r(123)` to `module_123`, and with a
+//!   development id `.i("[project]/src/foo.ts [app-client] (ecmascript)")` to
+//!   `module_src_foo_ts` (the id stays in the call); `x = __turbopack_context__.x("react", …)`
+//!   to `external_react`;
 //! - in the runtime chunk, the `Context` constructor, its `contextPrototype`
-//!   alias and the functions installed on it (`contextPrototype.i = esmImport`).
+//!   alias and the functions installed on it (`contextPrototype.i = esmImport`),
+//!   with Node.js names where the runtimes differ, and the Node.js runtime's
+//!   `module.exports = (sourcePath) => ({ m, c })`;
+//! - in the worker entrypoint (`turbopack-worker-<hash>.js`), `abort`, `params`,
+//!   `param` and `chunkUrls`.
+//!
+//! Export keys that production builds mangle to one or two characters are not
+//! used as names. Development chunk lists and Node.js entries are only
+//! reported.
 //!
 //! Member names stay as they are: the runtime and other chunks reach them by
 //! name. Collisions get a `$N` suffix and the shared rename guards apply (see
@@ -52,15 +64,36 @@ pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Pro
 
     let mut names = NameCollector::default();
     traverse_mut_with_ctx(&mut names, program, &mut ctx);
-    if names.registrations() == 0 && !names.has_runtime() {
+    if names.found.is_empty() && !names.has_runtime() {
         eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check: not found");
         return;
     }
+    let found = &names.found;
+    let mut detected = Vec::new();
+    if found.registrations > 0 {
+        detected.push(format!(
+            "{} registration(s), {} module factories",
+            found.registrations, found.factories
+        ));
+    }
+    if found.node_chunks > 0 {
+        detected.push("Node.js chunk".to_string());
+    }
+    if found.chunk_lists > 0 {
+        detected.push(format!("{} chunk list(s)", found.chunk_lists));
+    }
+    if found.node_entries > 0 {
+        detected.push("Node.js entry".to_string());
+    }
+    if found.worker_entrypoint {
+        detected.push("worker entrypoint".to_string());
+    }
+    if names.has_runtime() {
+        detected.push("runtime".to_string());
+    }
     eprintln!(
-        "[DEOBFUSCATE] Phase 0.86: Turbopack check: detected {} registration(s), {} module factories{}",
-        names.registrations(),
-        names.factories(),
-        if names.has_runtime() { ", runtime" } else { "" }
+        "[DEOBFUSCATE] Phase 0.86: Turbopack check: detected {}",
+        detected.join(", ")
     );
     let (plan, with_scopes) = names.into_plan();
     if plan.is_empty() {

@@ -243,6 +243,19 @@ mod tests {
     }
 
     #[test]
+    fn reconstruct_bundle_tree_splits_declarator_chains_but_not_shadowed_helpers() {
+        let bundle = format!(
+            "{LAZY_MODULES}var gamma=Q((e,m)=>{{m.exports=1}}),delta=E(()=>{{}});\
+             function local(Q){{var fake=Q(()=>{{}});return fake}}"
+        );
+        let written = split_paths("chain", &bundle);
+        for path in ["commonjs/alpha.js", "esm/beta.js", "commonjs/gamma.js", "esm/delta.js"] {
+            assert!(written.contains(&format!("synthetic/modules/{path}")), "{written:?}");
+        }
+        assert!(written.iter().all(|path| !path.contains("fake")), "{written:?}");
+    }
+
+    #[test]
     fn reconstruct_bundle_tree_splits_claude_style_bun_wrapper_without_source_map() {
         let dir = std::env::temp_dir().join(format!("jsb-bundle-claude-nosmtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

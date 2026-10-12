@@ -1,13 +1,16 @@
 //! Turbopack chunk splitting for `extract-modules`, `split-chunks` and the
 //! `split-sources` fallback.
 //!
-//! [`detect_turbopack_chunk`] reads every `TURBOPACK.push([…])` registration
-//! (see [`crate::ast_deobfuscate::turbopack::shapes`]) and records, per module
+//! [`detect_turbopack_chunk`] reads every `TURBOPACK.push([…])` registration and
+//! Node.js `module.exports = […]` chunk (see
+//! [`crate::ast_deobfuscate::turbopack::shapes`]) and records, per module
 //! factory, its module ids, its source range, the exports it declares through
 //! `__turbopack_context__.s([…])`, the modules scope-hoisted into it
-//! (`__turbopack_context__.s([…], id)`) and the module ids it loads with
-//! `.i(id)`, `.r(id)` or `.A(id)`. [`TurbopackChunk::write_modules`] writes each
-//! factory as a one-module chunk that registers exactly like the original.
+//! (`__turbopack_context__.s([…], id)`), the module ids it loads with
+//! `.i(id)`, `.r(id)` or `.A(id)` and the externals it requires with `.x(…)` /
+//! `.y(…)`. It also records the chunk paths of development chunk lists and
+//! Node.js entries. [`TurbopackChunk::write_modules`] writes each factory as a
+//! one-module chunk that registers exactly like the original.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -16,7 +19,10 @@ use std::ops::Range;
 use std::path::Path;
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Argument, ArrayExpressionElement, BindingPattern, CallExpression, Expression, ObjectPropertyKind};
+use oxc_ast::ast::{
+    Argument, ArrayExpressionElement, BindingPattern, CallExpression, Expression, ObjectPropertyKind, Program,
+    VariableDeclarator,
+};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_semantic::{Scoping, SemanticBuilder};
@@ -25,7 +31,8 @@ use oxc_syntax::symbol::SymbolId;
 use serde::Serialize;
 
 use crate::ast_deobfuscate::turbopack::shapes::{
-    FactoryGroup, Payload, esm_bindings, factory_params, has_use_strict, module_id, registration,
+    FactoryGroup, Payload, Registration, chunk_list, esm_bindings, factory_params, has_use_strict, module_id,
+    module_ident, node_entry_runtime, program_node_chunk, registration,
 };
 
 /// The Turbopack registrations of one chunk file.
@@ -34,17 +41,38 @@ pub struct TurbopackChunk {
     pub registrations: Vec<ChunkRegistration>,
 }
 
-/// One `TURBOPACK.push([script, …])` call.
+/// How a chunk hands its contents to the runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChunkFormat {
+    /// `TURBOPACK.push([script, …])`.
+    Browser,
+    /// `module.exports = […]`, `require`d by the Node.js runtime.
+    Node,
+    /// `TURBOPACK_CHUNK_LISTS.push({ script, chunks, source })` (development).
+    ChunkList,
+    /// `var R = require("…[turbopack]_runtime.js")(path); R.c(chunk); R.m(id)`.
+    NodeEntry,
+}
+
+/// One `TURBOPACK.push([script, …])` call, Node.js chunk, chunk list or
+/// Node.js entry.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChunkRegistration {
+    pub format: ChunkFormat,
     /// Source text of the registration's callee, e.g.
-    /// `(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push`.
+    /// `(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push`,
+    /// `module.exports`, or the entry's `require("./[turbopack]_runtime.js")`.
     pub callee: String,
-    /// Source text of the chunk path or `document.currentScript` element.
-    pub script: String,
-    /// `otherChunks` of the runtime chunk's registration.
+    /// Source text of the chunk path or `document.currentScript` element (the
+    /// entry's own path for a Node.js entry); `None` for a Node.js chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// `otherChunks` of the runtime chunk's registration, the `chunks` of a
+    /// chunk list, or the chunks a Node.js entry loads with `R.c(…)`.
     pub other_chunks: Vec<String>,
-    /// `runtimeModuleIds` of the runtime chunk's registration.
+    /// `runtimeModuleIds` of the runtime chunk's registration, or the modules a
+    /// Node.js entry evaluates with `R.m(…)`.
     pub runtime_module_ids: Vec<String>,
     pub modules: Vec<ModuleFactory>,
 }
@@ -63,6 +91,8 @@ pub struct ModuleFactory {
     pub exports: Vec<String>,
     pub hoisted: Vec<HoistedModule>,
     pub dependencies: Vec<String>,
+    /// Requests loaded with `__turbopack_context__.x(…)` / `.y(…)`.
+    pub externals: Vec<String>,
 }
 
 /// A module merged into another module's factory by scope hoisting; its
@@ -103,6 +133,7 @@ fn detect_on_current_stack(source: &str) -> Option<TurbopackChunk> {
         source,
         scoping: &scoping,
         registrations: Vec::new(),
+        entry: None,
     };
     finder.visit_program(&program);
     (!finder.registrations.is_empty()).then_some(TurbopackChunk {
@@ -118,6 +149,8 @@ struct RegistrationFinder<'s> {
     source: &'s str,
     scoping: &'s Scoping,
     registrations: Vec<ChunkRegistration>,
+    /// The Node.js entry's runtime binding `R` and its registration's index.
+    entry: Option<(SymbolId, usize)>,
 }
 
 impl RegistrationFinder<'_> {
@@ -144,6 +177,7 @@ impl RegistrationFinder<'_> {
             exports: Vec::new(),
             hoisted: Vec::new(),
             dependencies: Vec::new(),
+            externals: Vec::new(),
         };
         if scan.context.is_some() {
             scan.visit_expression(group.factory);
@@ -156,30 +190,15 @@ impl RegistrationFinder<'_> {
             exports: scan.exports,
             hoisted: scan.hoisted,
             dependencies: scan.dependencies,
+            externals: scan.externals,
         }
     }
-}
 
-fn string_list(expr: &Expression<'_>) -> Vec<String> {
-    let Expression::ArrayExpression(list) = expr.without_parentheses() else {
-        return Vec::new();
-    };
-    list.elements
-        .iter()
-        .filter_map(ArrayExpressionElement::as_expression)
-        .filter_map(module_id)
-        .collect()
-}
-
-impl<'a> Visit<'a> for RegistrationFinder<'_> {
-    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
-        let Some(found) = registration(call) else {
-            walk::walk_call_expression(self, call);
-            return;
-        };
+    fn record(&mut self, format: ChunkFormat, callee: String, found: Registration<'_, '_>) {
         let mut record = ChunkRegistration {
-            callee: text(self.source, call.callee.span()),
-            script: text(self.source, found.script.span()),
+            format,
+            callee,
+            script: found.script.map(|script| text(self.source, script.span())),
             other_chunks: Vec::new(),
             runtime_module_ids: Vec::new(),
             modules: Vec::new(),
@@ -203,6 +222,105 @@ impl<'a> Visit<'a> for RegistrationFinder<'_> {
         }
         self.registrations.push(record);
     }
+
+    /// `R.c(chunk)` / `R.m(id)` on the Node.js entry's runtime binding.
+    fn entry_call(&mut self, call: &CallExpression<'_>) -> bool {
+        let Some((runtime, index)) = self.entry else {
+            return false;
+        };
+        let Expression::StaticMemberExpression(member) = call.callee.without_parentheses() else {
+            return false;
+        };
+        let Expression::Identifier(object) = &member.object else {
+            return false;
+        };
+        if self.scoping.get_reference(object.reference_id()).symbol_id() != Some(runtime) {
+            return false;
+        }
+        let Some(arg) = first_module_id(&call.arguments, 0) else {
+            return false;
+        };
+        let record = &mut self.registrations[index];
+        let list = match member.property.name.as_str() {
+            "c" => &mut record.other_chunks,
+            "m" => &mut record.runtime_module_ids,
+            _ => return false,
+        };
+        if !list.contains(&arg) {
+            list.push(arg);
+        }
+        true
+    }
+}
+
+/// The strings or numbers of an array literal; a chunk's `{ path, … }` object
+/// gives its `path`.
+fn string_list(expr: &Expression<'_>) -> Vec<String> {
+    let Expression::ArrayExpression(list) = expr.without_parentheses() else {
+        return Vec::new();
+    };
+    list.elements
+        .iter()
+        .filter_map(ArrayExpressionElement::as_expression)
+        .filter_map(|element| match element.without_parentheses() {
+            Expression::ObjectExpression(chunk) => chunk.properties.iter().find_map(|prop| match prop {
+                ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("path") => module_id(&p.value),
+                _ => None,
+            }),
+            element => module_id(element),
+        })
+        .collect()
+}
+
+impl<'a> Visit<'a> for RegistrationFinder<'_> {
+    fn visit_program(&mut self, program: &Program<'a>) {
+        if let Some(found) = program_node_chunk(program) {
+            self.record(ChunkFormat::Node, "module.exports".to_string(), found);
+        }
+        walk::walk_program(self, program);
+    }
+
+    fn visit_variable_declarator(&mut self, decl: &VariableDeclarator<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &decl.id
+            && let Some(symbol) = id.symbol_id.get()
+            && let Some(init) = &decl.init
+            && node_entry_runtime(init).is_some()
+            && let Expression::CallExpression(init) = init.without_parentheses()
+        {
+            self.entry = Some((symbol, self.registrations.len()));
+            self.registrations.push(ChunkRegistration {
+                format: ChunkFormat::NodeEntry,
+                callee: text(self.source, init.callee.span()),
+                script: init.arguments.first().map(|path| text(self.source, path.span())),
+                other_chunks: Vec::new(),
+                runtime_module_ids: Vec::new(),
+                modules: Vec::new(),
+            });
+        }
+        walk::walk_variable_declarator(self, decl);
+    }
+
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        if let Some(found) = registration(call) {
+            self.record(ChunkFormat::Browser, text(self.source, call.callee.span()), found);
+            return;
+        }
+        if let Some(list) = chunk_list(call) {
+            self.registrations.push(ChunkRegistration {
+                format: ChunkFormat::ChunkList,
+                callee: text(self.source, call.callee.span()),
+                script: Some(text(self.source, list.script.span())),
+                other_chunks: string_list(list.chunks),
+                runtime_module_ids: Vec::new(),
+                modules: Vec::new(),
+            });
+            return;
+        }
+        if self.entry_call(call) {
+            return;
+        }
+        walk::walk_call_expression(self, call);
+    }
 }
 
 /// Reads the `__turbopack_context__` calls of one factory.
@@ -212,6 +330,7 @@ struct FactoryScan<'s> {
     exports: Vec<String>,
     hoisted: Vec<HoistedModule>,
     dependencies: Vec<String>,
+    externals: Vec<String>,
 }
 
 impl FactoryScan<'_> {
@@ -253,6 +372,13 @@ impl<'a> Visit<'a> for FactoryScan<'_> {
                     self.dependencies.push(id);
                 }
             }
+            Some("x" | "y") => {
+                if let Some(Argument::StringLiteral(request)) = call.arguments.first()
+                    && !self.externals.iter().any(|e| e == request.value.as_str())
+                {
+                    self.externals.push(request.value.to_string());
+                }
+            }
             _ => {}
         }
         walk::walk_call_expression(self, call);
@@ -285,10 +411,10 @@ impl TurbopackChunk {
         let mut stubs = Vec::new();
         for registration in &self.registrations {
             for module in &registration.modules {
-                let file = unique_name(&mut names, format!("module_{}.js", safe_component(module.id())));
+                let file = unique_name(&mut names, format!("module_{}.js", module_ident(module.id())));
                 out.push((file.clone(), module_file(source, registration, module)));
                 for hoisted in &module.hoisted {
-                    let stub = unique_name(&mut names, format!("hoisted/module_{}.js", safe_component(&hoisted.id)));
+                    let stub = unique_name(&mut names, format!("hoisted/module_{}.js", module_ident(&hoisted.id)));
                     stubs.push((stub, hoisted_stub(hoisted, module, &file)));
                 }
             }
@@ -360,18 +486,27 @@ fn module_file(source: &str, registration: &ChunkRegistration, module: &ModuleFa
     if !module.dependencies.is_empty() {
         let _ = writeln!(out, "// imports: {}", module.dependencies.join(", "));
     }
+    if !module.externals.is_empty() {
+        let _ = writeln!(out, "// externals: {}", module.externals.join(", "));
+    }
     if module.strict {
         out.push_str("\"use strict\";\n");
     }
     let ids: Vec<String> = module.ids.iter().map(|id| id_literal(id)).collect();
-    let _ = writeln!(
-        out,
-        "{}([{}, {}, {}]);",
-        registration.callee,
-        registration.script,
-        ids.join(", "),
-        &source[module.range()]
-    );
+    let factory = &source[module.range()];
+    match &registration.script {
+        Some(script) => {
+            let _ = writeln!(
+                out,
+                "{}([{script}, {}, {factory}]);",
+                registration.callee,
+                ids.join(", ")
+            );
+        }
+        None => {
+            let _ = writeln!(out, "{} = [{}, {factory}];", registration.callee, ids.join(", "));
+        }
+    }
     out
 }
 
@@ -398,25 +533,6 @@ fn unique_name(names: &mut BTreeMap<String, usize>, name: String) -> String {
         || format!("{name}_{suffix}"),
         |(stem, ext)| format!("{stem}_{suffix}.{ext}"),
     )
-}
-
-fn safe_component(raw: &str) -> String {
-    let safe: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = safe.trim_matches('_');
-    if trimmed.is_empty() {
-        "anonymous".to_string()
-    } else {
-        trimmed.to_string()
-    }
 }
 
 #[cfg(test)]
@@ -499,6 +615,69 @@ mod tests {
         assert_eq!(chunk.module_count(), 0);
         assert_eq!(chunk.registrations[0].other_chunks, ["static/chunks/a.js"]);
         assert_eq!(chunk.registrations[0].runtime_module_ids, ["570711"]);
+    }
+
+    #[test]
+    fn node_chunk_modules_reexport_one_factory_each() {
+        let source = r#"(()=>{"use strict";module.exports=["[project]/src/a.ts [app-ssr] (ecmascript)",t=>{t.s(["f",0,1]),t.x("react",()=>require("react"))},12,13,(t,e,o)=>{e.exports=t.r(12)}]})();"#;
+        let chunk = detect_turbopack_chunk(source).expect("node chunk");
+        assert_eq!(chunk.registrations[0].format, ChunkFormat::Node);
+        assert!(chunk.registrations[0].script.is_none());
+        let modules: Vec<_> = chunk.modules().collect();
+        assert_eq!(modules[0].ids, ["[project]/src/a.ts [app-ssr] (ecmascript)"]);
+        assert!(modules[0].strict, "all-strict wrapper");
+        assert_eq!(modules[0].externals, ["react"]);
+        assert_eq!(modules[1].dependencies, ["12"]);
+        let files = chunk.module_files(source);
+        assert_eq!(files[0].0, "module_src_a_ts.js");
+        assert!(
+            files[0]
+                .1
+                .starts_with("// Turbopack module [project]/src/a.ts [app-ssr] (ecmascript)\n"),
+            "{}",
+            files[0].1
+        );
+        assert!(files[0].1.contains("// externals: react\n"), "{}", files[0].1);
+        assert!(
+            files[1]
+                .1
+                .ends_with("module.exports = [12, 13, (t,e,o)=>{e.exports=t.r(12)}];\n"),
+            "{}",
+            files[1].1
+        );
+        for (name, contents) in &files {
+            let module = detect_turbopack_chunk(contents).unwrap_or_else(|| panic!("{name}: {contents}"));
+            assert_eq!(module.registrations[0].format, ChunkFormat::Node);
+        }
+    }
+
+    #[test]
+    fn reads_chunk_lists_entries_and_bootstrap_objects() {
+        let list = r#"(globalThis["TURBOPACK_CHUNK_LISTS"] || (globalThis["TURBOPACK_CHUNK_LISTS"] = [])).push({script: document.currentScript, chunks: ["static/chunks/a.js", "static/chunks/b.js"], source: "entry"});"#;
+        let chunk = detect_turbopack_chunk(list).expect("chunk list");
+        assert_eq!(chunk.registrations[0].format, ChunkFormat::ChunkList);
+        assert_eq!(
+            chunk.registrations[0].other_chunks,
+            ["static/chunks/a.js", "static/chunks/b.js"]
+        );
+
+        let entry = "var R=require(\"../chunks/ssr/[turbopack]_runtime.js\")(\"server/app/page.js\")\nR.c(\"server/chunks/ssr/a.js\")\nR.c(\"server/chunks/ssr/b.js\")\nR.m(12)\nmodule.exports=R.m(34).exports";
+        let chunk = detect_turbopack_chunk(entry).expect("node entry");
+        let registration = &chunk.registrations[0];
+        assert_eq!(registration.format, ChunkFormat::NodeEntry);
+        assert_eq!(registration.callee, "require(\"../chunks/ssr/[turbopack]_runtime.js\")");
+        assert_eq!(registration.script.as_deref(), Some("\"server/app/page.js\""));
+        assert_eq!(
+            registration.other_chunks,
+            ["server/chunks/ssr/a.js", "server/chunks/ssr/b.js"]
+        );
+        assert_eq!(registration.runtime_module_ids, ["12", "34"]);
+
+        let bootstrap = r#"(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push({"otherChunks":["a.js",{"path":"b.js","included":[1],"excluded":[],"moduleChunks":[]}],"runtimeModuleIds":[7]});"#;
+        let chunk = detect_turbopack_chunk(bootstrap).expect("bootstrap");
+        assert!(chunk.registrations[0].script.is_none());
+        assert_eq!(chunk.registrations[0].other_chunks, ["a.js", "b.js"]);
+        assert_eq!(chunk.registrations[0].runtime_module_ids, ["7"]);
     }
 
     #[test]
