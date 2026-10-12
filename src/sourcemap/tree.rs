@@ -1,5 +1,3 @@
-use super::SourceMap;
-
 /// One reversed source file extracted from a sourcemap's `sourcesContent`.
 ///
 /// jxscout writes each entry to disk with a path like
@@ -25,20 +23,44 @@ pub struct ReversedSource {
 /// # Errors
 /// Returns an error if `map_json` is not a valid JSON sourcemap.
 pub fn reverse(map_json: &str) -> Result<Vec<ReversedSource>, serde_json::Error> {
-    let map: SourceMap = serde_json::from_str(map_json)?;
-    let contents = map.sources_content.unwrap_or_default();
+    let map: EmbeddedSources = serde_json::from_str(map_json)?;
     let mut out = Vec::with_capacity(map.sources.len());
-    for (i, src) in map.sources.iter().enumerate() {
-        if let Some(Some(content)) = contents.get(i)
-            && !content.is_empty()
-        {
-            out.push(ReversedSource {
-                source_path: src.clone(),
-                content: content.clone(),
-            });
+    map.collect(&mut out);
+    Ok(out)
+}
+
+/// The parts of a source map [`reverse`] reads. An index map (Turbopack
+/// writes only these) has no `mappings` or `names` of its own; its
+/// `sections` each hold a regular map.
+#[derive(serde::Deserialize)]
+struct EmbeddedSources {
+    #[serde(default)]
+    sources: Vec<String>,
+    #[serde(default, rename = "sourcesContent")]
+    sources_content: Option<Vec<Option<String>>>,
+    #[serde(default)]
+    sections: Vec<Section>,
+}
+
+#[derive(serde::Deserialize)]
+struct Section {
+    map: EmbeddedSources,
+}
+
+impl EmbeddedSources {
+    fn collect(self, out: &mut Vec<ReversedSource>) {
+        for (src, content) in self.sources.into_iter().zip(self.sources_content.unwrap_or_default()) {
+            if let Some(content) = content.filter(|c| !c.is_empty()) {
+                out.push(ReversedSource {
+                    source_path: src,
+                    content,
+                });
+            }
+        }
+        for section in self.sections {
+            section.map.collect(out);
         }
     }
-    Ok(out)
 }
 
 /// Normalize a sourcemap `sources[]` path into a **safe relative path** suitable
@@ -132,6 +154,17 @@ pub(super) fn write_reversed_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reverse_reads_index_map_sections() {
+        let map = r#"{"version":3,"sources":[],"sections":[
+            {"offset":{"line":0,"column":0},"map":{"version":3,"sources":[],"names":[],"mappings":""}},
+            {"offset":{"line":3,"column":0},"map":{"version":3,"sources":["turbopack:///[project]/src/a.ts"],"sourcesContent":["export const a = 1;"],"names":[],"mappings":"AAAA"}}]}"#;
+        let sources = reverse(map).expect("index map parses");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_path, "turbopack:///[project]/src/a.ts");
+        assert_eq!(sources[0].content, "export const a = 1;");
+    }
 
     #[test]
     fn normalizes_bundler_source_paths() {

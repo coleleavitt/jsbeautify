@@ -7,7 +7,8 @@ const MAX_EXTERNAL_SOURCE_MAP_BYTES: u64 = 32 * 1024 * 1024;
 /// Reconstruct a JS bundle's original source tree under `output_dir/reversed/`.
 ///
 /// Uses the bundle's trailing `sourceMappingURL` when present. If the bundle has
-/// no source map footer, or its external map file does not exist, falls back to
+/// no source map footer, its external map file does not exist, or the map
+/// embeds no `sourcesContent`, falls back to
 /// synthetic boundaries: Turbopack module factories, esbuild / Bun lazy module
 /// wrappers, else named functions and classes.
 ///
@@ -22,22 +23,31 @@ pub fn reconstruct_bundle_tree(
     let Some(url) = source_mapping_url(bundle_source) else {
         return reconstruct_without_sourcemap(bundle_source, output_dir);
     };
-    if url.starts_with("data:") {
-        return reconstruct_tree(&inline_sourcemap_json(url)?, output_dir);
+    let json = if url.starts_with("data:") {
+        inline_sourcemap_json(url)?
+    } else if let Some(json) = external_sourcemap_json(url, bundle_path)? {
+        json
+    } else {
+        eprintln!("[split-sources] source map {url} not found next to the bundle; using synthetic boundaries");
+        return reconstruct_without_sourcemap(bundle_source, output_dir);
+    };
+    let written = reconstruct_tree(&json, output_dir)?;
+    if written.is_empty() {
+        eprintln!("[split-sources] source map {url} embeds no sources; using synthetic boundaries");
+        return reconstruct_without_sourcemap(bundle_source, output_dir);
     }
-    external_sourcemap_json(url, bundle_path)?.map_or_else(
-        || {
-            eprintln!("[split-sources] source map {url} not found next to the bundle; using synthetic boundaries");
-            reconstruct_without_sourcemap(bundle_source, output_dir)
-        },
-        |json| reconstruct_tree(&json, output_dir),
-    )
+    Ok(written)
 }
 
 fn source_mapping_url(bundle_source: &str) -> Option<&str> {
     let marker = "sourceMappingURL=";
     bundle_source.lines().rev().find_map(|line| {
-        let (_, raw) = line.split_once(marker)?;
+        // The footer is a comment line of its own; the marker inside code (a
+        // runtime that appends inline maps to `eval`ed modules) is not one.
+        let comment = line.trim_start();
+        let raw = ["//# ", "//@ ", "/*# ", "/*@ "]
+            .iter()
+            .find_map(|prefix| comment.strip_prefix(prefix)?.strip_prefix(marker))?;
         let value = raw.trim();
         let value = value.strip_suffix("*/").unwrap_or(value).trim();
         value
@@ -179,6 +189,42 @@ mod tests {
 
         assert_eq!(written, vec!["synthetic/functions/alpha.js".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reconstruct_bundle_tree_falls_back_when_the_index_map_embeds_no_sources() {
+        let dir = std::env::temp_dir().join(format!("jsb-bundle-empty-index-smtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundle_path = dir.join("chunk.js");
+        std::fs::write(
+            dir.join("chunk.js.map"),
+            r#"{"version":3,"sources":[],"sections":[{"offset":{"line":3,"column":0},"map":{"version":3,"sources":[],"names":[],"mappings":""}}]}"#,
+        )
+        .unwrap();
+        let bundle = "module.exports=[1,(e,t,r)=>{t.exports=2}];\n//# sourceMappingURL=chunk.js.map";
+
+        let written = reconstruct_bundle_tree(bundle, Some(&bundle_path), &dir).unwrap();
+
+        assert_eq!(
+            written,
+            ["synthetic/turbopack/chunk.js", "synthetic/turbopack/module_1.js"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_mapping_url_ignores_the_marker_inside_code() {
+        let bundle = "function e(t){return t+\"\\n//# sourceMappingURL=data:application/json;base64,\"+btoa(m)}";
+        assert_eq!(source_mapping_url(bundle), None);
+        assert_eq!(
+            source_mapping_url("x();\n  //# sourceMappingURL=a.js.map\n"),
+            Some("a.js.map")
+        );
+        assert_eq!(
+            source_mapping_url("x();\n/*# sourceMappingURL=a.js.map */"),
+            Some("a.js.map")
+        );
     }
 
     fn split_paths(name: &str, bundle: &str) -> Vec<String> {

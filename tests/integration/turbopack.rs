@@ -261,3 +261,94 @@ fn split_chunks_maps_node_entry_chunks_and_modules() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn deobfuscate_names_next16_build_output() {
+    for (name, detected, expected) in [
+        (
+            "next16_nested_server_chunk.js",
+            "detected 1 registration(s), 6 module factories, Node.js chunk",
+            "var module_82509 = __turbopack_context__.i(82509);",
+        ),
+        (
+            "next16_edge_entry_chunk.js",
+            "detected 1 registration(s), 14 module factories, 1 edge entr(ies)",
+            "new Proxy(modProm, {\n            get(innerModProm, name) {",
+        ),
+        (
+            "next16_require_context_chunk.js",
+            "detected 1 registration(s), 13 module factories, Node.js chunk",
+            "const requireContext_52812 = __turbopack_context__.f(__turbopack_context__.r(52812));",
+        ),
+        (
+            "next16_merged_modules_chunk.js",
+            "detected 1 registration(s), 9 module factories, Node.js chunk",
+            "var module_22918 = __turbopack_context__.i(22918);",
+        ),
+        (
+            "next16_dev_refresh_chunk.js",
+            "detected 1 registration(s), 2 module factories",
+            "__turbopack_context__.k.register(refreshReg_Heavy, \"Heavy\");",
+        ),
+    ] {
+        let (stdout, stderr) = deobfuscate(name);
+        assert!(
+            stderr.contains(&format!("Phase 0.86: Turbopack check: {detected}")),
+            "{name}: {stderr}"
+        );
+        assert!(stdout.contains(expected), "{name}: {stdout}");
+    }
+}
+
+#[test]
+fn extract_modules_reads_next16_maps_entries_and_merged_modules() {
+    let dir = temp_dir("next16-extract");
+    let modules = dir.join("modules");
+    let graph = dir.join("graph.dot");
+    jsbeautify(&[
+        "extract-modules".as_ref(),
+        fixture("next16_require_context_chunk.js").as_os_str(),
+        "-o".as_ref(),
+        modules.as_os_str(),
+        "--graph".as_ref(),
+        graph.as_os_str(),
+    ]);
+    let context = read(&modules.join("module_52812.js"));
+    assert!(
+        context.contains("// require.context: ./moon.js -> 3456, ./star.js -> 28417\n"),
+        "{context}"
+    );
+    assert!(read(&graph).contains("\"52812\" -> \"3456\";"));
+
+    let edge = dir.join("edge");
+    jsbeautify(&[
+        "extract-modules".as_ref(),
+        fixture("next16_edge_entry_chunk.js").as_os_str(),
+        "-o".as_ref(),
+        edge.as_os_str(),
+    ]);
+    let wrapper = read(&edge.join("module_28517.js"));
+    assert!(
+        wrapper.contains("// edge entry: self._ENTRIES[\"middleware_app/api/edge/route\"]\n"),
+        "{wrapper}"
+    );
+
+    let out = dir.join("sources");
+    let output = jsbeautify(&[
+        "split-sources".as_ref(),
+        fixture("next16_merged_modules_chunk.js").as_os_str(),
+        "-o".as_ref(),
+        out.as_os_str(),
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("synthetic/turbopack/merged/module_next_internal_server_app_form_page_actions_js_locals.js"),
+        "{stdout}"
+    );
+    let actions = read(&out.join("reversed/synthetic/turbopack/module_34864.js"));
+    assert!(
+        actions.contains("// re-exports from an imported namespace: N as 0084f83ad5e72b4dcd50c5400ff217144b97ba7888, "),
+        "{actions}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
