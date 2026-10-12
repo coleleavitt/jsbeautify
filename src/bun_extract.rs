@@ -402,9 +402,19 @@ pub fn split_bundle(code: &str) -> BundleSplit {
         module_codes.push((module.clone(), module_code));
     }
 
-    // Main is everything after last module
+    // Main is the code between modules (esbuild hoists ESM module bodies'
+    // declarations there), one statement run per gap, then everything after
+    // the last module.
+    let mut main = String::new();
+    for pair in modules.windows(2) {
+        let gap = code[pair[0].end..pair[1].start].trim_matches(|c: char| c == ';' || c == ',' || c.is_whitespace());
+        if !gap.is_empty() {
+            main.push_str(gap);
+            main.push_str(";\n");
+        }
+    }
     let last_end = modules.last().map_or(0, |m| m.end);
-    let main = code[last_end..].to_string();
+    main.push_str(&code[last_end..]);
 
     BundleSplit {
         bundler,
@@ -548,6 +558,16 @@ var h = (a, b) => () => (a && (b = a(a = 0)), b);
             "{:?}",
             &code[modules[0].start..modules[0].end]
         );
+    }
+
+    #[test]
+    fn split_keeps_the_code_between_modules_in_main() {
+        let code = format!(
+            "{RUNTIME}var a = y((e) => {{}}), n = 1, b = h(() => {{}});\nvar ns = {{}}; function f() {{}}\nvar c = h(() => {{}});\nc();"
+        );
+        let split = split_bundle(&code);
+        assert_eq!(split.modules.len(), 3);
+        assert_eq!(split.main, "n = 1;\nvar ns = {}; function f() {};\n;\nc();");
     }
 
     #[test]
