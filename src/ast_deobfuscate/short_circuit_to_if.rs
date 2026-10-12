@@ -1,22 +1,14 @@
-use oxc_allocator::{TakeIn, Vec as OxcVec};
+use oxc_allocator::Vec as OxcVec;
 use oxc_ast::ast::{
-    BinaryOperator, BlockStatement, Expression, FunctionBody, IfStatement, LogicalExpression, LogicalOperator, Program,
-    Statement, SwitchCase, UnaryOperator,
+    BinaryOperator, Expression, IfStatement, LogicalExpression, LogicalOperator, Statement, UnaryOperator,
 };
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::TraverseCtx;
 
-use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
-
-pub struct ShortCircuitToIf {
-    converted_count: usize,
-}
-
-counter_pass!(ShortCircuitToIf, converted_count, converted_count);
 
 pub fn is_short_circuit_expr_stmt(stmt: &Statement<'_>) -> bool {
     matches!(
@@ -119,71 +111,14 @@ pub const fn negated_equality(operator: BinaryOperator) -> Option<BinaryOperator
     }
 }
 
-impl ShortCircuitToIf {
-    fn convert_statements<'a>(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
-        if !stmts.iter().any(is_short_circuit_expr_stmt) {
-            return;
-        }
-        for stmt in stmts.take_in(ctx) {
-            match short_circuit_to_if(stmt, ctx) {
-                Ok(mut converted) => {
-                    if let Statement::IfStatement(if_stmt) = &mut converted
-                        && let Statement::BlockStatement(block) = &mut if_stmt.consequent
-                    {
-                        self.convert_statements(&mut block.body, ctx);
-                    }
-                    stmts.push(converted);
-                    self.converted_count += 1;
-                }
-                Err(stmt) => stmts.push(stmt),
-            }
-        }
-    }
-}
-
-impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
-    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        self.convert_statements(&mut program.body, ctx);
-    }
-
-    fn exit_block_statement(&mut self, block: &mut BlockStatement<'a>, ctx: &mut Ctx<'a>) {
-        self.convert_statements(&mut block.body, ctx);
-    }
-
-    fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
-        self.convert_statements(&mut body.statements, ctx);
-    }
-
-    fn exit_switch_case(&mut self, case: &mut SwitchCase<'a>, ctx: &mut Ctx<'a>) {
-        self.convert_statements(&mut case.consequent, ctx);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast_deobfuscate::DeobfuscateState;
-    use oxc_allocator::Allocator;
-    use oxc_codegen::Codegen;
-    use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
+    use crate::ast_deobfuscate::statement_split::normalize;
     use oxc_span::SourceType;
-    use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
     fn run_convert(code: &str) -> (String, usize) {
-        let allocator = Allocator::default();
-        let source_type = SourceType::mjs();
-        let ret = Parser::new(&allocator, code, source_type).parse();
-        let mut program = ret.program;
-
-        let mut converter = ShortCircuitToIf::new();
-        let state = DeobfuscateState::new();
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
-
-        traverse_mut_with_ctx(&mut converter, &mut program, &mut ctx);
-
-        (Codegen::new().build(&program).code, converter.converted_count())
+        normalize(code, SourceType::mjs())
     }
 
     #[test]
@@ -275,26 +210,10 @@ mod tests {
 
     #[test]
     fn action_loses_its_parentheses() {
-        let allocator = Allocator::default();
-        let mut program = Parser::new(&allocator, "x && (y ? f() : g());", SourceType::mjs())
-            .parse()
-            .program;
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        traverse_mut_with_ctx(&mut ShortCircuitToIf::new(), &mut program, &mut ctx);
-        let Statement::IfStatement(if_stmt) = &program.body[0] else {
-            panic!("expected an if statement");
-        };
-        let Statement::BlockStatement(block) = &if_stmt.consequent else {
-            panic!("expected a block body");
-        };
-        assert!(
-            matches!(
-                &block.body[0],
-                Statement::ExpressionStatement(stmt) if matches!(stmt.expression, Expression::ConditionalExpression(_))
-            ),
-            "the ternary must be a bare statement so ternary_to_if_else can convert it"
-        );
+        // The ternary must be a bare statement so it is converted as well.
+        let (output, count) = run_convert("x && (y ? f() : g());");
+        assert_eq!(count, 2, "got: {output}");
+        assert_eq!(output, "if (x) {\n\tif (y) {\n\t\tf();\n\t} else {\n\t\tg();\n\t}\n}\n");
     }
 
     #[test]
