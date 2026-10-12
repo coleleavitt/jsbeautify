@@ -4,10 +4,12 @@
 //! - `MR()` export mappings: `MR(target, { exportName: () => minifiedVar })`
 //! - this.name patterns: `this.name = "ClassName"` in class constructors
 //! - displayName patterns: `X.displayName = "ComponentName"`
-//! - Module wrappers: `y((exports, module) => { ... })` and `h(() => { ... })`
+//! - Module wrappers: calls to the detected `__commonJS` and `__esm` helpers
 
 use regex::Regex;
 use rustc_hash::FxHashMap;
+
+use crate::ast_deobfuscate::bun::{BunHelper, BunHelperMap};
 use std::sync::LazyLock;
 
 /// Extracted name mapping from `MR()` export calls
@@ -245,77 +247,35 @@ pub fn extract_all_names(code: &str) -> FxHashMap<String, String> {
     result
 }
 
-/// # Panics
-/// Panics only if one of the hard-coded wrapper-detection regexes is invalid.
-#[must_use]
-pub fn detect_wrapper_functions(code: &str) -> (String, String) {
-    let preamble = &code[..5000.min(code.len())];
-
-    // __commonJS: (a,b)=>()=>(b||a((b={exports:{}}).exports,b),b.exports)
-    // Match structure without backreferences - look for the {exports:{}} pattern
-    let factory_re = Regex::new(
-        r"(?:,|var\s+)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\([A-Za-z_$][A-Za-z0-9_$]*,\s*[A-Za-z_$][A-Za-z0-9_$]*\)\s*=>\s*\(\)\s*=>\s*\([^)]*\{\s*exports\s*:\s*\{\s*\}\s*\}"
-    ).expect("valid regex pattern");
-
-    let factory_fn = factory_re.captures(preamble).map_or_else(
-        || "y".to_string(),
-        |c| {
-            c.get(1)
-                .expect("capture group 1 guaranteed by regex")
-                .as_str()
-                .to_string()
-        },
-    );
-
-    // __esm: (a,b)=>()=>(a&&(b=a(a=0)),b)
-    // Match structure - look for the (a=0) pattern
-    let lazy_re = Regex::new(
-        r"(?:,|var\s+)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\([A-Za-z_$][A-Za-z0-9_$]*,\s*[A-Za-z_$][A-Za-z0-9_$]*\)\s*=>\s*\(\)\s*=>\s*\([^)]*=\s*0\s*\)"
-    ).expect("valid regex pattern");
-
-    let lazy_fn = lazy_re.captures(preamble).map_or_else(
-        || "h".to_string(),
-        |c| {
-            c.get(1)
-                .expect("capture group 1 guaranteed by regex")
-                .as_str()
-                .to_string()
-        },
-    );
-
-    (factory_fn, lazy_fn)
-}
-
-/// Find all module wrappers in code.
-/// Returns list of modules with their positions.
+/// Finds the lazy module wrappers `var X = helper(...)` among the `helpers`
+/// that `detect_bundle_runtime` found.
+///
+/// A call to a `__commonJS` helper is a `CommonJS` module and a call to an
+/// `__esm` helper an ESM module.
 ///
 /// # Panics
-/// Panics only if a generated regex from an escaped wrapper function name is
-/// invalid, which would indicate an internal regex construction bug.
+/// Panics only if the regex built from the escaped helper names is invalid,
+/// which would indicate an internal regex construction bug.
 #[must_use]
-pub fn find_module_wrappers(code: &str) -> Vec<ModuleInfo> {
-    let (mod_fn, laz_fn) = detect_wrapper_functions(code);
+pub fn find_module_wrappers(code: &str, helpers: &BunHelperMap) -> Vec<ModuleInfo> {
     let mut modules = Vec::new();
+    for (helper, module_type) in [
+        (BunHelper::CommonJs, ModuleType::CommonJs),
+        (BunHelper::Esm, ModuleType::Esm),
+    ] {
+        let names: Vec<String> = helpers
+            .iter()
+            .filter(|(_, detected)| **detected == helper)
+            .map(|(name, _)| regex::escape(name))
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        let re = Regex::new(&format!(r"var\s+([A-Za-z0-9_$]+)\s*=\s*(?:{})\s*\(", names.join("|")))
+            .expect("valid regex pattern");
+        modules.extend(module_candidates(code, &re, module_type));
+    }
 
-    // CJS modules: var X = y(...)
-    let mod_re = Regex::new(&format!(
-        r"var\s+([A-Za-z0-9_$]+)\s*=\s*{}\s*\(",
-        regex::escape(&mod_fn)
-    ))
-    .expect("valid regex pattern");
-
-    modules.extend(module_candidates(code, &mod_re, ModuleType::CommonJs));
-
-    // ESM modules: var X = h(...)
-    let laz_re = Regex::new(&format!(
-        r"var\s+([A-Za-z0-9_$]+)\s*=\s*{}\s*\(",
-        regex::escape(&laz_fn)
-    ))
-    .expect("valid regex pattern");
-
-    modules.extend(module_candidates(code, &laz_re, ModuleType::Esm));
-
-    // Sort by position
     modules.sort_by_key(|m| m.start);
     modules
 }
@@ -404,8 +364,8 @@ pub struct BundleSplit {
 }
 
 #[must_use]
-pub fn split_bundle(code: &str) -> BundleSplit {
-    let modules = find_module_wrappers(code);
+pub fn split_bundle(code: &str, helpers: &BunHelperMap) -> BundleSplit {
+    let modules = find_module_wrappers(code, helpers);
 
     if modules.is_empty() {
         return BundleSplit {
@@ -439,6 +399,7 @@ pub fn split_bundle(code: &str) -> BundleSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast_deobfuscate::bun::detect_bundle_runtime;
 
     #[test]
     fn test_extract_mr_exports() {
@@ -483,12 +444,19 @@ var h = (a, b) => () => (a && (b = a(a = 0)), b);
 var abc = y((exports) => { exports.foo = 1; });
 var xyz = h(() => { return 42; });
 ";
-        let modules = find_module_wrappers(code);
+        let modules = find_module_wrappers(code, &detect_bundle_runtime(code).helpers);
         assert_eq!(modules.len(), 2);
         assert_eq!(modules[0].name, "abc");
         assert_eq!(modules[0].module_type, ModuleType::CommonJs);
         assert_eq!(modules[1].name, "xyz");
         assert_eq!(modules[1].module_type, ModuleType::Esm);
+    }
+
+    #[test]
+    fn calls_to_functions_that_are_not_wrapper_helpers_are_not_modules() {
+        // `y` is an ordinary function, not a `__commonJS` helper.
+        let code = "function y(e){let n=new Set(e);return t=>n.has(t)}var Ee=y(Object.keys(ge));var h=y([1]);";
+        assert!(find_module_wrappers(code, &detect_bundle_runtime(code).helpers).is_empty());
     }
 
     #[test]
@@ -499,9 +467,10 @@ var xyz = h(() => { return 42; });
         for i in 0..8192 {
             writeln!(&mut code, "var fake{i}=y(").unwrap();
         }
+        let helpers = BunHelperMap::from_iter([("y".to_string(), BunHelper::CommonJs)]);
 
         let start = std::time::Instant::now();
-        let modules = find_module_wrappers(&code);
+        let modules = find_module_wrappers(&code, &helpers);
 
         assert!(modules.is_empty());
         assert!(

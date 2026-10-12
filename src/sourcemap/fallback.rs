@@ -38,11 +38,12 @@ fn synthetic_sources(bundle_source: &str) -> Vec<ReversedSource> {
 /// Splits the lazy `__esm` / `__commonJS` module wrappers that esbuild and Bun
 /// emit, under a folder named for the bundler the runtime helpers identify.
 fn lazy_module_sources(bundle_source: &str) -> Vec<ReversedSource> {
-    let split = split_bundle(bundle_source);
+    let runtime = detect_bundle_runtime(bundle_source);
+    let split = split_bundle(bundle_source, &runtime.helpers);
     if split.modules.is_empty() {
         return Vec::new();
     }
-    let root = match detect_bundle_runtime(bundle_source).bundler {
+    let root = match runtime.bundler {
         Some(Bundler::Bun) => "synthetic/bun",
         Some(Bundler::Esbuild) => "synthetic/esbuild",
         None => "synthetic/modules",
