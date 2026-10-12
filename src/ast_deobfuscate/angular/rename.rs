@@ -22,14 +22,21 @@ use super::naming::is_minified;
 /// (global) reference already uses is dropped so no reference is captured.
 /// Returns the number of rewritten identifiers.
 pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> usize {
+    eprintln!("[DEOBFUSCATE] Phase 0.995: Angular check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = AngularNameCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     drop(ctx);
     if collector.classes.is_empty() && collector.actions.is_empty() {
+        eprintln!("[DEOBFUSCATE] Phase 0.995: Angular check: not found");
         return 0;
     }
+    eprintln!(
+        "[DEOBFUSCATE] Phase 0.995: Angular check: detected Angular with {} named classes, {} NgRx action creators",
+        collector.classes.len(),
+        collector.actions.len()
+    );
 
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);

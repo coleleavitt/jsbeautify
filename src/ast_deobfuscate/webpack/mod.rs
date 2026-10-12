@@ -45,7 +45,7 @@ use runtime::RuntimeCollector;
 /// Rename webpack runtime, factory, export and import bindings in `program`.
 /// Inert on non-webpack input.
 pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
-    eprintln!("[DEOBFUSCATE] Phase 0.85: Webpack module naming");
+    eprintln!("[DEOBFUSCATE] Phase 0.85: webpack check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
@@ -53,13 +53,22 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
     traverse_mut_with_ctx(&mut runtime, program, &mut ctx);
     let has_chunk = runtime.has_chunk();
     let runtimes = runtime.into_runtimes();
-    if runtimes.is_empty() && !has_chunk {
-        eprintln!("[DEOBFUSCATE] Phase 0.85: No webpack runtime or chunk found");
-        return;
-    }
+    let kind = match (runtimes.is_empty(), has_chunk) {
+        (true, false) => {
+            eprintln!("[DEOBFUSCATE] Phase 0.85: webpack check: not found");
+            return;
+        }
+        (false, false) => "runtime",
+        (true, true) => "chunk",
+        (false, true) => "runtime and chunk",
+    };
 
     let mut names = NameCollector::new(&runtimes);
     traverse_mut_with_ctx(&mut names, program, &mut ctx);
+    eprintln!(
+        "[DEOBFUSCATE] Phase 0.85: webpack check: detected webpack {kind} with {} modules",
+        names.module_count()
+    );
     let (plan, opaque_scopes) = names.into_plan();
     if plan.is_empty() {
         return;

@@ -221,3 +221,31 @@ fn deobfuscate_log_reports_counts_per_phase_not_lines_per_rewrite() {
         .count();
     assert_eq!(per_node, 2000, "JSB_TRACE_DEOB restores the per-node lines");
 }
+
+#[test]
+fn bundler_checks_print_one_result_line_each() {
+    let plain = deobfuscate_stderr("plain.js", "function add(a, b) { return a + b; }", false);
+    for check in [
+        "Akamai BMP check",
+        "webpack check",
+        "esbuild/Bun runtime check",
+        "Angular check",
+    ] {
+        let results: Vec<_> = plain
+            .lines()
+            .filter(|line| line.contains(&format!("{check}: ")))
+            .collect();
+        assert_eq!(results.len(), 1, "{check}: {results:?}");
+        assert!(results[0].contains(&format!("{check}: not found")), "{}", results[0]);
+    }
+
+    let chunk = "(self.webpackChunkapp = self.webpackChunkapp || []).push([[1], {\
+                 10: function (e, t, n) { e.exports = 1; },\
+                 11: function (e, t, n) { e.exports = n(10); }\
+                 }]);";
+    let stderr = deobfuscate_stderr("chunk.js", chunk, false);
+    assert!(
+        stderr.contains("Phase 0.85: webpack check: detected webpack chunk with 2 modules"),
+        "{stderr}"
+    );
+}

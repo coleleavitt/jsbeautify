@@ -90,10 +90,20 @@ impl AstDeobfuscator {
     }
 }
 
+/// Result of the Phase 0.9 check: which runtime the helpers identify.
+fn runtime_check_result(runtime: &BundleRuntime) -> String {
+    let helpers = runtime.helpers.len();
+    match runtime.bundler {
+        _ if helpers == 0 => "not found".to_string(),
+        Some(bundler) => format!("detected {} runtime with {helpers} helpers", bundler.name()),
+        None => format!("detected {helpers} runtime helpers shared by esbuild and Bun (bundler not identified)"),
+    }
+}
+
 /// Phase 0.9: detects the esbuild / Bun runtime helpers and renames them to their canonical names.
 fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> BundleRuntime {
     mem_ck("enter Phase 0.9 (helpers)");
-    eprintln!("[DEOBFUSCATE] Phase 0.9: bundler runtime helper detection & rename");
+    eprintln!("[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = BunRuntimeCollector::new();
@@ -101,19 +111,16 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     drop(ctx);
     let mut helper_symbols = collector.helper_symbols().clone();
     let runtime = collector.into_runtime();
-    if runtime.helpers.is_empty() {
-        eprintln!("[DEOBFUSCATE] Phase 0.9: No bundler runtime helpers detected");
-    } else {
+    eprintln!(
+        "[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check: {}",
+        runtime_check_result(&runtime)
+    );
+    if !runtime.helpers.is_empty() {
         let mut helpers: Vec<_> = runtime.helpers.iter().collect();
         helpers.sort_unstable_by_key(|(name, _)| *name);
         for (name, helper) in helpers {
             eprintln!("[DEOBFUSCATE] Phase 0.9: {name} = {}", helper.canonical());
         }
-        eprintln!(
-            "[DEOBFUSCATE] Phase 0.9: Detected {} runtime helpers, bundler: {}",
-            runtime.helpers.len(),
-            runtime.bundler.map_or("unknown", Bundler::name)
-        );
         let guards = rename_guards::guards(allocator, program);
         helper_symbols.retain(|symbol, _| !guards.symbols.contains(symbol));
         let desired = helper_symbols

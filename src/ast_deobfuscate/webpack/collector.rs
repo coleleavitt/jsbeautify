@@ -25,6 +25,8 @@ pub(super) struct NameCollector {
     planned: FxHashSet<SymbolId>,
     imports: FxHashMap<SymbolId, String>,
     with_scopes: Vec<ScopeId>,
+    /// Module factories seen in runtime module maps and chunk payloads.
+    module_count: usize,
 }
 
 impl NameCollector {
@@ -36,6 +38,7 @@ impl NameCollector {
             planned: FxHashSet::default(),
             imports: FxHashMap::default(),
             with_scopes: Vec::new(),
+            module_count: 0,
         };
         for runtime in runtimes {
             collector.plan(runtime.require, "__webpack_require__");
@@ -46,6 +49,10 @@ impl NameCollector {
             }
         }
         collector
+    }
+
+    pub(super) const fn module_count(&self) -> usize {
+        self.module_count
     }
 
     /// The rename plan, plus the scopes containing a `with` statement.
@@ -60,7 +67,9 @@ impl NameCollector {
     }
 
     fn name_factories(&mut self, modules: &Expression<'_>) {
-        for params in module_factories(modules).unwrap_or_default() {
+        let factories = module_factories(modules).unwrap_or_default();
+        self.module_count += factories.len();
+        for params in factories {
             let Some(symbols) = simple_params(params) else { continue };
             if symbols.len() > FACTORY_PARAMS.len() {
                 continue;

@@ -39,19 +39,21 @@ impl AkamaiDeobfuscator {
         let mut hit_list: Vec<&String> = detector.hits().iter().collect();
         hit_list.sort();
 
-        eprintln!("[AKAMAI] ─── BMP detection report ───");
-        eprintln!("[AKAMAI]   identifier/string hits: {sigs} ({hit_list:?})");
-        eprintln!(
+        deob_trace!("[AKAMAI]   identifier/string hits: {sigs} ({hit_list:?})");
+        deob_trace!(
             "[AKAMAI]   self-init accessors   : {acc} (first {}: {:?})",
             detector.accessor_names().len().min(8),
             detector.accessor_names().iter().take(8).collect::<Vec<_>>()
         );
-        eprintln!("[AKAMAI]   thresholds            : signatures >= {DETECTION_THRESHOLD} OR accessors >= 3");
-        if self.detected {
-            eprintln!("[AKAMAI]   => BMP DETECTED, Akamai passes will run");
+        let result = if self.detected {
+            "detected Akamai BMP"
         } else {
-            eprintln!("[AKAMAI]   => NOT BMP, Akamai passes will be skipped");
-        }
+            "not found"
+        };
+        eprintln!(
+            "[DEOBFUSCATE] Phase 0.5: Akamai BMP check: {result} ({sigs} signature hits, {acc} self-init accessors; \
+             needs >= {DETECTION_THRESHOLD} signatures or >= 3 accessors)"
+        );
         self.detected
     }
 
