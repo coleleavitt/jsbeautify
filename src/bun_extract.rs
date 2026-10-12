@@ -6,10 +6,18 @@
 //! - displayName patterns: `X.displayName = "ComponentName"`
 //! - Module wrappers: calls to the detected `__commonJS` and `__esm` helpers
 
+use oxc_ast::ast::{
+    AssignmentExpression, AssignmentOperator, AssignmentTarget, BindingPattern, CallExpression, Expression,
+    VariableDeclaration,
+};
+use oxc_ast_visit::{Visit, walk};
+use oxc_semantic::Scoping;
+use oxc_span::GetSpan;
+use oxc_syntax::symbol::SymbolId;
 use regex::Regex;
 use rustc_hash::FxHashMap;
 
-use crate::ast_deobfuscate::bun::{BunHelper, BunHelperMap};
+use crate::ast_deobfuscate::bun::{BunHelper, Bundler, with_bundle_runtime};
 use std::sync::LazyLock;
 
 /// Extracted name mapping from `MR()` export calls
@@ -247,128 +255,137 @@ pub fn extract_all_names(code: &str) -> FxHashMap<String, String> {
     result
 }
 
-/// Finds the lazy module wrappers `var X = helper(...)` among the `helpers`
-/// that `detect_bundle_runtime` found.
+/// Finds the lazy module wrappers in `code`.
 ///
-/// A call to a `__commonJS` helper is a `CommonJS` module and a call to an
-/// `__esm` helper an ESM module.
+/// A wrapper is a variable declarator `X = helper(…)` (in any
+/// `var`/`let`/`const`, also later in a declarator chain) or an assignment
+/// `X = helper(…)` whose callee resolves to a `__commonJS` or `__esm` helper
+/// that `detect_bundle_runtime` identifies.
 ///
-/// # Panics
-/// Panics only if the regex built from the escaped helper names is invalid,
-/// which would indicate an internal regex construction bug.
+/// Callees are matched by resolved symbol, so a local that shadows a helper's
+/// name is not a module. A wrapper nested inside another is part of the outer
+/// module and is not reported separately.
 #[must_use]
-pub fn find_module_wrappers(code: &str, helpers: &BunHelperMap) -> Vec<ModuleInfo> {
-    let mut modules = Vec::new();
-    for (helper, module_type) in [
-        (BunHelper::CommonJs, ModuleType::CommonJs),
-        (BunHelper::Esm, ModuleType::Esm),
-    ] {
-        let names: Vec<String> = helpers
+pub fn find_module_wrappers(code: &str) -> Vec<ModuleInfo> {
+    lazy_modules(code).1
+}
+
+fn lazy_modules(code: &str) -> (Option<Bundler>, Vec<ModuleInfo>) {
+    with_bundle_runtime(code, |program, scoping, collector| {
+        let helpers = collector
+            .helper_symbols()
             .iter()
-            .filter(|(_, detected)| **detected == helper)
-            .map(|(name, _)| regex::escape(name))
+            .filter_map(|(&symbol, helper)| match helper {
+                BunHelper::CommonJs => Some((symbol, ModuleType::CommonJs)),
+                BunHelper::Esm => Some((symbol, ModuleType::Esm)),
+                _ => None,
+            })
             .collect();
-        if names.is_empty() {
-            continue;
+        let mut finder = WrapperFinder {
+            scoping,
+            helpers,
+            source: code,
+            modules: Vec::new(),
+        };
+        if !finder.helpers.is_empty() {
+            finder.visit_program(program);
         }
-        let re = Regex::new(&format!(r"var\s+([A-Za-z0-9_$]+)\s*=\s*(?:{})\s*\(", names.join("|")))
-            .expect("valid regex pattern");
-        modules.extend(module_candidates(code, &re, module_type));
-    }
-
-    modules.sort_by_key(|m| m.start);
-    modules
+        let mut modules = finder.modules;
+        modules.sort_by_key(|m| (m.start, std::cmp::Reverse(m.end)));
+        let mut last_end = 0;
+        modules.retain(|m| {
+            let outermost = m.start >= last_end;
+            if outermost {
+                last_end = m.end;
+            }
+            outermost
+        });
+        (collector.bundler(), modules)
+    })
 }
 
-struct ModuleCandidate {
-    name: String,
-    decl_start: usize,
-    factory_start: usize,
+struct WrapperFinder<'s> {
+    scoping: &'s Scoping,
+    helpers: FxHashMap<SymbolId, ModuleType>,
+    source: &'s str,
+    modules: Vec<ModuleInfo>,
 }
 
-fn module_candidates(code: &str, re: &Regex, module_type: ModuleType) -> Vec<ModuleInfo> {
-    let candidates: Vec<ModuleCandidate> = re
-        .captures_iter(code)
-        .map(|cap| {
-            let full = cap.get(0).expect("capture group 0 guaranteed by regex");
-            ModuleCandidate {
-                name: cap
-                    .get(1)
-                    .expect("capture group 1 guaranteed by regex")
-                    .as_str()
-                    .to_string(),
-                decl_start: full.start(),
-                factory_start: full.end(),
-            }
-        })
-        .collect();
-
-    let mut modules = Vec::new();
-    for (index, candidate) in candidates.iter().enumerate() {
-        let limit = candidates.get(index + 1).map_or(code.len(), |next| next.decl_start);
-        if let Some(end) = find_matching_paren_before(code, candidate.factory_start - 1, limit) {
-            modules.push(ModuleInfo {
-                name: candidate.name.clone(),
-                module_type,
-                start: candidate.decl_start,
-                end,
-                body_start: candidate.factory_start,
-            });
-        }
+impl WrapperFinder<'_> {
+    /// The module type when `expr` calls a lazy-module helper.
+    fn wrapper_call<'e, 'a>(&self, expr: &'e Expression<'a>) -> Option<(ModuleType, &'e CallExpression<'a>)> {
+        let Expression::CallExpression(call) = expr.without_parentheses() else {
+            return None;
+        };
+        let Expression::Identifier(callee) = &call.callee else {
+            return None;
+        };
+        let symbol = self.scoping.get_reference(callee.reference_id()).symbol_id()?;
+        Some((*self.helpers.get(&symbol)?, call))
     }
-    modules
+
+    fn push(&mut self, name: String, module_type: ModuleType, start: u32, call: &CallExpression<'_>) {
+        let body_start = call.arguments.first().map_or(call.span.end - 1, |arg| arg.span().start);
+        self.modules.push(ModuleInfo {
+            name,
+            module_type,
+            start: start as usize,
+            end: call.span.end as usize,
+            body_start: body_start as usize,
+        });
+    }
 }
 
-const fn find_matching_paren_before(code: &str, start: usize, limit: usize) -> Option<usize> {
-    let bytes = code.as_bytes();
-    if start >= bytes.len() || bytes[start] != b'(' {
-        return None;
-    }
-
-    let mut depth = 1;
-    let mut i = start + 1;
-    let mut in_string = false;
-    let mut string_char = 0u8;
-    let limit = if limit < bytes.len() { limit } else { bytes.len() };
-
-    while i < limit && depth > 0 {
-        let ch = bytes[i];
-
-        if in_string {
-            if ch == string_char && (i == 0 || bytes[i - 1] != b'\\') {
-                in_string = false;
-            }
-        } else {
-            match ch {
-                b'"' | b'\'' | b'`' => {
-                    in_string = true;
-                    string_char = ch;
-                }
-                b'(' => depth += 1,
-                b')' => depth -= 1,
-                _ => {}
+impl<'a> Visit<'a> for WrapperFinder<'_> {
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        for (index, declarator) in it.declarations.iter().enumerate() {
+            if let BindingPattern::BindingIdentifier(id) = &declarator.id
+                && let Some(init) = &declarator.init
+                && let Some((module_type, call)) = self.wrapper_call(init)
+            {
+                // The first declarator's module starts at the keyword.
+                let start = if index == 0 {
+                    it.span.start
+                } else {
+                    declarator.span.start
+                };
+                self.push(id.name.to_string(), module_type, start, call);
             }
         }
-        i += 1;
+        walk::walk_variable_declaration(self, it);
     }
 
-    if depth == 0 { Some(i) } else { None }
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        if it.operator == AssignmentOperator::Assign
+            && let Some((module_type, call)) = self.wrapper_call(&it.right)
+        {
+            let name = match &it.left {
+                AssignmentTarget::AssignmentTargetIdentifier(id) => id.name.to_string(),
+                target => target.span().source_text(self.source).to_string(),
+            };
+            self.push(name, module_type, it.span.start, call);
+        }
+        walk::walk_assignment_expression(self, it);
+    }
 }
 
 /// Split a Bun bundle into individual modules.
 /// Returns the runtime code, individual modules, and main/entry code.
 pub struct BundleSplit {
+    /// The bundler the runtime helpers identify.
+    pub bundler: Option<Bundler>,
     pub runtime: String,
     pub modules: Vec<(ModuleInfo, String)>,
     pub main: String,
 }
 
 #[must_use]
-pub fn split_bundle(code: &str, helpers: &BunHelperMap) -> BundleSplit {
-    let modules = find_module_wrappers(code, helpers);
+pub fn split_bundle(code: &str) -> BundleSplit {
+    let (bundler, modules) = lazy_modules(code);
 
     if modules.is_empty() {
         return BundleSplit {
+            bundler,
             runtime: String::new(),
             modules: Vec::new(),
             main: code.to_string(),
@@ -390,6 +407,7 @@ pub fn split_bundle(code: &str, helpers: &BunHelperMap) -> BundleSplit {
     let main = code[last_end..].to_string();
 
     BundleSplit {
+        bundler,
         runtime,
         modules: module_codes,
         main,
@@ -399,7 +417,6 @@ pub fn split_bundle(code: &str, helpers: &BunHelperMap) -> BundleSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast_deobfuscate::bun::detect_bundle_runtime;
 
     #[test]
     fn test_extract_mr_exports() {
@@ -436,46 +453,107 @@ mod tests {
         assert_eq!(names[0].original_name, "MyComponent");
     }
 
+    const RUNTIME: &str = "var y = (a, b) => () => (b || a((b = {exports: {}}).exports, b), b.exports);
+var h = (a, b) => () => (a && (b = a(a = 0)), b);
+";
+
+    fn wrappers(tail: &str) -> Vec<(String, ModuleType)> {
+        find_module_wrappers(&format!("{RUNTIME}{tail}"))
+            .into_iter()
+            .map(|m| (m.name, m.module_type))
+            .collect()
+    }
+
+    fn named(names: &[(&str, ModuleType)]) -> Vec<(String, ModuleType)> {
+        names.iter().map(|(n, t)| ((*n).to_string(), *t)).collect()
+    }
+
     #[test]
     fn test_find_module_wrappers() {
-        let code = r"
-var y = (a, b) => () => (b || a((b = {exports: {}}).exports, b), b.exports);
-var h = (a, b) => () => (a && (b = a(a = 0)), b);
-var abc = y((exports) => { exports.foo = 1; });
-var xyz = h(() => { return 42; });
-";
-        let modules = find_module_wrappers(code, &detect_bundle_runtime(code).helpers);
+        let code = format!(
+            "{RUNTIME}var abc = y((exports) => {{ exports.foo = 1; }});\nvar xyz = h(() => {{ return 42; }});\n"
+        );
+        let modules = find_module_wrappers(&code);
         assert_eq!(modules.len(), 2);
         assert_eq!(modules[0].name, "abc");
         assert_eq!(modules[0].module_type, ModuleType::CommonJs);
+        assert_eq!(
+            &code[modules[0].start..modules[0].end],
+            "var abc = y((exports) => { exports.foo = 1; })"
+        );
         assert_eq!(modules[1].name, "xyz");
         assert_eq!(modules[1].module_type, ModuleType::Esm);
+    }
+
+    #[test]
+    fn finds_every_wrapper_in_a_declarator_chain() {
+        assert_eq!(
+            wrappers("var a = y((e, m) => { m.exports = 1; }), b = h(() => {}), c = 1, d = y((e) => {});"),
+            named(&[
+                ("a", ModuleType::CommonJs),
+                ("b", ModuleType::Esm),
+                ("d", ModuleType::CommonJs)
+            ])
+        );
+    }
+
+    #[test]
+    fn finds_wrappers_declared_with_let_and_const() {
+        assert_eq!(
+            wrappers("let a = y((e) => {}); const b = h(() => {}), c = y((e) => {});"),
+            named(&[
+                ("a", ModuleType::CommonJs),
+                ("b", ModuleType::Esm),
+                ("c", ModuleType::CommonJs)
+            ])
+        );
+    }
+
+    #[test]
+    fn finds_wrappers_assigned_to_existing_bindings() {
+        let code = format!("{RUNTIME}var a, b; a = y((e) => {{}}); b = h(() => {{}}), o.c = h(() => {{}});");
+        let modules = find_module_wrappers(&code);
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "o.c"]);
+        assert_eq!(&code[modules[0].start..modules[0].end], "a = y((e) => {})");
+    }
+
+    #[test]
+    fn locals_that_shadow_a_helper_name_are_not_modules() {
+        assert_eq!(
+            wrappers(
+                "function f(y) { var a = y(() => {}); return a; }
+                 { let h = (x) => x; var b = h(() => {}); }
+                 var c = y((e) => {});"
+            ),
+            named(&[("c", ModuleType::CommonJs)])
+        );
+    }
+
+    #[test]
+    fn a_wrapper_nested_in_another_belongs_to_the_outer_module() {
+        assert_eq!(
+            wrappers("var outer = y((e, m) => { var inner = h(() => {}); m.exports = inner; });"),
+            named(&[("outer", ModuleType::CommonJs)])
+        );
+    }
+
+    #[test]
+    fn module_spans_end_at_the_call_regardless_of_parens_in_literals() {
+        let code = format!("{RUNTIME}var a = y((e) => {{ e.re = /\\)/; e.s = `)${{'('}}`; }}); var b = h(() => {{}});");
+        let modules = find_module_wrappers(&code);
+        assert_eq!(modules.len(), 2);
+        assert!(
+            code[modules[0].start..modules[0].end].ends_with("`; })"),
+            "{:?}",
+            &code[modules[0].start..modules[0].end]
+        );
     }
 
     #[test]
     fn calls_to_functions_that_are_not_wrapper_helpers_are_not_modules() {
         // `y` is an ordinary function, not a `__commonJS` helper.
         let code = "function y(e){let n=new Set(e);return t=>n.has(t)}var Ee=y(Object.keys(ge));var h=y([1]);";
-        assert!(find_module_wrappers(code, &detect_bundle_runtime(code).helpers).is_empty());
-    }
-
-    #[test]
-    fn unterminated_module_wrapper_candidates_do_not_rescan_suffixes() {
-        use std::fmt::Write as _;
-
-        let mut code = String::new();
-        for i in 0..8192 {
-            writeln!(&mut code, "var fake{i}=y(").unwrap();
-        }
-        let helpers = BunHelperMap::from_iter([("y".to_string(), BunHelper::CommonJs)]);
-
-        let start = std::time::Instant::now();
-        let modules = find_module_wrappers(&code, &helpers);
-
-        assert!(modules.is_empty());
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(1),
-            "unterminated wrapper candidates should be rejected cheaply"
-        );
+        assert!(find_module_wrappers(code).is_empty());
     }
 }
