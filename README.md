@@ -42,7 +42,7 @@ jsbeautify input.js -d -o output.js
 # Pipe from stdin
 cat bundle.js | jsbeautify - > output.js
 
-# Extract webpack modules to separate files
+# Extract webpack or Turbopack (Next.js) modules to separate files
 jsbeautify extract-modules bundle.js -o ./modules
 
 # Rebuild the original source tree from a bundle sourceMappingURL
@@ -73,8 +73,8 @@ jsbeautify cfg input.js --function main | dot -Tsvg > main.svg
 Usage: jsbeautify [OPTIONS] [FILE]... [COMMAND]
 
 Commands:
-  extract-modules  Extract webpack modules into separate files
-  split-chunks     Split webpack chunks into separate files
+  extract-modules  Extract webpack or Turbopack modules into separate files
+  split-chunks     Split webpack chunks, or Turbopack chunks' modules, into separate files
   split-sources    Reconstruct the original source tree from a bundle
   reconstruct      Rebuild original sources from a standalone .js.map file
   align            Align two bundle versions for a stable diff

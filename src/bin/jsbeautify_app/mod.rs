@@ -132,10 +132,10 @@ impl GoalArgs {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Extract webpack modules into separate files.
+    /// Extract webpack or Turbopack modules into separate files.
     ExtractModules(ExtractModulesArgs),
 
-    /// Split webpack chunks into separate files.
+    /// Split webpack chunks, or Turbopack chunks' modules, into separate files.
     SplitChunks(SplitChunksArgs),
 
     /// Reconstruct the original source tree from a bundle — via source maps
