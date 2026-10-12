@@ -1,7 +1,7 @@
 use oxc_ast::ast::{BindingIdentifier, Ident, IdentifierReference};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::rename_guards::is_global_symbol;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -10,8 +10,12 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 /// Renames `_0x…` obfuscator bindings to `var_N` / `func_N`, by resolved
 /// symbol, leaving classic-script globals and unresolved names untouched.
+/// A counter value whose name any binding or free reference already uses is
+/// skipped, so a new name never captures or shadows an existing one.
 pub struct VariableRenamer {
     rename_map: FxHashMap<SymbolId, String>,
+    /// Every binding and unresolved name in the program, read on first use.
+    taken: Option<FxHashSet<String>>,
     var_counter: usize,
     func_counter: usize,
     changed: bool,
@@ -22,6 +26,7 @@ impl VariableRenamer {
     pub fn new() -> Self {
         Self {
             rename_map: FxHashMap::default(),
+            taken: None,
             var_counter: 0,
             func_counter: 0,
             changed: false,
@@ -54,12 +59,30 @@ impl VariableRenamer {
         if !Self::should_rename(ctx.scoping().symbol_name(symbol)) || is_global_symbol(ctx, symbol) {
             return None;
         }
-        let new_name = if ctx.scoping().symbol_flags(symbol).is_function() {
-            self.func_counter += 1;
-            format!("func_{}", self.func_counter)
+        let scoping = ctx.scoping();
+        let taken = self.taken.get_or_insert_with(|| {
+            scoping
+                .symbol_names()
+                .map(str::to_string)
+                .chain(
+                    scoping
+                        .root_unresolved_references()
+                        .keys()
+                        .map(|name| name.as_str().to_string()),
+                )
+                .collect()
+        });
+        let (prefix, counter) = if scoping.symbol_flags(symbol).is_function() {
+            ("func", &mut self.func_counter)
         } else {
-            self.var_counter += 1;
-            format!("var_{}", self.var_counter)
+            ("var", &mut self.var_counter)
+        };
+        let new_name = loop {
+            *counter += 1;
+            let candidate = format!("{prefix}_{counter}");
+            if !taken.contains(&candidate) {
+                break candidate;
+            }
         };
         self.rename_map.insert(symbol, new_name.clone());
         Some(new_name)
@@ -161,6 +184,14 @@ mod tests {
         assert!(output.contains("var_1"));
         assert!(output.contains("var_2"));
         assert!(!output.contains("_0x"));
+    }
+
+    #[test]
+    fn new_names_skip_existing_bindings_and_globals() {
+        let output = run_rename("var var_1 = 'user'; var _0x1f = 'obf'; console.log(var_1, _0x1f, var_2);");
+        assert!(output.contains("var var_1 = \"user\""), "{output}");
+        assert!(output.contains("var var_3 = \"obf\""), "{output}");
+        assert!(output.contains("console.log(var_1, var_3, var_2)"), "{output}");
     }
 
     #[test]

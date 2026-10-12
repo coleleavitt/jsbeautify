@@ -163,6 +163,31 @@ fn deobfuscate_file(name: &str, code: &str, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("stdout is utf8")
 }
 
+/// javascript-obfuscator's default string array (`_0x533c`) is reached from its
+/// decoder before its declaration; every reference must follow the rename, or
+/// the rotation IIFE's `try`/`catch` loops forever on the ReferenceError.
+#[test]
+fn obfuscator_string_array_renames_every_reference() {
+    let code = include_str!("../fixtures/obfuscator/string_array_default.js");
+    for args in [&[][..], &["--isolated"], &["--rename-vars", "--isolated"]] {
+        let out = deobfuscate_file("obf.js", code, args);
+        if args.contains(&"--isolated") {
+            assert!(!out.contains("_0x"), "{args:?}: {out}");
+        }
+        assert!(
+            !out.contains("_0x533c(") || out.contains("function _0x533c("),
+            "{args:?}: {out}"
+        );
+    }
+}
+
+#[test]
+fn hex_renamer_never_captures_an_existing_name() {
+    let code = "var var_1 = 'user'; var _0x1f = 'obf'; console.log(var_1, _0x1f);";
+    let out = deobfuscate_file("capture.js", code, &["--isolated"]);
+    assert!(!out.contains("console.log(var_1, var_1)"), "{out}");
+}
+
 #[test]
 fn source_type_and_isolated_decide_whether_globals_survive() {
     let code = "var unused = 1;";
