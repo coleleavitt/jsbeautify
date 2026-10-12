@@ -19,6 +19,7 @@ pub mod cross_version;
 pub mod inspect;
 pub mod llm;
 pub mod oxc_opts;
+pub mod project;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
