@@ -35,14 +35,16 @@ use std::borrow::Cow;
 
 use oxc_ast::ast::{
     Argument, ArrayExpression, ArrayExpressionElement, ArrowFunctionBody, AssignmentExpression, AssignmentTarget,
-    CallExpression, Expression, FormalParameters, FunctionBody, NewExpression, ObjectExpression, ObjectPropertyKind,
-    Program, Statement,
+    BindingIdentifier, BindingPattern, CallExpression, Expression, FormalParameters, FunctionBody, NewExpression,
+    ObjectExpression, ObjectPropertyKind, Program, Statement,
 };
 use oxc_syntax::operator::{AssignmentOperator, LogicalOperator};
 
 /// One run of module ids and the factory they share.
 pub struct FactoryGroup<'b, 'a> {
     pub ids: Vec<String>,
+    /// The id literals as written: `"123"` and `123` are different ids.
+    pub id_spans: Vec<oxc_span::Span>,
     pub factory: &'b Expression<'a>,
     /// The factory sits in the `"use strict"` IIFE of a mixed chunk.
     pub strict_wrapper: bool,
@@ -187,13 +189,16 @@ fn push_groups<'b, 'a>(
     out: &mut Vec<FactoryGroup<'b, 'a>>,
 ) -> Option<()> {
     let mut ids = Vec::new();
+    let mut id_spans = Vec::new();
     for element in elements {
         let expr = element.as_expression()?;
         if let Some(id) = module_id(expr) {
             ids.push(id);
+            id_spans.push(oxc_span::GetSpan::span(expr));
         } else if !ids.is_empty() && factory_params(expr).is_some() {
             out.push(FactoryGroup {
                 ids: std::mem::take(&mut ids),
+                id_spans: std::mem::take(&mut id_spans),
                 factory: expr,
                 strict_wrapper,
             });
@@ -506,6 +511,184 @@ pub fn context_map(obj: &ObjectExpression<'_>) -> Option<Vec<(String, String)>> 
         entries.push((key.to_string(), id));
     }
     (!entries.is_empty()).then_some(entries)
+}
+
+/// One chunk an async loader loads.
+///
+/// A chunk path, or with component chunks (Next.js
+/// `turbopackChunking.generateComponentChunks`) a merged chunk
+/// `[url, componentChunkPaths, componentChunkSizes]`
+/// (`browser/runtime/base/runtime-base.ts`, `ChunkUrlOrMerged`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LoaderChunk {
+    pub path: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
+}
+
+/// The factory body of an async loader module
+/// (`turbopack-ecmascript/src/async_chunk/module.rs`), the argument of
+/// `ctx.v(…)`: `(parentImport) => Promise.all([chunk, …].map((chunk) => ctx.l(chunk))).then(() => parentImport(ID))`,
+/// or `Promise.resolve().then(() => parentImport(ID))` when it loads no chunk.
+/// `ctx.A(loader)` calls it with the importer's `esmImport`.
+pub struct AsyncLoader<'b, 'a> {
+    pub parent_import: &'b BindingIdentifier<'a>,
+    pub chunks: Vec<LoaderChunk>,
+    /// The module it imports once its chunks are loaded.
+    pub module: Option<String>,
+}
+
+/// A function's parameters and what it returns: an arrow's expression body,
+/// or the argument of a body that is a single `return`. `Some(None)` for an
+/// empty body.
+fn params_and_return<'b, 'a>(
+    expr: &'b Expression<'a>,
+) -> Option<(&'b FormalParameters<'a>, Option<&'b Expression<'a>>)> {
+    let (params, body) = match expr.without_parentheses() {
+        Expression::ArrowFunctionExpression(arrow) => match &arrow.body {
+            ArrowFunctionBody::FunctionBody(body) => (&arrow.params, &**body),
+            _ => return Some((&arrow.params, arrow.get_expression())),
+        },
+        Expression::FunctionExpression(func) => (&func.params, func.body.as_deref()?),
+        _ => return None,
+    };
+    match body.statements.as_slice() {
+        [] => Some((params, None)),
+        [Statement::ReturnStatement(ret)] => Some((params, ret.argument.as_ref())),
+        _ => None,
+    }
+}
+
+/// See [`AsyncLoader`]; `value` is the argument of `ctx.v(…)`.
+pub fn async_loader<'b, 'a>(value: &'b Expression<'a>) -> Option<AsyncLoader<'b, 'a>> {
+    let (params, returned) = params_and_return(value)?;
+    let [param] = params.items.as_slice() else {
+        return None;
+    };
+    let BindingPattern::BindingIdentifier(parent_import) = &param.pattern else {
+        return None;
+    };
+    let Expression::CallExpression(then) = returned?.without_parentheses() else {
+        return None;
+    };
+    let Expression::StaticMemberExpression(then_callee) = then.callee.without_parentheses() else {
+        return None;
+    };
+    if then_callee.property.name != "then" || then.arguments.len() > 1 {
+        return None;
+    }
+    let module = match then.arguments.first() {
+        None => None,
+        Some(callback) => {
+            let (params, returned) = params_and_return(callback.as_expression()?)?;
+            if !params.items.is_empty() {
+                return None;
+            }
+            match returned.map(Expression::without_parentheses) {
+                Some(Expression::CallExpression(call)) if matches!(call.callee.without_parentheses(), Expression::Identifier(id) if id.name == parent_import.name) =>
+                {
+                    let [arg] = call.arguments.as_slice() else {
+                        return None;
+                    };
+                    Some(module_id(arg.as_expression()?)?)
+                }
+                None => None,
+                _ => return None,
+            }
+        }
+    };
+    let Expression::CallExpression(promise) = then_callee.object.without_parentheses() else {
+        return None;
+    };
+    let Expression::StaticMemberExpression(promise_callee) = promise.callee.without_parentheses() else {
+        return None;
+    };
+    if !matches!(&promise_callee.object, Expression::Identifier(id) if id.name == "Promise") {
+        return None;
+    }
+    let chunks = match (promise_callee.property.name.as_str(), promise.arguments.as_slice()) {
+        ("resolve", []) => Vec::new(),
+        ("all", [Argument::CallExpression(map)]) => {
+            let Expression::StaticMemberExpression(map_callee) = map.callee.without_parentheses() else {
+                return None;
+            };
+            let Expression::ArrayExpression(list) = map_callee.object.without_parentheses() else {
+                return None;
+            };
+            if map_callee.property.name != "map" {
+                return None;
+            }
+            list.elements
+                .iter()
+                .map(|element| loader_chunk(element.as_expression()?))
+                .collect::<Option<Vec<_>>>()?
+        }
+        _ => return None,
+    };
+    Some(AsyncLoader {
+        parent_import,
+        chunks,
+        module,
+    })
+}
+
+/// A chunk path, `{ path, … }` chunk data (development), or a merged chunk
+/// `[url, [component, …], [size, …]]`.
+fn loader_chunk(expr: &Expression<'_>) -> Option<LoaderChunk> {
+    let strings = |expr: &Expression<'_>| -> Option<Vec<String>> {
+        let Expression::ArrayExpression(list) = expr.without_parentheses() else {
+            return None;
+        };
+        list.elements
+            .iter()
+            .map(|e| match e {
+                ArrayExpressionElement::StringLiteral(s) => Some(s.value.to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    match expr.without_parentheses() {
+        Expression::StringLiteral(path) => Some(LoaderChunk {
+            path: path.value.to_string(),
+            components: Vec::new(),
+        }),
+        Expression::ObjectExpression(data) => data.properties.iter().find_map(|p| match p {
+            ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("path") => match &p.value {
+                Expression::StringLiteral(path) => Some(LoaderChunk {
+                    path: path.value.to_string(),
+                    components: Vec::new(),
+                }),
+                _ => None,
+            },
+            _ => None,
+        }),
+        Expression::ArrayExpression(merged) => {
+            let [ArrayExpressionElement::StringLiteral(url), components, _sizes] = merged.elements.as_slice() else {
+                return None;
+            };
+            Some(LoaderChunk {
+                path: url.value.to_string(),
+                components: strings(components.as_expression()?)?,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The path of a server asset module, `ctx.v("/_next/static/media/a.png" + (globalThis.NEXT_CLIENT_ASSET_SUFFIX || ""))`
+/// (`ctx.q(path)` in the browser).
+pub fn asset_path<'b>(value: &'b Expression<'_>) -> Option<&'b str> {
+    let path = match value.without_parentheses() {
+        Expression::StringLiteral(path) => path,
+        Expression::BinaryExpression(concat) if concat.operator == oxc_syntax::operator::BinaryOperator::Addition => {
+            match &concat.left {
+                Expression::StringLiteral(path) => path,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    path.value.contains('/').then_some(path.value.as_str())
 }
 
 /// The entry name of the Next.js edge wrapper's

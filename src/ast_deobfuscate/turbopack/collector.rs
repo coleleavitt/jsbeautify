@@ -17,9 +17,9 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::webpack::shapes::{getter_target, resolve, resolve_expr, simple_params};
 
 use super::shapes::{
-    EsmBinding, Payload, ReexportSource, Registration, chunk_list, edge_entry, esm_bindings, factory_params,
-    global_name, global_target_name, module_id, module_ident, node_entry_runtime, program_node_chunk, reexport_groups,
-    registration,
+    EsmBinding, Payload, ReexportSource, Registration, asset_path, async_loader, chunk_list, edge_entry, esm_bindings,
+    factory_params, global_name, global_target_name, module_id, module_ident, node_entry_runtime, program_node_chunk,
+    reexport_groups, registration,
 };
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -53,6 +53,8 @@ const RUNTIME_MEMBERS: [(&str, &str); 19] = [
 
 /// Members whose function depends on the runtime, named once it is known.
 const RUNTIME_SPECIFIC_MEMBERS: [&str; 4] = ["F", "L", "c", "l"];
+
+const NODE_RUNTIME_CONSTANTS: [&str; 3] = ["RUNTIME_PUBLIC_PATH", "RELATIVE_ROOT_PATH", "ASSET_PREFIX"];
 
 /// Members only the Node.js runtime installs (externals).
 const NODE_RUNTIME_MEMBERS: [&str; 2] = ["x", "y"];
@@ -272,6 +274,15 @@ pub(super) struct NameCollector {
     reexport_names: FxHashMap<(String, String), Option<String>>,
     /// Locals exported under a mangled key: `(module ids, key, local)`.
     mangled_exports: Vec<(Vec<String>, String, SymbolId)>,
+    /// `__turbopack_handle_async_dependencies__` parameters of async module bodies.
+    async_handles: FxHashSet<SymbolId>,
+    /// Asset modules (`ctx.q("/_next/static/media/a.png")`) by module id: the
+    /// name for a local importing them.
+    asset_modules: FxHashMap<String, String>,
+    /// Minified functions calling `WebAssembly.instantiate*` / `compile*`, and
+    /// locals a factory exports: the bundled `loadWasm.ts` helper's exports.
+    wasm_functions: FxHashMap<SymbolId, &'static str>,
+    exported_locals: FxHashSet<SymbolId>,
     /// `var _s = __turbopack_context__.k.signature()` handles not yet named.
     refresh_signatures: FxHashSet<SymbolId>,
     pub(super) found: Found,
@@ -344,6 +355,20 @@ impl NameCollector {
             self.plan_runtime_calls();
             for (symbol, name) in std::mem::take(&mut self.runtime_error_classes) {
                 self.plan(symbol, &name);
+            }
+        }
+        for (symbol, name) in std::mem::take(&mut self.wasm_functions) {
+            if self.exported_locals.contains(&symbol) {
+                self.plan(symbol, name);
+            }
+        }
+        for (symbol, name) in &mut self.plan {
+            if let Some(asset) = self
+                .import_modules
+                .get(symbol)
+                .and_then(|id| self.asset_modules.get(id))
+            {
+                name.clone_from(asset);
             }
         }
         for (ids, key, symbol) in std::mem::take(&mut self.mangled_exports) {
@@ -466,6 +491,19 @@ impl NameCollector {
             .then_some(member.property.name.as_str())
     }
 
+    /// The factory of `call`, `ctx.q(path)` / `ctx.v(path)`, is an asset module.
+    fn record_asset(&mut self, call: &CallExpression<'_>, path: Option<&str>, ctx: &Ctx<'_>) {
+        let Some(path) = path else { return };
+        let file = path.rsplit('/').next().unwrap_or(path);
+        if !file.contains('.') {
+            return;
+        }
+        let name = format!("asset_{}", module_ident(file));
+        for id in self.export_modules(call, ctx) {
+            self.asset_modules.insert(id, name.clone());
+        }
+    }
+
     /// `register` / `signature` in `__turbopack_context__.k.<method>(…)`: React
     /// Refresh, which `turbopack-ecmascript/src/transform/mod.rs` configures
     /// as SWC's `refresh_reg` / `refresh_sig` in development.
@@ -494,6 +532,7 @@ impl NameCollector {
                 EsmBinding::Getter(getter) => getter_target(getter).and_then(|id| resolve(id, ctx)),
             };
             let Some(symbol) = local else { continue };
+            self.exported_locals.insert(symbol);
             if name == "default" {
                 self.defaults.push(DefaultExport {
                     local: symbol,
@@ -970,6 +1009,21 @@ fn worker_param_source(init: &Expression<'_>, ctx: &Ctx<'_>) -> Option<SymbolId>
     .then_some(source)
 }
 
+/// The `CHUNK_BASE_PATH` fallback of
+/// `typeof TURBOPACK_CHUNK_BASE_PATH === "string" ? TURBOPACK_CHUNK_BASE_PATH : CHUNK_BASE_PATH`
+/// (`browser/runtime/base/runtime-base.ts`).
+fn chunk_base_path_fallback<'b, 'a>(init: &'b Expression<'a>) -> Option<&'b Expression<'a>> {
+    let Expression::ConditionalExpression(cond) = init.without_parentheses() else {
+        return None;
+    };
+    let reads_global = matches!(cond.consequent.without_parentheses(), Expression::Identifier(id) if id.name == "TURBOPACK_CHUNK_BASE_PATH");
+    let tests_global = matches!(cond.test.without_parentheses(), Expression::BinaryExpression(test)
+        if [&test.left, &test.right].iter().any(|side| matches!(side.without_parentheses(),
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::Typeof
+                && matches!(&u.argument, Expression::Identifier(id) if id.name == "TURBOPACK_CHUNK_BASE_PATH"))));
+    (reads_global && tests_global).then_some(&cond.alternate)
+}
+
 /// Production builds may replace export names with the shortest keys that fit
 /// them all (`turbopack-ecmascript/src/references/esm/mangle/table.rs`): one
 /// character for up to 54 exports, two for up to 3510. Such keys are not names.
@@ -1155,6 +1209,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
     /// and the React Refresh hooks; the latter name `runModuleExecutionHooks`.
     fn enter_static_member_expression(&mut self, member: &mut StaticMemberExpression<'a>, _ctx: &mut Ctx<'a>) {
         let property = member.property.name.as_str();
+        // `turbopack-wasm/js/src/*/loadWasm.ts`: `instantiate` and `compileModule`.
+        if matches!(&member.object, Expression::Identifier(id) if id.name == "WebAssembly")
+            && let Some(Some(function)) = self.functions.last()
+        {
+            match property {
+                "instantiate" | "instantiateStreaming" => {
+                    self.wasm_functions.insert(*function, "instantiate");
+                }
+                "compile" | "compileStreaming" => {
+                    self.wasm_functions.insert(*function, "compileModule");
+                }
+                _ => {}
+            }
+        }
         if !matches!(&member.object, Expression::Identifier(id) if matches!(id.name.as_str(), "globalThis" | "self")) {
             return;
         }
@@ -1172,6 +1240,24 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         if let Some(registration) = program_node_chunk(program) {
             self.found.node_chunks += 1;
             self.plan_factories(registration);
+        }
+        // `var RUNTIME_PUBLIC_PATH = "server/chunks/[turbopack]_runtime.js", RELATIVE_ROOT_PATH = "..", ASSET_PREFIX = "/";`
+        // opens the Node.js runtime (`turbopack-nodejs/src/ecmascript/node/entry/runtime.rs`).
+        if let Some(Statement::VariableDeclaration(decl)) = program.body.first()
+            && let [public, root, prefix, ..] = decl.declarations.as_slice()
+            && matches!(&public.init, Some(Expression::StringLiteral(path)) if path.value.ends_with("_runtime.js"))
+            && [root, prefix]
+                .iter()
+                .all(|d| matches!(d.init, Some(Expression::StringLiteral(_))))
+        {
+            for (declarator, name) in [public, root, prefix].into_iter().zip(NODE_RUNTIME_CONSTANTS) {
+                if let BindingPattern::BindingIdentifier(id) = &declarator.id
+                    && is_minified(&id.name)
+                    && let Some(symbol) = id.symbol_id.get()
+                {
+                    self.runtime_candidates.push((symbol, name));
+                }
+            }
         }
     }
 
@@ -1263,7 +1349,27 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
                     }
                     _ => None,
                 };
-                self.plan_params(params, &ASYNC_BODY_PARAMS);
+                if let Some(handle) = self.plan_params(params, &ASYNC_BODY_PARAMS) {
+                    self.async_handles.insert(handle);
+                }
+            }
+            Some("v") => {
+                if let Some(value) = call.arguments.first().and_then(Argument::as_expression) {
+                    if let Some(loader) = async_loader(value)
+                        && let Some(symbol) = loader.parent_import.symbol_id.get()
+                    {
+                        self.plan(symbol, "parentImport");
+                    } else {
+                        self.record_asset(call, asset_path(value), ctx);
+                    }
+                }
+            }
+            Some("q") => {
+                let path = match call.arguments.as_slice() {
+                    [Argument::StringLiteral(path)] => Some(path.value.as_str()),
+                    _ => None,
+                };
+                self.record_asset(call, path, ctx);
             }
             _ => {}
         }
@@ -1289,6 +1395,21 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             && self.refresh_method(&call.callee, ctx) == Some("signature")
         {
             self.refresh_signatures.insert(symbol);
+        } else if let Expression::CallExpression(call) = init.without_parentheses()
+            && let [Argument::ArrayExpression(_)] = call.arguments.as_slice()
+            && resolve_expr(&call.callee, ctx).is_some_and(|handle| self.async_handles.contains(&handle))
+        {
+            // `var D = handle([a, b]); [a, b] = D.then ? (await D)() : D;`
+            // (`turbopack-ecmascript/src/references/async_module.rs`).
+            self.plan(symbol, "__turbopack_async_dependencies__");
+        } else if let Some(fallback) = chunk_base_path_fallback(init) {
+            // `RUNTIME_CHUNK_BASE_PATH = typeof TURBOPACK_CHUNK_BASE_PATH === "string" ? TURBOPACK_CHUNK_BASE_PATH : CHUNK_BASE_PATH`
+            if is_minified(&id.name) {
+                self.runtime_candidates.push((symbol, "RUNTIME_CHUNK_BASE_PATH"));
+            }
+            if let Some(base) = resolve_expr(fallback, ctx).filter(|&s| is_minified(ctx.scoping().symbol_name(s))) {
+                self.runtime_candidates.push((base, "CHUNK_BASE_PATH"));
+            }
         } else if node_entry_runtime(init).is_some() {
             self.found.node_entries += 1;
         } else if let Some(params) = worker_param_source(init, ctx) {
@@ -1319,6 +1440,14 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
                 self.runtime_candidates.push((symbol, name));
             }
             return;
+        }
+        // `script.crossOrigin = CROSS_ORIGIN` (`browser/runtime/dom/runtime-backend-dom.ts`).
+        if let AssignmentTarget::StaticMemberExpression(target) = &assign.left
+            && target.property.name == "crossOrigin"
+            && let Some(symbol) = resolve_expr(&assign.right, ctx)
+            && is_minified(ctx.scoping().symbol_name(symbol))
+        {
+            self.runtime_candidates.push((symbol, "CROSS_ORIGIN"));
         }
         if self.constructors.is_empty() {
             return;

@@ -114,6 +114,11 @@ pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Pro
         "[DEOBFUSCATE] Phase 0.86: Turbopack check: detected {}",
         detected.join(", ")
     );
+    if let Some(id) = crate::turbopack_extract::debug_id(program.source_text, &program.comments) {
+        // The prelude registers the id in `globalThis._debugIds` for error
+        // reporters, so it is kept.
+        eprintln!("[DEOBFUSCATE] Phase 0.86: debug id {id}");
+    }
     if found.is_commonjs() && program.source_type.is_script() {
         // Its top-level bindings are module locals, not globals another
         // script could read, so they may be renamed.

@@ -577,3 +577,52 @@ fn message_builders_return_their_message() {
         "{returned}"
     );
 }
+
+/// Next.js 16.4 server chunk with a WebAssembly import and a top-level-await
+/// module (`turbopack.debugIds` build): async loader, async dependencies,
+/// asset modules and the bundled `loadWasm.ts` helper.
+const WASM_CHUNK: &str = r#";!function(){try { var e="undefined"!=typeof globalThis?globalThis:{},n=(new e.Error).stack;n&&((e._debugIds|| (e._debugIds={}))[n]="8b06e878-84da-932e-79ca-1f7f27f8946b")}catch(e){}}();
+module.exports=[36588,e=>e.a(async(t,r)=>{try{var a=e.i(51360),n=e.i(59776),i=t([a,n]);async function s(){return Response.json({sum:(0,a.add)(2,3)})}[a,n]=i.then?(await i)():i,e.s(["GET",0,s]),r()}catch(e){r(e)}},!1),51360,e=>e.a(async(t,r)=>{try{var a=e.i(70614),n=e.i(18400);let{add:t}=await (0,a.f)(n.default,{});e.s(["add",0,t]),r()}catch(e){r(e)}},!0),70614,e=>{async function t(t,r){let{instance:n}=await WebAssembly.instantiateStreaming(fetch(t),r);return n.exports}e.s(["f",0,t])},18400,function(e){e.q("server/chunks/src_lib_add_05ek5-kaqh2we.wasm")},79095,a=>{a.v(b=>Promise.all(["server/chunks/ssr/heavy.js"].map(b=>a.l(b))).then(()=>b(34526)))},803,a=>{var x=a.i("123456789012345678");a.v(x)}];
+//# debugId=8b06e878-84da-932e-79ca-1f7f27f8946b"#;
+
+#[test]
+fn names_async_modules_assets_and_the_wasm_helper() {
+    let out = run(WASM_CHUNK);
+    for expected in [
+        "__turbopack_async_dependencies__ = __turbopack_handle_async_dependencies__([module_51360, module_59776])",
+        "[module_51360, module_59776] = __turbopack_async_dependencies__.then ? (await __turbopack_async_dependencies__)() : __turbopack_async_dependencies__",
+        "async function GET()",
+        "asset_src_lib_add_05ek5_kaqh2we_wasm = __turbopack_context__.i(18400)",
+        "async function instantiate(t, r)",
+        "(parentImport) => Promise.all",
+        ".then(() => parentImport(34526))",
+        "module_123456789012345678 = __turbopack_context__.i(\"123456789012345678\")",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    assert!(out.contains("e._debugIds"), "the debug id prelude stays: {out}");
+}
+
+/// The deployment constants a minified runtime keeps (Next.js inlines most):
+/// the Node.js runtime's opening `var`, the chunk base path and `crossOrigin`.
+#[test]
+fn names_runtime_constants() {
+    let (node, _) = run_script(
+        r#"var e="server/chunks/[turbopack]_runtime.js",t="..",n="/";function g(e,t){this.m=e,this.e=t}var c=g.prototype;function m(p,i){}function r(p,d){}module.exports=p=>({m:i=>m(p,i),c:d=>r(p,d)});"#,
+    );
+    assert!(
+        node.contains(
+            "var RUNTIME_PUBLIC_PATH = \"server/chunks/[turbopack]_runtime.js\", RELATIVE_ROOT_PATH = \"..\", ASSET_PREFIX = \"/\""
+        ),
+        "{node}"
+    );
+    let browser = run(
+        r#"(()=>{var b="/_next/",o=null;function g(e,t){this.m=e,this.e=t}var c=g.prototype;let k="string"==typeof TURBOPACK_CHUNK_BASE_PATH?TURBOPACK_CHUNK_BASE_PATH:b;function s(u){let e=document.createElement("script");e.crossOrigin=o,e.src=k+u}c.l=s})()"#,
+    );
+    for expected in [
+        "var CHUNK_BASE_PATH = \"/_next/\", CROSS_ORIGIN = null",
+        "let RUNTIME_CHUNK_BASE_PATH = \"string\" == typeof TURBOPACK_CHUNK_BASE_PATH ? TURBOPACK_CHUNK_BASE_PATH : CHUNK_BASE_PATH",
+    ] {
+        assert!(browser.contains(expected), "{expected}: {browser}");
+    }
+}
