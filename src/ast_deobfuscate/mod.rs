@@ -112,6 +112,7 @@ pub(crate) mod ternary_to_if_else;
 pub(crate) mod trampoline;
 #[allow(dead_code)]
 pub(crate) mod try_catch;
+pub(crate) mod turbopack;
 pub(crate) mod unary_proxy;
 #[allow(dead_code)]
 pub(crate) mod variable_rename;

@@ -18,4 +18,5 @@ mod format_cli;
 mod inspect;
 mod nesting;
 mod script_mode;
+mod turbopack;
 mod webpack_modules;

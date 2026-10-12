@@ -8,6 +8,7 @@ use crate::chunk_detector::ChunkDetector;
 use crate::chunk_splitter::ChunkSplitter;
 use crate::options::Options;
 use crate::tokenizer::Tokenizer;
+use crate::turbopack_extract::TurbopackChunk;
 use crate::{BeautifyError, Result};
 
 use oxc_allocator::Allocator;
@@ -57,6 +58,34 @@ fn oxc_beautify(code: &str, options: &Options) -> Result<String> {
     Layout::new(options, code).apply(&out, parse_result.program.source_type, &blank_lines)
 }
 
+/// `split-chunks` on a Turbopack chunk: one file per module factory (and per
+/// scope-hoisted module) in the chunk directory, plus the registrations as the
+/// chunk map.
+fn split_turbopack_chunk(code: &str, chunk: &TurbopackChunk, options: &Options) -> Result<String> {
+    eprintln!(
+        "[BEAUTIFY] ✓ Turbopack chunk: {} registration(s), {} module factories, {} scope-hoisted modules",
+        chunk.registrations.len(),
+        chunk.module_count(),
+        chunk.hoisted_count()
+    );
+    let written = chunk
+        .write_modules(code, &options.chunk_dir)
+        .map_err(|e| BeautifyError::BeautificationFailed(format!("failed to write Turbopack modules: {e}")))?;
+    if options.generate_source_map {
+        eprintln!("[BEAUTIFY] ⚠ Source maps are not generated for Turbopack modules");
+    }
+    if let Some(map_path) = &options.chunk_map_output {
+        std::fs::write(map_path, serde_json::to_string_pretty(chunk)?)
+            .map_err(|e| BeautifyError::BeautificationFailed(format!("failed to write chunk map: {e}")))?;
+        eprintln!("[BEAUTIFY] ✓ Chunk map written to: {}", map_path.display());
+    }
+    Ok(format!(
+        "// Turbopack modules written to: {}\n// Total files: {}\n",
+        options.chunk_dir.display(),
+        written.len()
+    ))
+}
+
 fn has_blank_line(code: &str) -> bool {
     code.lines().skip(1).any(|line| line.trim().is_empty())
 }
@@ -83,6 +112,9 @@ fn beautify_on_current_stack(code: &str, options: &Options) -> Result<String> {
 
     if options.split_chunks {
         eprintln!("[BEAUTIFY] Chunk splitting enabled, detecting chunks...");
+        if let Some(chunk) = crate::turbopack_extract::detect_turbopack_chunk(code) {
+            return split_turbopack_chunk(code, &chunk, options);
+        }
 
         let mut tokenizer = Tokenizer::new(code);
         let tokens = tokenizer.tokenize()?;

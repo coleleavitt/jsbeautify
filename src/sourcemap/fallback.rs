@@ -1,8 +1,10 @@
 use super::tree::{ReversedSource, write_reversed_sources};
 use crate::ast_deobfuscate::bun::{Bundler, detect_bundle_runtime};
 use crate::bun_extract::{ModuleType, split_bundle};
+use crate::turbopack_extract::detect_turbopack_chunk;
 use regex::Regex;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -19,6 +21,11 @@ pub(super) fn reconstruct_without_sourcemap(bundle_source: &str, output_dir: &Pa
 }
 
 fn synthetic_sources(bundle_source: &str) -> Vec<ReversedSource> {
+    let turbopack = turbopack_sources(bundle_source);
+    if !turbopack.is_empty() {
+        return turbopack;
+    }
+
     let lazy_sources = lazy_module_sources(bundle_source);
     if !lazy_sources.is_empty() {
         return lazy_sources;
@@ -33,6 +40,31 @@ fn synthetic_sources(bundle_source: &str) -> Vec<ReversedSource> {
         source_path: "synthetic/chunks/bundle.js".to_string(),
         content: bundle_source.to_string(),
     }]
+}
+
+/// One file per Turbopack module factory (a one-module chunk registering it),
+/// hoisted-module stubs, and `chunk.js`: the chunk with each factory replaced
+/// by a comment naming its module.
+fn turbopack_sources(bundle_source: &str) -> Vec<ReversedSource> {
+    let Some(chunk) = detect_turbopack_chunk(bundle_source) else {
+        return Vec::new();
+    };
+    let root = "synthetic/turbopack";
+    let mut out = Vec::new();
+    let mut paths = BTreeMap::new();
+    let mut skeleton = String::with_capacity(bundle_source.len() / 8);
+    let mut last = 0;
+    for module in chunk.modules() {
+        skeleton.push_str(&bundle_source[last..module.start]);
+        let _ = write!(skeleton, "/* turbopack module {} */", module.id().replace("*/", "*\\/"));
+        last = module.end;
+    }
+    skeleton.push_str(&bundle_source[last..]);
+    push_source(&mut out, &mut paths, format!("{root}/chunk.js"), skeleton);
+    for (name, content) in chunk.module_files(bundle_source) {
+        push_source(&mut out, &mut paths, format!("{root}/{name}"), content);
+    }
+    out
 }
 
 /// Splits the lazy `__esm` / `__commonJS` module wrappers that esbuild and Bun

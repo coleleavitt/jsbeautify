@@ -8,8 +8,8 @@ const MAX_EXTERNAL_SOURCE_MAP_BYTES: u64 = 32 * 1024 * 1024;
 ///
 /// Uses the bundle's trailing `sourceMappingURL` when present. If the bundle has
 /// no source map footer, or its external map file does not exist, falls back to
-/// synthetic boundaries: esbuild / Bun lazy module wrappers, else named
-/// functions and classes.
+/// synthetic boundaries: Turbopack module factories, esbuild / Bun lazy module
+/// wrappers, else named functions and classes.
 ///
 /// # Errors
 /// Returns an error when a referenced map cannot be read/decoded, or when the
