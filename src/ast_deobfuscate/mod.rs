@@ -66,6 +66,7 @@ pub(crate) mod dead_code;
 pub(crate) mod dead_var_elimination;
 #[allow(dead_code)]
 pub(crate) mod decoder_inline;
+pub(crate) mod default_export;
 #[allow(dead_code)]
 pub(crate) mod deterministic_rename;
 pub(crate) mod dispatch_inliner;

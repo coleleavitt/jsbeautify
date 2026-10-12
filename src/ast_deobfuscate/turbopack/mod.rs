@@ -17,7 +17,8 @@
 //!   async module body's parameters to `__turbopack_handle_async_dependencies__`,
 //!   `__turbopack_async_result__` (Turbopack's own names before minification);
 //! - locals exported through `__turbopack_context__.s([name, getter | 0, value, …])`
-//!   to their export name;
+//!   to their export name, and a minified `default` export local to a name
+//!   derived from its module id (see [`crate::ast_deobfuscate::default_export`]);
 //! - `x = __turbopack_context__.i(123)` / `.r(123)` to `module_123`;
 //! - in the runtime chunk, the `Context` constructor, its `contextPrototype`
 //!   alias and the functions installed on it (`contextPrototype.i = esmImport`).

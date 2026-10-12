@@ -1,20 +1,31 @@
-use oxc_ast::ast::{CallExpression, Expression, ObjectPropertyKind};
+use oxc_ast::ast::{
+    CallExpression, ExportDefaultDeclaration, ExportDefaultDeclarationKind, ExportNamedDeclaration, Expression,
+    ModuleExportName, ObjectPropertyKind, Program,
+};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::names::is_generic_name;
 use super::{Ctx, ExportNameMap};
 
 /// Collects mangled→original mappings from calls to the `__export` runtime
-/// helper, whichever name it has.
+/// helper, whichever name it has, and names the locals behind `default`
+/// exports, of `__export` calls and of native `export default`.
 pub struct ExportNameCollector {
     /// The bindings of the detected `__export` helpers.
     export_helpers: FxHashSet<SymbolId>,
     /// Map from the resolved exported symbol → original export name.
     name_map: ExportNameMap,
+    defaults: Vec<DefaultExport>,
+    /// esbuild's `// src/file.ts` module comments: (start offset, path).
+    module_comments: Vec<(u32, String)>,
+    /// `__export` calls with a `default` key so far, which number the modules
+    /// that have no module comment.
+    default_modules: usize,
 }
 
 impl ExportNameCollector {
@@ -23,7 +34,20 @@ impl ExportNameCollector {
         Self {
             export_helpers,
             name_map: FxHashMap::default(),
+            defaults: Vec::new(),
+            module_comments: Vec::new(),
+            default_modules: 0,
         }
+    }
+
+    /// The path of the last esbuild module comment before `offset`.
+    fn module_path(&self, offset: u32) -> Option<String> {
+        let index = self.module_comments.partition_point(|(start, _)| *start < offset);
+        index.checked_sub(1).map(|i| self.module_comments[i].1.clone())
+    }
+
+    fn push_default(&mut self, local: SymbolId, module: Option<String>) {
+        self.defaults.push(DefaultExport { local, module });
     }
 
     #[must_use]
@@ -57,6 +81,7 @@ impl ExportNameCollector {
         };
 
         // Each property: `originalName: () => mangledName`
+        let mut module = None;
         for prop in &obj_expr.properties {
             let ObjectPropertyKind::ObjectProperty(p) = prop else {
                 continue;
@@ -84,6 +109,19 @@ impl ExportNameCollector {
                 continue;
             };
 
+            if original == "default" {
+                let module = module
+                    .get_or_insert_with(|| {
+                        self.module_path(call.span.start).unwrap_or_else(|| {
+                            self.default_modules += 1;
+                            self.default_modules.to_string()
+                        })
+                    })
+                    .clone();
+                self.push_default(symbol_id, Some(module));
+                continue;
+            }
+
             // Skip if original == mangled (already named)
             if mangled == original {
                 continue;
@@ -100,8 +138,68 @@ impl ExportNameCollector {
     }
 }
 
+/// `src/components/Button.tsx`: the text of an esbuild module comment.
+fn is_module_path(text: &str) -> bool {
+    const EXTENSIONS: [&str; 12] = [
+        "js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx", "json", "css", "vue", "svelte",
+    ];
+    !text.is_empty()
+        && !text.contains(char::is_whitespace)
+        && text
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !stem.is_empty() && EXTENSIONS.contains(&ext))
+}
+
 impl<'a> Traverse<'a, DeobfuscateState> for ExportNameCollector {
+    fn enter_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
+        self.module_comments = program
+            .comments
+            .iter()
+            .filter(|comment| comment.is_line())
+            .filter_map(|comment| {
+                let text = comment.content_span().source_text(program.source_text).trim();
+                is_module_path(text).then(|| (comment.span.start, text.to_string()))
+            })
+            .collect();
+    }
+
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        let defaults = std::mem::take(&mut self.defaults);
+        for (symbol, name) in default_export_names(program, ctx.scoping(), defaults) {
+            self.name_map.entry(symbol).or_insert(name);
+        }
+    }
+
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
         self.try_extract_from_call(call, ctx);
+    }
+
+    /// `export { local as default }`
+    fn enter_export_named_declaration(&mut self, export: &mut ExportNamedDeclaration<'a>, ctx: &mut Ctx<'a>) {
+        for spec in &export.specifiers {
+            if let ModuleExportName::IdentifierReference(local) = &spec.local
+                && spec.exported.name() == "default"
+                && let Some(symbol) = ctx.scoping().get_reference(local.reference_id()).symbol_id()
+            {
+                self.push_default(symbol, None);
+            }
+        }
+    }
+
+    /// `export default local`, `export default function local() {}`, `export default class local {}`
+    fn enter_export_default_declaration(&mut self, export: &mut ExportDefaultDeclaration<'a>, ctx: &mut Ctx<'a>) {
+        let symbol = match &export.declaration {
+            ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                func.id.as_ref().and_then(|id| id.symbol_id.get())
+            }
+            ExportDefaultDeclarationKind::ClassDeclaration(class) => {
+                class.id.as_ref().and_then(|id| id.symbol_id.get())
+            }
+            ExportDefaultDeclarationKind::Identifier(id) => ctx.scoping().get_reference(id.reference_id()).symbol_id(),
+            _ => None,
+        };
+        if let Some(symbol) = symbol {
+            self.push_default(symbol, None);
+        }
     }
 }

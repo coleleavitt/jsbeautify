@@ -160,6 +160,26 @@ fn optional_computed_member_keeps_optional_chain() {
 }
 
 #[test]
+fn names_a_minified_es_module_default_export_local() {
+    // A vite/rollup chunk: `export { n as default }` exposes only `default`.
+    let out = AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
+        .deobfuscate("const n=[{name:\"asm\"}],e=n.length;export{n as default,e as size};")
+        .expect("deobfuscate");
+    assert!(out.contains("const default_export = [{ name: \"asm\" }]"), "{out}");
+    assert!(out.contains("default_export as default"), "{out}");
+    assert!(out.contains("e as size"), "a named export keeps its local: {out}");
+    let allocator = Allocator::default();
+    assert!(
+        Parser::new(&allocator, &out, SourceType::mjs())
+            .parse()
+            .diagnostics
+            .is_empty(),
+        "{out}"
+    );
+}
+
+#[test]
 fn class_names_from_this_name_never_collide() {
     let out = deobfuscate_cjs(
         "var a=class extends Error{constructor(m){super(m),this.name=\"AbortError\"}},\

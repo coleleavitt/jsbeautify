@@ -85,10 +85,103 @@ fn skips_already_named() {
 #[test]
 fn skips_generic_names() {
     let code = r"
-            __export(target, { default: () => XYZ });
+            var XYZ;
+            __export(target, { then: () => XYZ });
         ";
     let map = collect_names(code);
-    assert!(map.is_empty(), "Should skip 'default'");
+    assert!(map.is_empty(), "Should skip 'then'");
+}
+
+#[test]
+fn names_default_exports_after_the_esbuild_module_comment() {
+    let code = r"
+            // src/Button.ts
+            var d = {};
+            __export(d, { default: () => i, size: () => h });
+            function i(t) { return t; }
+            var h = 3;
+            // src/anon.ts
+            var x = {};
+            __export(x, { default: () => y });
+            var y = { a: 1 };
+        ";
+    let (out, _) = collect_and_rename(code);
+    assert!(out.contains("default: () => Button_default"), "{out}");
+    assert!(out.contains("function Button_default(t)"), "{out}");
+    assert!(out.contains("var size = 3"), "{out}");
+    assert!(out.contains("var anon_default = { a: 1 }"), "{out}");
+}
+
+#[test]
+fn numbers_default_exports_of_modules_without_identity() {
+    let code = r#"
+            var d = {};
+            __export(d, { default: () => i });
+            function i() {}
+            var p = {};
+            __export(p, { default: () => c });
+            var c;
+            c = class extends Error { constructor() { super("x"), this.name = "CodecError"; } };
+            var x = {};
+            __export(x, { default: () => y });
+            var y = function encodePng() {};
+        "#;
+    let (out, _) = collect_and_rename(code);
+    assert!(out.contains("function default_1()"), "{out}");
+    assert!(
+        out.contains("CodecError = class extends Error"),
+        "this.name in a joined constructor statement: {out}"
+    );
+    assert!(
+        out.contains("var encodePng$1 = function encodePng()"),
+        "the expression's own binding reserves its name: {out}"
+    );
+}
+
+#[test]
+fn default_export_names_never_override_better_names() {
+    let code = r"
+            var n = {};
+            __export(n, { Foo: () => a, default: () => a, default2: () => b });
+            var a = 1, b = 2;
+            var m = {};
+            __export(m, { default: () => readable });
+            var readable = 3;
+        ";
+    let (out, _) = collect_and_rename(code);
+    assert!(out.contains("var Foo = 1"), "the named export wins: {out}");
+    assert!(
+        out.contains("var readable = 3"),
+        "an unminified local keeps its name: {out}"
+    );
+}
+
+#[test]
+fn default_export_names_avoid_existing_bindings() {
+    let code = r"
+            var default_1 = 0;
+            var d = {};
+            __export(d, { default: () => i });
+            function i() { return default_1; }
+        ";
+    let (out, _) = collect_and_rename(code);
+    assert!(out.contains("function default_1$1()"), "{out}");
+    assert!(out.contains("return default_1;"), "{out}");
+}
+
+#[test]
+fn names_native_default_export_locals() {
+    let (out, _) = collect_and_rename("const n = [1]; export { n as default };");
+    assert!(out.contains("const default_export = [1]"), "{out}");
+    assert!(out.contains("export { default_export as default }"), "{out}");
+
+    let (out, _) = collect_and_rename("export default function n() { return n; }");
+    assert!(out.contains("export default function default_export()"), "{out}");
+    assert!(out.contains("return default_export;"), "{out}");
+
+    let (out, _) = collect_and_rename("class t { constructor() { this.name = \"Parser\"; } } export default t;");
+    assert!(out.contains("class Parser"), "{out}");
+    assert!(out.contains("export default Parser"), "{out}");
 }
 
 #[test]

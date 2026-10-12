@@ -155,7 +155,9 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     runtime
 }
 
-/// Phase 0.95: renames the locals passed to the `__export` helper to their export names.
+/// Phase 0.95: renames the locals passed to the `__export` helper to their
+/// export names, and minified `default` export locals (of `__export` and of
+/// native `export default`) per [`crate::ast_deobfuscate::default_export`].
 fn rename_exports<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
@@ -186,7 +188,7 @@ fn rename_exports<'a>(
     };
 
     if export_map.is_empty() {
-        eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
+        eprintln!("[DEOBFUSCATE] Phase 0.95: No export names found");
     } else {
         eprintln!(
             "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",

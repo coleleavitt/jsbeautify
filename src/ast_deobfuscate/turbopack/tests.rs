@@ -123,3 +123,27 @@ fn ignores_lookalike_pushes() {
         assert!(!out.contains("__turbopack_context__"), "{code} → {out}");
     }
 }
+
+#[test]
+fn names_default_export_locals_after_their_module() {
+    let out = run(r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["chunk.js",
+        910733,e=>{"use strict";function i(){}i._isSVG=!0,e.s(["default",0,i])},
+        50,e=>{function x(){}e.s(["default",()=>x],396713);let n=e.i(7);e.s(["default",0,n])},
+        "[project]/app/page.tsx [app-client] (ecmascript)",e=>{let p=1;e.s(["default",0,p,"Page",0,p])}
+    ]);"#);
+    assert!(out.contains("function default_910733()"), "{out}");
+    assert!(out.contains("function default_396713()"), "hoisted module id: {out}");
+    assert!(
+        out.contains("let module_7 ="),
+        "import names win over default names: {out}"
+    );
+    assert!(out.contains("let Page = 1"), "named exports win: {out}");
+}
+
+#[test]
+fn names_default_export_locals_from_string_module_ids() {
+    let out = run(r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["chunk.js",
+        "[project]/app/page.tsx [app-client] (ecmascript)",e=>{let p=1;e.s(["default",0,p])}
+    ]);"#);
+    assert!(out.contains("let page_default = 1"), "{out}");
+}

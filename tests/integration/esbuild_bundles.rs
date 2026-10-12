@@ -96,3 +96,23 @@ fn omits_the_bundler_without_a_distinguishing_helper() {
     assert!(out.contains("//   __esm\n"), "{out}");
     assert!(!out.contains("Runtime:"), "{out}");
 }
+
+#[test]
+fn names_default_export_locals_after_the_module() {
+    // Shapes from `esbuild --bundle --format=cjs --minify` and `--minify-identifiers`.
+    let out = deobfuscate(
+        "var d=Object.defineProperty;\
+         var X=(e,t)=>{for(var n in t)d(e,n,{get:t[n],enumerable:!0})};\
+         var a={};X(a,{default:()=>i,size:()=>h});function i(t){return{label:t}}var h=3;\
+         var p={};X(p,{default:()=>c});var c=class extends Error{constructor(){super(\"x\"),this.name=\"CodecError\"}};\n\
+         // src/anon.ts\n\
+         var x={};X(x,{default:()=>y});var y={a:1};module.exports={a,p,x};",
+    );
+    assert!(
+        out.contains("function default_1(") && out.contains("default: () => default_1"),
+        "{out}"
+    );
+    assert!(out.contains("var size = 3"), "{out}");
+    assert!(out.contains("var CodecError = class extends Error"), "{out}");
+    assert!(out.contains("var anon_default = { a: 1 }"), "{out}");
+}
