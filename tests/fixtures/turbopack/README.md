@@ -14,3 +14,17 @@ generated chunks copied unchanged from next.js v16.5.0-canary.8,
 `dev_chunk_list.js` follows the template in
 `turbopack/crates/turbopack-browser/src/ecmascript/list/content.rs` (chunk lists
 are served by the dev server and have no snapshot).
+
+The `next16_*.js` files are copied unchanged from a real Next.js 16.4.0 app
+built with Turbopack (`create-next-app`, see `~/SiteResearch/turbopack/REAL_BUILD.md`):
+
+- `next16_nested_server_chunk.js`: `.next/server/chunks/ssr/[root-of-the-server]__0py1t7q9ntzgc._.js`
+  (Node.js, the leading nested factory list Next.js 16.4 emits as a plain array)
+- `next16_edge_entry_chunk.js`: `.next/server/edge/chunks/[root-of-the-server]__00cre0x0mv0lu._.js`
+  (edge, `self._ENTRIES["middleware_app/api/edge/route"]` wrapper)
+- `next16_require_context_chunk.js`: `.next/server/chunks/ssr/_0y55_8mx16aml._.js`
+  (`require.context` map module 52812)
+- `next16_merged_modules_chunk.js`: `.next-nominify/server/chunks/ssr/[root-of-the-server]__026w794mlib5p._.js`
+  (`experimental.turbopackMinify: false`: `// MERGED MODULE:` markers, `S([…])` re-exports)
+- `next16_dev_refresh_chunk.js`: `.next/dev/static/chunks/src_app_heavy_tsx_0a3zll2ka71z6._.js`
+  (`next dev`, React Refresh `__turbopack_context__.k.register`)
