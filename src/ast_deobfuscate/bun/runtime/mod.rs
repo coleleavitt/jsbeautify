@@ -43,6 +43,7 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 mod ast_utils;
 mod collector;
 mod descriptor;
+mod lowering;
 mod matchers;
 mod reexport;
 mod renamer;
@@ -131,6 +132,178 @@ mod tests {
 
     fn bundler(code: &str) -> Option<Bundler> {
         detect_bundle_runtime(code).bundler
+    }
+
+    /// The helper names `code` maps, sorted, with their canonical names.
+    fn detected(code: &str) -> Vec<(String, &'static str)> {
+        let mut helpers: Vec<_> = collect(code)
+            .into_iter()
+            .map(|(name, helper)| (name, helper.canonical()))
+            .collect();
+        helpers.sort_unstable();
+        helpers
+    }
+
+    fn expect(pairs: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
+        let mut pairs: Vec<_> = pairs
+            .iter()
+            .map(|(name, canonical)| (name.to_string(), *canonical))
+            .collect();
+        pairs.sort_unstable();
+        pairs
+    }
+
+    #[test]
+    fn detects_every_helper_of_a_minified_esbuild_0_28_bundle() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016`.
+        let code = r#"var W=Object.create;var p=Object.defineProperty,tt=Object.defineProperties,rt=Object.getOwnPropertyDescriptor,et=Object.getOwnPropertyDescriptors,nt=Object.getOwnPropertyNames,h=Object.getOwnPropertySymbols,st=Object.getPrototypeOf,F=Object.prototype.hasOwnProperty,E=Object.prototype.propertyIsEnumerable;var $=t=>{throw TypeError(t)};var z=(t,r,e)=>r in t?p(t,r,{enumerable:!0,configurable:!0,writable:!0,value:e}):t[r]=e,k=(t,r)=>{for(var e in r||(r={}))F.call(r,e)&&z(t,e,r[e]);if(h)for(var e of h(r))E.call(r,e)&&z(t,e,r[e]);return t},G=(t,r)=>tt(t,et(r));var H=t=>r=>{var e=t[r];if(e)return e();throw new Error("Module not found in bundle: "+r)};var I=(t,r)=>{var e={};for(var n in t)F.call(t,n)&&r.indexOf(n)<0&&(e[n]=t[n]);if(t!=null&&h)for(var n of h(t))r.indexOf(n)<0&&E.call(t,n)&&(e[n]=t[n]);return e};var ot=(t,r,e)=>()=>{if(e)throw e[0];try{return t&&(r=t(t=0)),r}catch(n){throw e=[n],n}};var b=(t,r)=>()=>{try{return r||t((r={exports:{}}).exports,r),r.exports}catch(e){throw r=0,e}},J=(t,r)=>{for(var e in r)p(t,e,{get:r[e],enumerable:!0})},l=(t,r,e,n)=>{if(r&&typeof r=="object"||typeof r=="function")for(let u of nt(r))!F.call(t,u)&&u!==e&&p(t,u,{get:()=>r[u],enumerable:!(n=rt(r,u))||n.enumerable});return t},o=(t,r,e)=>(l(t,r,"default"),e&&l(e,r,"default")),K=(t,r,e)=>(e=t!=null?W(st(t)):{},l(r||!t||!t.__esModule?p(e,"default",{value:t,enumerable:!0}):e,t)),L=t=>l(p({},"__esModule",{value:!0}),t);var x=(t,r,e)=>z(t,typeof r!="symbol"?r+"":r,e),v=(t,r,e)=>r.has(t)||$("Cannot "+e),M=(t,r)=>Object(r)!==r?$('Cannot use the "in" operator on this value'):t.has(r),d=(t,r,e)=>(v(t,r,"read from private field"),e?e.call(t):r.get(t)),m=(t,r,e)=>r.has(t)?$("Cannot add the same private member more than once"):r instanceof WeakSet?r.add(t):r.set(t,e),N=(t,r,e,n)=>(v(t,r,"write to private field"),n?n.call(t,e):r.set(t,e),e),O=(t,r,e)=>(v(t,r,"access private method"),e);var Q=(t,r,e)=>new Promise((n,u)=>{var P=i=>{try{w(e.next(i))}catch(j){u(j)}},S=i=>{try{w(e.throw(i))}catch(j){u(j)}},w=i=>i.done?n(i.value):Promise.resolve(i.value).then(P,S);w((e=e.apply(t,r)).next())});"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("W", "__create"),
+                ("p", "__defProp"),
+                ("tt", "__defProps"),
+                ("rt", "__getOwnPropDesc"),
+                ("et", "__getOwnPropDescs"),
+                ("nt", "__getOwnPropNames"),
+                ("h", "__getOwnPropSymbols"),
+                ("st", "__getProtoOf"),
+                ("F", "__hasOwnProp"),
+                ("E", "__propIsEnum"),
+                ("$", "__typeError"),
+                ("z", "__defNormalProp"),
+                ("k", "__spreadValues"),
+                ("G", "__spreadProps"),
+                ("H", "__glob"),
+                ("I", "__objRest"),
+                ("ot", "__esm"),
+                ("b", "__commonJS"),
+                ("J", "__export"),
+                ("l", "__copyProps"),
+                ("o", "__reExport"),
+                ("K", "__toESM"),
+                ("L", "__toCommonJS"),
+                ("x", "__publicField"),
+                ("v", "__accessCheck"),
+                ("M", "__privateIn"),
+                ("d", "__privateGet"),
+                ("m", "__privateAdd"),
+                ("N", "__privateSet"),
+                ("O", "__privateMethod"),
+                ("Q", "__async"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_helpers_of_a_minified_esbuild_0_14_bundle() {
+        // Before esbuild 0.21 the private-member helpers throw instead of calling `__typeError`.
+        let code = r#"var X=Object.create;var p=Object.defineProperty,Y=Object.defineProperties,Z=Object.getOwnPropertyDescriptor,_=Object.getOwnPropertyDescriptors,P=Object.getOwnPropertyNames,h=Object.getOwnPropertySymbols,S=Object.getPrototypeOf,z=Object.prototype.hasOwnProperty,C=Object.prototype.propertyIsEnumerable;var j=(t,r,e)=>r in t?p(t,r,{enumerable:!0,configurable:!0,writable:!0,value:e}):t[r]=e,F=(t,r)=>{for(var e in r||(r={}))z.call(r,e)&&j(t,e,r[e]);if(h)for(var e of h(r))C.call(r,e)&&j(t,e,r[e]);return t},D=(t,r)=>Y(t,_(r));var E=(t,r)=>{var e={};for(var n in t)z.call(t,n)&&r.indexOf(n)<0&&(e[n]=t[n]);if(t!=null&&h)for(var n of h(t))r.indexOf(n)<0&&C.call(t,n)&&(e[n]=t[n]);return e};var W=(t,r)=>()=>(t&&(r=t(t=0)),r);var G=(t,r)=>()=>(r||t((r={exports:{}}).exports,r),r.exports),H=(t,r)=>{for(var e in r)p(t,e,{get:r[e],enumerable:!0})},l=(t,r,e,n)=>{if(r&&typeof r=="object"||typeof r=="function")for(let u of P(r))!z.call(t,u)&&u!==e&&p(t,u,{get:()=>r[u],enumerable:!(n=Z(r,u))||n.enumerable});return t},o=(t,r,e)=>(l(t,r,"default"),e&&l(e,r,"default")),I=(t,r,e)=>(e=t!=null?X(S(t)):{},l(r||!t||!t.__esModule?p(e,"default",{value:t,enumerable:!0}):e,t)),J=t=>l(p({},"__esModule",{value:!0}),t);var x=(t,r,e)=>(j(t,typeof r!="symbol"?r+"":r,e),e),$=(t,r,e)=>{if(!r.has(t))throw TypeError("Cannot "+e)},K=(t,r)=>{if(Object(r)!==r)throw TypeError('Cannot use the "in" operator on this value');return t.has(r)},b=(t,r,e)=>($(t,r,"read from private field"),e?e.call(t):r.get(t)),m=(t,r,e)=>{if(r.has(t))throw TypeError("Cannot add the same private member more than once");r instanceof WeakSet?r.add(t):r.set(t,e)},L=(t,r,e,n)=>($(t,r,"write to private field"),n?n.call(t,e):r.set(t,e),e);var M=(t,r,e)=>($(t,r,"access private method"),e);var N=(t,r,e)=>new Promise((n,u)=>{var U=i=>{try{T(e.next(i))}catch(w){u(w)}},V=i=>{try{T(e.throw(i))}catch(w){u(w)}},T=i=>i.done?n(i.value):Promise.resolve(i.value).then(U,V);T((e=e.apply(t,r)).next())});"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("X", "__create"),
+                ("p", "__defProp"),
+                ("Y", "__defProps"),
+                ("Z", "__getOwnPropDesc"),
+                ("_", "__getOwnPropDescs"),
+                ("P", "__getOwnPropNames"),
+                ("h", "__getOwnPropSymbols"),
+                ("S", "__getProtoOf"),
+                ("z", "__hasOwnProp"),
+                ("C", "__propIsEnum"),
+                ("j", "__defNormalProp"),
+                ("F", "__spreadValues"),
+                ("D", "__spreadProps"),
+                ("E", "__objRest"),
+                ("W", "__esm"),
+                ("G", "__commonJS"),
+                ("H", "__export"),
+                ("l", "__copyProps"),
+                ("o", "__reExport"),
+                ("I", "__toESM"),
+                ("J", "__toCommonJS"),
+                ("x", "__publicField"),
+                ("$", "__accessCheck"),
+                ("K", "__privateIn"),
+                ("b", "__privateGet"),
+                ("m", "__privateAdd"),
+                ("L", "__privateSet"),
+                ("M", "__privateMethod"),
+                ("N", "__async"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_unminified_lazy_wrappers() {
+        // esbuild 0.28 (`try` + rethrow) and 0.14 forms without `--minify`.
+        let code = r"var __getOwnPropNames = Object.getOwnPropertyNames;
+            var E = (fn, res, err) => function __init() {
+                if (err) throw err[0];
+                try { return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res; } catch (e) { throw err = [e], e; }
+            };
+            var C = (cb, mod) => function __require() {
+                try { return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports; } catch (e) { throw mod = 0, e; }
+            };
+            var E0 = (fn, res) => function __init() { return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res; };
+            var C0 = (cb, mod) => function __require() { return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports; };";
+        let map = collect(code);
+        for (name, helper) in [
+            ("E", BunHelper::Esm),
+            ("C", BunHelper::CommonJs),
+            ("E0", BunHelper::Esm),
+            ("C0", BunHelper::CommonJs),
+        ] {
+            assert_eq!(map.get(name), Some(&helper), "{name}");
+        }
+    }
+
+    #[test]
+    fn rejects_lazy_wrapper_lookalikes() {
+        for code in [
+            // No rethrow guard for the third parameter.
+            "var E = (t, r, e) => () => { try { return t && (r = t(t = 0)), r } catch (n) { throw n } };",
+            // Returns something other than the cached result.
+            "var E = (t, r) => () => (t && (r = t(t = 0)), t);",
+            "var C = (t, r) => () => (r || t((r = { exports: {} }).exports, r), t.exports);",
+            "var E = (t, r) => () => { log(); return t && (r = t(t = 0)), r };",
+        ] {
+            assert!(collect(code).is_empty(), "{code}");
+        }
+    }
+
+    #[test]
+    fn detects_the_helpers_below_es6() {
+        // `--supported:for-of=false`: indexed loops and `.bind` getters.
+        let code = r#"var f = Object.defineProperty, nt = Object.getOwnPropertyNames, rt = Object.getOwnPropertyDescriptor,
+            d = Object.getOwnPropertySymbols, k = Object.prototype.hasOwnProperty, H = Object.prototype.propertyIsEnumerable;
+            var $ = (t, r, e) => r in t ? f(t, r, { enumerable: !0, configurable: !0, writable: !0, value: e }) : t[r] = e,
+            B=(t,r)=>{for(var e in r||(r={}))k.call(r,e)&&$(t,e,r[e]);if(d)for(var n=d(r),u=0,i=n.length,e;u<i;u++)e=n[u],H.call(r,e)&&$(t,e,r[e]);return t};
+            var y=(t,r,e,n)=>{if(r&&typeof r=="object"||typeof r=="function")for(var u=nt(r),i=0,m=u.length,a;i<m;i++)a=u[i],!k.call(t,a)&&a!==e&&f(t,a,{get:(c=>r[c]).bind(null,a),enumerable:!(n=rt(r,a))||n.enumerable});return t};"#;
+        let map = collect(code);
+        assert_eq!(map.get("B"), Some(&BunHelper::SpreadValues));
+        assert_eq!(map.get("y"), Some(&BunHelper::CopyProps));
+    }
+
+    #[test]
+    fn detects_the_keep_names_and_require_shims() {
+        let code = r#"var i = Object.defineProperty;
+            var s = (r, t) => i(r, "name", { value: t, configurable: !0 });
+            var E=(t=>typeof require!="undefined"?require:typeof Proxy!="undefined"?new Proxy(t,{get:(r,e)=>(typeof require!="undefined"?require:r)[e]}):t)(function(t){if(typeof require!="undefined")return require.apply(this,arguments);throw new Error('Dynamic require of "'+t+'" is not supported')});"#;
+        let map = collect(code);
+        assert_eq!(map.get("s"), Some(&BunHelper::Name));
+        assert_eq!(map.get("E"), Some(&BunHelper::Require));
+    }
+
+    #[test]
+    fn descends_into_an_iife_bundle() {
+        let code = "var lib = (() => { var a = Object.defineProperty; var b = (t, r) => () => (t && (r = t(t = 0)), r); return 1; })();
+            (() => { var c = Object.create; })();";
+        assert_eq!(
+            detected(code),
+            expect(&[("a", "__defProp"), ("b", "__esm"), ("c", "__create")])
+        );
     }
 
     #[test]

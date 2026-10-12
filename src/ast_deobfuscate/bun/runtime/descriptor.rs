@@ -78,6 +78,12 @@ fn is_define_property_copy_call(
         && argument_descriptor_getter_reads_source_key(descriptor_arg, source_param, loop_var)
 }
 
+/// Whether `call` calls the detected `helper` (by its minified or canonical name).
+pub(super) fn call_callee_is_helper(call: &CallExpression<'_>, helpers: &BunHelperMap, helper: BunHelper) -> bool {
+    matches!(&call.callee, Expression::Identifier(id)
+        if id.name.as_str() == helper.canonical() || helpers.get(id.name.as_str()) == Some(&helper))
+}
+
 pub(super) fn call_callee_is_helper_or_object_property(
     call: &CallExpression<'_>,
     helpers: &BunHelperMap,
@@ -85,12 +91,7 @@ pub(super) fn call_callee_is_helper_or_object_property(
     object_property: &str,
 ) -> bool {
     match &call.callee {
-        Expression::Identifier(id) => {
-            id.name.as_str() == helper.canonical()
-                || helpers
-                    .get(id.name.as_str())
-                    .is_some_and(|detected_helper| *detected_helper == helper)
-        }
+        Expression::Identifier(_) => call_callee_is_helper(call, helpers, helper),
         Expression::StaticMemberExpression(member) => {
             matches!(&member.object, Expression::Identifier(obj) if obj.name.as_str() == "Object")
                 && member.property.name.as_str() == object_property
