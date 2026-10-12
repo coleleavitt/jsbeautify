@@ -14,21 +14,18 @@ use super::types::{BinaryOp, InlinableFunction, ReturnExpr, UnaryOp};
 
 pub struct FunctionInliner {
     functions: FxHashMap<SymbolId, InlinableFunction>,
-    changed: bool,
+    rewrites: usize,
 }
 
 impl FunctionInliner {
     #[must_use]
     pub const fn new(functions: FxHashMap<SymbolId, InlinableFunction>) -> Self {
-        Self {
-            functions,
-            changed: false,
-        }
+        Self { functions, rewrites: 0 }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 
     fn try_inline_call<'a>(&mut self, call: &CallExpression<'a>, ctx: &mut Ctx<'a>) -> Option<Expression<'a>> {
@@ -43,8 +40,8 @@ impl FunctionInliner {
             .map(|arg| arg.as_expression())
             .collect::<Option<Vec<_>>>()?;
 
-        eprintln!("[AST] Inlining call to function: {}", func.name);
-        self.changed = true;
+        deob_trace!("[AST] Inlining call to function: {}", func.name);
+        self.rewrites += 1;
         Some(Self::build_expression(&func.return_expression, &args, ctx))
     }
 
@@ -120,8 +117,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionInliner {
             && !binds_global(ctx, id)
             && !is_annex_b_function(ctx, func)
         {
-            eprintln!("[AST] Removing inlined function declaration: {}", id.name);
-            self.changed = true;
+            deob_trace!("[AST] Removing inlined function declaration: {}", id.name);
+            self.rewrites += 1;
             *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }

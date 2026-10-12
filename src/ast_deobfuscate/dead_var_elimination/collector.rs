@@ -111,7 +111,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarCollector {
             self.record_export(symbol_id);
         }
         if crate::ast_deobfuscate::ast_trace_enabled() {
-            eprintln!("[AST] Found declaration: {}", ident.name);
+            deob_trace!("[AST] Found declaration: {}", ident.name);
         }
     }
 

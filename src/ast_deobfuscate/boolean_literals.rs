@@ -7,7 +7,7 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct BooleanLiteralConverter {
-    changed: bool,
+    rewrites: usize,
     double_negation_count: usize,
 }
 
@@ -15,14 +15,14 @@ impl BooleanLiteralConverter {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            changed: false,
+            rewrites: 0,
             double_negation_count: 0,
         }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 
     #[must_use]
@@ -59,8 +59,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanLiteralConverter {
             return;
         };
         let result = !truthy;
-        eprintln!("[AST] Converting !<literal> -> {result}");
-        self.changed = true;
+        deob_trace!("[AST] Converting !<literal> -> {result}");
+        self.rewrites += 1;
         *expr = Expression::new_boolean_literal(SPAN, result, ctx);
     }
 }

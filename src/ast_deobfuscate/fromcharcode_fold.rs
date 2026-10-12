@@ -75,7 +75,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for FromCharCodeFolder {
         let decoded: String = chars.into_iter().collect();
         if self.folded < 10 {
             let preview: String = decoded.chars().take(32).collect();
-            eprintln!(
+            deob_trace!(
                 "[AST/fromCharCode] folding {} char codes -> {:?}",
                 call.arguments.len(),
                 preview

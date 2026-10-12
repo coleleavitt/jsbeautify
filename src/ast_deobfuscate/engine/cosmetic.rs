@@ -202,12 +202,15 @@ impl AstDeobfuscator {
             self.iife_unwrap.unwrapped_count()
         );
 
-        eprintln!("[DEOBFUSCATE] Phase 19: Detecting bundler runtime helpers");
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut helper_collector = BunRuntimeCollector::new();
         traverse_mut_with_ctx(&mut helper_collector, &mut program, &mut ctx);
         let helpers = helper_collector.into_map();
+        eprintln!(
+            "[DEOBFUSCATE] Phase 19: Collected {} runtime helpers for module annotation",
+            helpers.len()
+        );
 
         eprintln!("[DEOBFUSCATE] Phase 19.5: Final dead-var sweep");
         let result = eliminate_dead_vars(&allocator, &mut program);

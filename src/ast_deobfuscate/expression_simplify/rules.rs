@@ -18,8 +18,8 @@ impl ExpressionSimplifier {
 
         if let Expression::NumericLiteral(num) = &unary.argument {
             let result = num.value == 0.0;
-            eprintln!("[AST] Simplifying !{} to {}", num.value as i64, result);
-            self.changed = true;
+            deob_trace!("[AST] Simplifying !{} to {}", num.value as i64, result);
+            self.rewrites += 1;
             return Some(Self::make_boolean(result, ctx));
         }
 
@@ -43,23 +43,23 @@ impl ExpressionSimplifier {
             if let Expression::ArrayExpression(arr) = &inner_unary.argument
                 && arr.elements.is_empty()
             {
-                eprintln!("[AST] Simplifying !![] to true");
-                self.changed = true;
+                deob_trace!("[AST] Simplifying !![] to true");
+                self.rewrites += 1;
                 return Some(Self::make_boolean(true, ctx));
             }
 
             if let Expression::NumericLiteral(num) = &inner_unary.argument {
                 let result = num.value != 0.0;
-                eprintln!("[AST] Simplifying !!{} to {}", num.value as i64, result);
-                self.changed = true;
+                deob_trace!("[AST] Simplifying !!{} to {}", num.value as i64, result);
+                self.rewrites += 1;
                 return Some(Self::make_boolean(result, ctx));
             }
         }
 
         if let Expression::BooleanLiteral(bool_lit) = &unary.argument {
             let result = !bool_lit.value;
-            eprintln!("[AST] Simplifying !{} to {}", bool_lit.value, result);
-            self.changed = true;
+            deob_trace!("[AST] Simplifying !{} to {}", bool_lit.value, result);
+            self.rewrites += 1;
             return Some(Self::make_boolean(result, ctx));
         }
 
@@ -78,8 +78,8 @@ impl ExpressionSimplifier {
         if let Expression::ArrayExpression(arr) = &unary.argument
             && arr.elements.is_empty()
         {
-            eprintln!("[AST] Simplifying +[] to 0");
-            self.changed = true;
+            deob_trace!("[AST] Simplifying +[] to 0");
+            self.rewrites += 1;
             return Some(Self::make_number(0, ctx));
         }
 
@@ -88,8 +88,8 @@ impl ExpressionSimplifier {
             && let Expression::ArrayExpression(arr) = &inner_unary.argument
             && arr.elements.is_empty()
         {
-            eprintln!("[AST] Simplifying +![] to 1");
-            self.changed = true;
+            deob_trace!("[AST] Simplifying +![] to 1");
+            self.rewrites += 1;
             return Some(Self::make_number(1, ctx));
         }
 
@@ -105,8 +105,8 @@ impl ExpressionSimplifier {
             let prop_name = lit.value.as_str();
 
             if Self::is_valid_identifier(prop_name) {
-                eprintln!("[AST] Converting [\"{prop_name}\"]] to .{prop_name}");
-                self.changed = true;
+                deob_trace!("[AST] Converting [\"{prop_name}\"]] to .{prop_name}");
+                self.rewrites += 1;
 
                 let object = Self::clone_expression(&member.object, ctx);
                 let property = oxc_ast::ast::IdentifierName::new(SPAN, prop_name, ctx);
@@ -137,13 +137,13 @@ impl ExpressionSimplifier {
             && !right.lone_surrogates
         {
             let combined = format!("{}{}", left.value.as_str(), right.value.as_str());
-            eprintln!(
+            deob_trace!(
                 "[AST] Concatenating \"{}\" + \"{}\" = \"{}\"",
                 left.value.as_str(),
                 right.value.as_str(),
                 combined
             );
-            self.changed = true;
+            self.rewrites += 1;
 
             return Some(Expression::new_string_literal(
                 SPAN,

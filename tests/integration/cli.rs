@@ -173,3 +173,95 @@ fn source_type_and_isolated_decide_whether_globals_survive() {
     assert!(!deobfuscate_file("e.cjs", code, &[]).contains("unused"));
     assert!(!deobfuscate_file("f.mjs", code, &[]).contains("unused"));
 }
+
+fn deobfuscate_stderr(name: &str, code: &str, trace: bool) -> String {
+    let dir = std::env::temp_dir().join(format!("jsb-cli-log-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join(name);
+    std::fs::write(&path, code).expect("write input");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jsbeautify"));
+    command
+        .arg("-d")
+        .arg(&path)
+        .env_remove("JSB_TRACE_DEOB")
+        .env_remove("JSBEAUTIFY_TRACE_DEOB");
+    if trace {
+        command.env("JSB_TRACE_DEOB", "1");
+    }
+    let output = command.output().expect("run jsbeautify -d");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.status.success(), "jsbeautify failed: {output:?}");
+    String::from_utf8(output.stderr).expect("stderr is utf8")
+}
+
+#[test]
+fn deobfuscate_log_reports_counts_per_phase_not_lines_per_rewrite() {
+    let code = "function f(a) { return [!0, void 0, a?.b, 2 * 3]; }\n".repeat(2000);
+
+    let quiet = deobfuscate_stderr("many.js", &code, false);
+    assert!(quiet.lines().count() < 300, "{} stderr lines", quiet.lines().count());
+    assert!(
+        quiet.contains("Phase 19.6: Generated output re-parse succeeded"),
+        "{quiet}"
+    );
+    assert!(
+        quiet.contains("Phase 21.5: Generated output re-parse succeeded"),
+        "{quiet}"
+    );
+    assert!(
+        quiet.contains("Phase 16.9: Detected 2000 optional chaining expressions"),
+        "{quiet}"
+    );
+    assert!(quiet.contains("replaced 2000 void expressions"), "{quiet}");
+
+    let traced = deobfuscate_stderr("many.js", &code, true);
+    let per_node = traced
+        .lines()
+        .filter(|line| line.starts_with("[OPTIONAL_CHAINING]"))
+        .count();
+    assert_eq!(per_node, 2000, "JSB_TRACE_DEOB restores the per-node lines");
+}
+
+#[test]
+fn bundler_checks_print_one_result_line_each() {
+    let plain = deobfuscate_stderr("plain.js", "function add(a, b) { return a + b; }", false);
+    for check in [
+        "Akamai BMP check",
+        "webpack check",
+        "esbuild/Bun runtime check",
+        "Angular check",
+    ] {
+        let results: Vec<_> = plain
+            .lines()
+            .filter(|line| line.contains(&format!("{check}: ")))
+            .collect();
+        assert_eq!(results.len(), 1, "{check}: {results:?}");
+        assert!(results[0].contains(&format!("{check}: not found")), "{}", results[0]);
+    }
+
+    let chunk = "(self.webpackChunkapp = self.webpackChunkapp || []).push([[1], {\
+                 10: function (e, t, n) { e.exports = 1; },\
+                 11: function (e, t, n) { e.exports = n(10); }\
+                 }]);";
+    let stderr = deobfuscate_stderr("chunk.js", chunk, false);
+    assert!(
+        stderr.contains("Phase 0.85: webpack check: detected webpack chunk with 2 modules"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn version_banner_names_the_commit_as_build_metadata() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("--version")
+        .output()
+        .expect("run jsbeautify --version");
+    assert!(output.status.success(), "{output:?}");
+    let banner = String::from_utf8(output.stdout).expect("stdout is utf8");
+    let version = banner
+        .trim()
+        .strip_prefix("jsbeautify ")
+        .expect("banner starts with the binary name");
+    assert!(!version.contains(char::is_whitespace), "one token: {banner:?}");
+    assert!(version.starts_with(env!("CARGO_PKG_VERSION")), "{banner:?}");
+}

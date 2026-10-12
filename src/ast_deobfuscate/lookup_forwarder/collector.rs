@@ -130,7 +130,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for LookupForwarderCollector {
                 })
             });
             if accessor_resolves {
-                eprintln!("[AST/lookup-fwd] found forwarder to {}()[x]", info.accessor_name);
+                deob_trace!("[AST/lookup-fwd] found forwarder to {}()[x]", info.accessor_name);
                 self.forwarders.insert(symbol, info);
             }
         }

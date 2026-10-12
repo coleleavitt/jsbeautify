@@ -2,16 +2,16 @@ use oxc_ast::ast::{Expression, Ident, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct VoidReplacer {
-    changed: bool,
+    rewrites: usize,
 }
 
-flag_pass!(VoidReplacer, changed, has_changed);
+counter_pass!(VoidReplacer, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for VoidReplacer {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
@@ -31,8 +31,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for VoidReplacer {
         {
             return;
         }
-        eprintln!("[AST] Converting void <pure-expr> -> undefined");
-        self.changed = true;
+        deob_trace!("[AST] Converting void <pure-expr> -> undefined");
+        self.rewrites += 1;
         *expr = Expression::new_identifier(SPAN, "undefined", ctx);
     }
 }

@@ -116,7 +116,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for SelfInitAccessorFlattener {
     fn exit_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
         if let Some((cache_var, kind)) = Self::try_rewrite_function(func, ctx) {
             if self.rewritten < 10 {
-                eprintln!(
+                deob_trace!(
                     "[AST/self-init] flattened accessor {} (init={kind:?}, cache={cache_var})",
                     func.id.as_ref().map_or("?", |id| id.name.as_str()),
                 );

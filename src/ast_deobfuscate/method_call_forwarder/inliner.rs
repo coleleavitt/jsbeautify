@@ -42,7 +42,7 @@ impl MethodCallForwarderInliner {
         };
         let (recv, arg) = (recv.as_expression()?, arg.as_expression()?);
         if self.inlined < 10 {
-            eprintln!("[AST/method-fwd] inline {}(a, b) -> a.{}(b)", ident.name, info.method);
+            deob_trace!("[AST/method-fwd] inline {}(a, b) -> a.{}(b)", ident.name, info.method);
         }
         self.inlined += 1;
         let property = IdentifierName::new(SPAN, ctx.allocator().alloc_str(&info.method), ctx);

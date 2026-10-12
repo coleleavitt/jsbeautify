@@ -24,6 +24,17 @@
 // scoped dead-code allowances do not hide diagnostics elsewhere in the crate.
 #![allow(unused_imports)]
 
+/// `eprintln!` that only prints under `JSB_TRACE_DEOB=1`. Use it for
+/// per-node and per-occurrence pass logging; the engine keeps one summary
+/// line per phase on stderr in normal runs.
+macro_rules! deob_trace {
+    ($($arg:tt)*) => {
+        if crate::ast_deobfuscate::deob_trace_enabled() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 pub(crate) mod akamai;
 #[allow(dead_code)]
 pub(crate) mod algebraic_simplify;

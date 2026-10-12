@@ -1,7 +1,7 @@
 use oxc_ast::ast::{BinaryOperator, Expression};
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -10,10 +10,10 @@ mod fold;
 mod values;
 
 pub struct ConstantFolder {
-    changed: bool,
+    rewrites: usize,
 }
 
-flag_pass!(ConstantFolder, changed, has_changed);
+counter_pass!(ConstantFolder, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ConstantFolder {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

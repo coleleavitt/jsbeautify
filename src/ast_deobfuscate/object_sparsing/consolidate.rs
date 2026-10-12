@@ -130,7 +130,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ObjectSparsingConsolidator {
                 continue;
             }
 
-            eprintln!(
+            deob_trace!(
                 "[AST] Consolidating {} properties into object '{}'",
                 collected.len(),
                 obj_name
@@ -168,7 +168,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ObjectSparsingConsolidator {
                 declarator.init = Some(new_object);
             }
 
-            self.changed = true;
+            self.rewrites += 1;
         }
     }
 }

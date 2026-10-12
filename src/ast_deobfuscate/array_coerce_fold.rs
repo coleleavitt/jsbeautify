@@ -48,7 +48,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ArrayCoerceFold {
         };
 
         if self.folded < 10 {
-            eprintln!("[AST/array-coerce] folding [] + [] -> {replacement:?}");
+            deob_trace!("[AST/array-coerce] folding [] + [] -> {replacement:?}");
         }
         self.folded += 1;
 

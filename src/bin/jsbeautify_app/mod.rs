@@ -19,7 +19,7 @@ mod sources;
 /// or stdin. Bundle-splitting and cross-version alignment live under
 /// subcommands so the default surface stays small.
 #[derive(Parser, Debug)]
-#[command(name = "jsbeautify", version, about, long_about = None)]
+#[command(name = "jsbeautify", version = env!("JSB_VERSION"), about, long_about = None)]
 struct Cli {
     /// Print version.
     #[arg(short = 'v', action = clap::ArgAction::Version, hide = true)]

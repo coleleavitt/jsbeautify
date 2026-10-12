@@ -50,7 +50,7 @@ fn test_simple_decoder() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed(), "Should have inlined decoder calls");
+    assert!(decoder.rewrites() > 0, "Should have inlined decoder calls");
     assert!(output.contains("\"hello\""), "Should contain inlined 'hello'");
     assert!(output.contains("\"world\""), "Should contain inlined 'world'");
     assert!(!output.contains("_0xdec(0)"), "Should not contain decoder call");
@@ -71,7 +71,7 @@ fn test_decoder_with_offset() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed());
+    assert!(decoder.rewrites() > 0);
     assert!(output.contains("\"foo\""), "Should inline with offset");
     assert!(output.contains("\"bar\""), "Should inline with offset");
 }
@@ -92,7 +92,7 @@ fn test_decoder_with_assignment_offset() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed());
+    assert!(decoder.rewrites() > 0);
     assert!(output.contains("\"a\""));
     assert!(output.contains("\"b\""));
 }
@@ -112,7 +112,7 @@ fn test_non_constant_arg() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(!decoder.has_changed(), "Should not inline variable arg");
+    assert!(decoder.rewrites() == 0, "Should not inline variable arg");
     assert!(output.contains("_0xdec(i)"), "Should preserve variable arg call");
 }
 
@@ -138,7 +138,7 @@ fn test_decoder_with_rotated_array() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed());
+    assert!(decoder.rewrites() > 0);
     assert!(output.contains("\"c\""), "Should use rotated array");
 }
 
@@ -164,7 +164,7 @@ fn test_base64_decoder() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed(), "Should have decoded base64");
+    assert!(decoder.rewrites() > 0, "Should have decoded base64");
     assert!(
         output.contains(&format!("\"{plain}\"")),
         "Should contain decoded string"
@@ -197,7 +197,7 @@ fn test_xor_decoder() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed(), "Should have decoded XOR");
+    assert!(decoder.rewrites() > 0, "Should have decoded XOR");
     assert!(
         output.contains(&format!("\"{plain}\"")),
         "Should contain decoded string"
@@ -234,7 +234,7 @@ fn test_rc4_decoder() {
     eprintln!("Output:\n{output}");
 
     assert_eq!(decoder.detected_decoders.len(), 1);
-    assert!(decoder.has_changed(), "Should have decoded RC4 and base64");
+    assert!(decoder.rewrites() > 0, "Should have decoded RC4 and base64");
     assert!(
         output.contains(&format!("\"{plain}\"")),
         "Should contain decoded string"

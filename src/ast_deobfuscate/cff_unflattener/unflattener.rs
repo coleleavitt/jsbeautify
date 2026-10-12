@@ -97,7 +97,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
             };
 
             if self.inlined < 10 {
-                eprintln!("[CFF] inlining call site (stmt-level)");
+                deob_trace!("[CFF] inlining call site (stmt-level)");
             }
             self.inlined += 1;
 
@@ -132,7 +132,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CffUnflattener<'a> {
         );
 
         if self.inlined < 10 {
-            eprintln!("[CFF] inlining call site (expr-level)");
+            deob_trace!("[CFF] inlining call site (expr-level)");
         }
         self.inlined += 1;
 

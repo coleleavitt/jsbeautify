@@ -9,7 +9,7 @@ impl AstDeobfuscator {
     pub(super) fn run_structural_preamble<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
         Self::run_window_alias_preamble(allocator, program);
 
-        eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP detection");
+        eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP check");
         let mut akamai = AkamaiDeobfuscator::new();
         if akamai.detect(program) {
             Self::run_akamai_core(allocator, program, &mut akamai);

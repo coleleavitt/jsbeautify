@@ -26,7 +26,7 @@ mod expression;
 mod rewrite;
 
 pub struct DispatcherInliner {
-    changed: bool,
+    rewrites: usize,
     /// Bindings whose every reference is the object of a member call.
     call_only: FxHashSet<SymbolId>,
     detected_dispatchers: FxHashMap<SymbolId, DispatcherInfo>,
@@ -36,15 +36,15 @@ impl DispatcherInliner {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            changed: false,
+            rewrites: 0,
             call_only: FxHashSet::default(),
             detected_dispatchers: FxHashMap::default(),
         }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 }
 
@@ -111,9 +111,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatcherInliner {
             && let Some(symbol) = dispatcher.symbol
             && self.call_only.contains(&symbol)
         {
-            eprintln!("[AST] Found dispatcher: {}", dispatcher.var_name);
+            deob_trace!("[AST] Found dispatcher: {}", dispatcher.var_name);
             for (key, func) in &dispatcher.functions {
-                eprintln!("[AST]   - {}: {:?}", key, func.return_value);
+                deob_trace!("[AST]   - {}: {:?}", key, func.return_value);
             }
             self.detected_dispatchers.insert(symbol, dispatcher);
         }
@@ -125,7 +125,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatcherInliner {
             && let Some(new_expr) = self.try_inline_dispatcher_call(call, ctx)
         {
             *expr = new_expr;
-            self.changed = true;
+            self.rewrites += 1;
         }
     }
 }

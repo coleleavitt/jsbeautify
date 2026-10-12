@@ -13,21 +13,18 @@ use super::types::CallProxyInfo;
 
 pub struct CallProxyInliner {
     proxies: FxHashMap<SymbolId, CallProxyInfo>,
-    changed: bool,
+    rewrites: usize,
 }
 
 impl CallProxyInliner {
     #[must_use]
     pub const fn new(proxies: FxHashMap<SymbolId, CallProxyInfo>) -> Self {
-        Self {
-            proxies,
-            changed: false,
-        }
+        Self { proxies, rewrites: 0 }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 
     fn is_proxy(&self, symbol: Option<SymbolId>) -> bool {
@@ -41,8 +38,8 @@ impl CallProxyInliner {
         let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id()?;
         let proxy = self.proxies.get(&symbol)?;
 
-        eprintln!("[AST] Inlining call proxy: {} -> {}", ident.name, proxy.target_name);
-        self.changed = true;
+        deob_trace!("[AST] Inlining call proxy: {} -> {}", ident.name, proxy.target_name);
+        self.rewrites += 1;
 
         let arguments = call.arguments.clone_in_with_semantic_ids(ctx.allocator());
         let target_name = oxc_ast::ast::Ident::from_str_in(&proxy.target_name, ctx);
@@ -76,8 +73,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyInliner {
             _ => false,
         };
         if remove {
-            eprintln!("[AST] Removing call proxy declaration");
-            self.changed = true;
+            deob_trace!("[AST] Removing call proxy declaration");
+            self.rewrites += 1;
             *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }

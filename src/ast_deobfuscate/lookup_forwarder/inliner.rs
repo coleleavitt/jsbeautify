@@ -42,9 +42,10 @@ impl LookupForwarderInliner {
         };
         let arg = arg.as_expression()?;
         if self.inlined < 10 {
-            eprintln!(
+            deob_trace!(
                 "[AST/lookup-fwd] inline {}(x) -> {}()[x]",
-                ident.name, info.accessor_name
+                ident.name,
+                info.accessor_name
             );
         }
         self.inlined += 1;

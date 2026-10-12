@@ -22,7 +22,7 @@ mod inline;
 
 pub struct DecoderInliner {
     detected_decoders: FxHashMap<String, DecoderInfo>,
-    changed: bool,
+    rewrites: usize,
 }
 
 impl DecoderInliner {
@@ -30,13 +30,13 @@ impl DecoderInliner {
     pub fn new() -> Self {
         Self {
             detected_decoders: FxHashMap::default(),
-            changed: false,
+            rewrites: 0,
         }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 
     pub fn finalize(&mut self, state: &mut DeobfuscateState) {
@@ -58,9 +58,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for DecoderInliner {
             if !func_name.is_empty()
                 && let Some(decoder) = self.detect_decoder_function(func_decl, func_name, ctx)
             {
-                eprintln!(
+                deob_trace!(
                     "[AST] Storing decoder: {} -> array={}, offset={}, op={:?}",
-                    decoder.function_name, decoder.array_name, decoder.offset, decoder.offset_operation
+                    decoder.function_name,
+                    decoder.array_name,
+                    decoder.offset,
+                    decoder.offset_operation
                 );
                 self.detected_decoders.insert(decoder.function_name.clone(), decoder);
             }
@@ -72,7 +75,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DecoderInliner {
             && let Some(new_expr) = self.try_inline_decoder_call(call, ctx)
         {
             *expr = new_expr;
-            self.changed = true;
+            self.rewrites += 1;
         }
     }
 }

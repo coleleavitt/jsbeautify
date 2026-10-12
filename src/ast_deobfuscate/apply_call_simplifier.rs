@@ -108,7 +108,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ApplyCallSimplifier {
         };
 
         if self.rewrites < 10 {
-            eprintln!(
+            deob_trace!(
                 "[AST/apply-call] rewriting .{method}({} args) -> direct call ({} args)",
                 call.arguments.len(),
                 new_args.len()

@@ -142,13 +142,13 @@ pub fn extract_alphabet_from_source(source: &str) -> BunAlphabet {
     }
 
     let alphabet = extractor.build_alphabet();
-    eprintln!(
+    deob_trace!(
         "[BUN_ALPHABET] Extracted alphabet from {} single-char and {} two-char identifiers",
         extractor.single_char_count(),
         extractor.two_char_count()
     );
-    eprintln!("[BUN_ALPHABET] HEAD: {}", &alphabet.head[..20.min(alphabet.head.len())]);
-    eprintln!("[BUN_ALPHABET] TAIL: {}", &alphabet.tail[..20.min(alphabet.tail.len())]);
+    deob_trace!("[BUN_ALPHABET] HEAD: {}", &alphabet.head[..20.min(alphabet.head.len())]);
+    deob_trace!("[BUN_ALPHABET] TAIL: {}", &alphabet.tail[..20.min(alphabet.tail.len())]);
 
     alphabet
 }

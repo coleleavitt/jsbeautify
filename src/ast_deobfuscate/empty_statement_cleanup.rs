@@ -32,7 +32,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
         }
         let after = new_body.len();
         if before != after {
-            eprintln!(
+            deob_trace!(
                 "[EMPTY_CLEANUP] Removed {} empty statements from program body ({} -> {})",
                 before - after,
                 before,
@@ -58,7 +58,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
             }
         }
         let after = new_body.len();
-        eprintln!(
+        deob_trace!(
             "[EMPTY_CLEANUP] Removed {} empty statements from block ({} -> {})",
             before - after,
             before,
@@ -86,7 +86,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
             }
         }
         let after = new_stmts.len();
-        eprintln!(
+        deob_trace!(
             "[EMPTY_CLEANUP] Removed {} empty statements from function body ({} -> {})",
             before - after,
             before,

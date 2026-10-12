@@ -11,10 +11,10 @@ impl DecoderInliner {
         func_name: &str,
         ctx: &Ctx<'a>,
     ) -> Option<DecoderInfo> {
-        eprintln!("[AST] Analyzing function: {func_name}");
+        deob_trace!("[AST] Analyzing function: {func_name}");
 
         if func.params.items.len() != 1 {
-            eprintln!(
+            deob_trace!(
                 "[AST]   Function has {} params, need exactly 1",
                 func.params.items.len()
             );
@@ -22,20 +22,20 @@ impl DecoderInliner {
         }
 
         let param_name = if let BindingPattern::BindingIdentifier(ident) = &func.params.items[0].pattern {
-            eprintln!("[AST]   Parameter: {}", ident.name);
+            deob_trace!("[AST]   Parameter: {}", ident.name);
             ident.name.as_str()
         } else {
-            eprintln!("[AST]   Parameter is not simple identifier");
+            deob_trace!("[AST]   Parameter is not simple identifier");
             return None;
         };
 
         let body = func.body.as_ref()?;
-        eprintln!("[AST]   Function body has {} statements", body.statements.len());
+        deob_trace!("[AST]   Function body has {} statements", body.statements.len());
 
         let (array_name, offset, offset_op, decoder_type) =
             self.analyze_function_body(&body.statements, param_name, ctx)?;
 
-        eprintln!(
+        deob_trace!(
             "[AST] ✓ Detected decoder: {func_name} for array {array_name} (offset: {offset_op:?} {offset}, type: {decoder_type:?})"
         );
 
@@ -54,7 +54,7 @@ impl DecoderInliner {
         param_name: &str,
         ctx: &Ctx<'a>,
     ) -> Option<(String, i32, OffsetOperation, DecoderType)> {
-        eprintln!("[AST]   Analyzing body with {} statements", statements.len());
+        deob_trace!("[AST]   Analyzing body with {} statements", statements.len());
 
         let mut array_name = None;
         let mut offset = 0i32;
@@ -64,52 +64,52 @@ impl DecoderInliner {
         for stmt in statements {
             match stmt {
                 Statement::ReturnStatement(ret) => {
-                    eprintln!("[AST]     Found return statement");
+                    deob_trace!("[AST]     Found return statement");
                     if let Some(arg) = &ret.argument
                         && let Some((arr, off, op, dec_type)) =
                             self.extract_array_access_with_decoder(arg, param_name, ctx)
                     {
-                        eprintln!(
+                        deob_trace!(
                             "[AST]       extract_array_access returned: array={arr}, offset={off}, op={op:?}, decoder={dec_type:?}"
                         );
                         array_name = Some(arr);
                         decoder_type = dec_type;
                         if offset_op == OffsetOperation::None {
-                            eprintln!("[AST]       No assignment offset found, using inline offset");
+                            deob_trace!("[AST]       No assignment offset found, using inline offset");
                             offset = off;
                             offset_op = op;
                         } else {
-                            eprintln!(
+                            deob_trace!(
                                 "[AST]       Already have assignment offset ({offset_op:?} {offset}), keeping it"
                             );
                         }
                     }
                 }
                 Statement::ExpressionStatement(expr_stmt) => {
-                    eprintln!("[AST]     Found expression statement");
+                    deob_trace!("[AST]     Found expression statement");
                     if let Some((off, op)) = self.extract_offset_assignment(&expr_stmt.expression, param_name) {
                         offset = off;
                         offset_op = op;
-                        eprintln!("[AST]       Extracted offset assignment: {op:?} {off}");
+                        deob_trace!("[AST]       Extracted offset assignment: {op:?} {off}");
                     }
                 }
                 _ => {
-                    eprintln!("[AST]     Found other statement type");
+                    deob_trace!("[AST]     Found other statement type");
                 }
             }
         }
 
         array_name.map_or_else(
             || {
-                eprintln!("[AST]     No array access found");
+                deob_trace!("[AST]     No array access found");
                 None
             },
             |arr| {
                 if ctx.state.string_arrays.contains_key(&arr) {
-                    eprintln!("[AST]     Array {arr} is a known string array");
+                    deob_trace!("[AST]     Array {arr} is a known string array");
                     Some((arr, offset, offset_op, decoder_type))
                 } else {
-                    eprintln!("[AST]     Array {arr} not found in string arrays");
+                    deob_trace!("[AST]     Array {arr} not found in string arrays");
                     None
                 }
             },
@@ -123,7 +123,7 @@ impl DecoderInliner {
         _ctx: &Ctx<'a>,
     ) -> Option<(String, i32, OffsetOperation, DecoderType)> {
         if let Some(decoder_type) = self.detect_decoder_call(expr) {
-            eprintln!("[AST]       Detected decoder call: {decoder_type:?}");
+            deob_trace!("[AST]       Detected decoder call: {decoder_type:?}");
             if let Expression::CallExpression(call) = expr
                 && let Some(arg) = call.arguments.first()
                 && let Some(arg_expr) = arg.as_expression()
@@ -144,67 +144,67 @@ impl DecoderInliner {
         if let Expression::CallExpression(call) = expr {
             if let Expression::Identifier(func_id) = &call.callee {
                 let func_name = func_id.name.as_str();
-                eprintln!("[AST]         detect_decoder_call: func_name = {func_name}");
+                deob_trace!("[AST]         detect_decoder_call: func_name = {func_name}");
 
                 if func_name == "atob" {
-                    eprintln!("[AST]         Detected atob (base64)");
+                    deob_trace!("[AST]         Detected atob (base64)");
                     return Some(DecoderType::Base64);
                 }
 
                 if func_name.contains("xor") || func_name.contains("XOR") {
-                    eprintln!("[AST]         Function contains 'xor', trying to extract key");
+                    deob_trace!("[AST]         Function contains 'xor', trying to extract key");
                     if let Some(key) = self.extract_xor_key(call) {
-                        eprintln!("[AST]         Extracted XOR key: {key:?}");
+                        deob_trace!("[AST]         Extracted XOR key: {key:?}");
                         return Some(DecoderType::Xor { key });
                     }
-                    eprintln!("[AST]         Failed to extract XOR key");
+                    deob_trace!("[AST]         Failed to extract XOR key");
                 }
 
                 if func_name.contains("rc4") || func_name.contains("RC4") {
-                    eprintln!("[AST]         Function contains 'rc4', trying to extract key");
+                    deob_trace!("[AST]         Function contains 'rc4', trying to extract key");
                     if let Some(key) = self.extract_rc4_key(call) {
-                        eprintln!("[AST]         Extracted RC4 key: {key:?}");
+                        deob_trace!("[AST]         Extracted RC4 key: {key:?}");
                         return Some(DecoderType::Rc4 { key });
                     }
-                    eprintln!("[AST]         Failed to extract RC4 key");
+                    deob_trace!("[AST]         Failed to extract RC4 key");
                 }
 
-                eprintln!("[AST]         No decoder pattern matched for function: {func_name}");
+                deob_trace!("[AST]         No decoder pattern matched for function: {func_name}");
             } else {
-                eprintln!("[AST]         Callee is not an identifier");
+                deob_trace!("[AST]         Callee is not an identifier");
             }
         } else {
-            eprintln!("[AST]         Expression is not a call expression");
+            deob_trace!("[AST]         Expression is not a call expression");
         }
         None
     }
 
     fn extract_xor_key(&self, call: &CallExpression<'_>) -> Option<Vec<u8>> {
-        eprintln!("[AST]           extract_xor_key: args len = {}", call.arguments.len());
+        deob_trace!("[AST]           extract_xor_key: args len = {}", call.arguments.len());
         if call.arguments.len() >= 2 {
             if let Some(arg) = call.arguments.get(1) {
-                eprintln!("[AST]           Got second argument");
+                deob_trace!("[AST]           Got second argument");
                 if let Some(expr) = arg.as_expression() {
-                    eprintln!("[AST]           Argument is expression");
+                    deob_trace!("[AST]           Argument is expression");
                     if let Expression::StringLiteral(lit) = expr {
                         let key = lit.value.as_bytes().to_vec();
-                        eprintln!("[AST]           String literal key: {key:?}");
+                        deob_trace!("[AST]           String literal key: {key:?}");
                         return Some(key);
                     }
                     if let Expression::NumericLiteral(lit) = expr {
                         let key = vec![lit.value as u8];
-                        eprintln!("[AST]           Numeric literal key: {key:?}");
+                        deob_trace!("[AST]           Numeric literal key: {key:?}");
                         return Some(key);
                     }
-                    eprintln!("[AST]           Argument is not string or numeric literal");
+                    deob_trace!("[AST]           Argument is not string or numeric literal");
                 } else {
-                    eprintln!("[AST]           Argument is not expression");
+                    deob_trace!("[AST]           Argument is not expression");
                 }
             } else {
-                eprintln!("[AST]           No second argument");
+                deob_trace!("[AST]           No second argument");
             }
         } else {
-            eprintln!("[AST]           Not enough arguments (need at least 2)");
+            deob_trace!("[AST]           Not enough arguments (need at least 2)");
         }
         None
     }

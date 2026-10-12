@@ -170,7 +170,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
                 self.hoisted_arrays.get(&ident).cloned()
             });
             if let Some(strings) = strings {
-                eprintln!(
+                deob_trace!(
                     "[AST/dispatch-inline] found string-array factory {}() with {} elements",
                     name,
                     strings.len()

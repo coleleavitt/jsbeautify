@@ -39,14 +39,20 @@ impl StringArrayRotation {
         }
     }
 
+    /// `(string arrays, rotation IIFEs)` detected so far.
+    #[must_use]
+    pub fn detected(&self) -> (usize, usize) {
+        (self.detected_arrays.len(), self.pending_rotations.len())
+    }
+
     pub fn finalize(&mut self, state: &mut DeobfuscateState) {
         for (array_name, rotation_count) in &self.pending_rotations {
             if let Some(array_info) = self.detected_arrays.get_mut(array_name) {
                 Self::apply_rotation(&mut array_info.strings, *rotation_count);
                 array_info.rotated = true;
                 array_info.rotation_count = *rotation_count;
-                eprintln!("[AST] Applied rotation to {array_name}: {rotation_count} positions");
-                eprintln!(
+                deob_trace!("[AST] Applied rotation to {array_name}: {rotation_count} positions");
+                deob_trace!(
                     "[AST]   Result: {:?}",
                     &array_info.strings[..5.min(array_info.strings.len())]
                 );
@@ -67,12 +73,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for StringArrayRotation {
         if let Statement::VariableDeclaration(var_decl) = stmt
             && let Some(array_info) = self.detect_string_array(var_decl)
         {
-            eprintln!(
+            deob_trace!(
                 "[AST] Found string array: {} with {} strings",
                 array_info.var_name,
                 array_info.strings.len()
             );
-            eprintln!(
+            deob_trace!(
                 "[AST]   First 5: {:?}",
                 &array_info.strings[..5.min(array_info.strings.len())]
             );
@@ -83,7 +89,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for StringArrayRotation {
             && let Expression::CallExpression(call) = &expr_stmt.expression
             && let Some((array_name, rotation_count)) = self.detect_rotation_iife(call)
         {
-            eprintln!("[AST] Detected rotation IIFE for {array_name}: {rotation_count} rotations");
+            deob_trace!("[AST] Detected rotation IIFE for {array_name}: {rotation_count} rotations");
             self.pending_rotations.insert(array_name, rotation_count);
         }
     }

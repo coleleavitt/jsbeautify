@@ -60,7 +60,7 @@ fn test_inline_number() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed(), "Should have inlined something");
+    assert!(inliner.rewrites() > 0, "Should have inlined something");
     assert!(output.contains("42"), "Should contain inlined value 42");
     assert!(!output.contains("d[\"a\"]()"), "Should not contain dispatcher call");
 }
@@ -75,7 +75,7 @@ fn test_inline_string() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed());
+    assert!(inliner.rewrites() > 0);
     assert!(output.contains("\"hello\""));
 }
 
@@ -93,7 +93,7 @@ fn test_inline_multiple_calls() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed());
+    assert!(inliner.rewrites() > 0);
     assert!(output.contains("= 1"));
     assert!(output.contains("\"test\""));
 }
@@ -108,7 +108,7 @@ fn test_no_inline_non_constant() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(!inliner.has_changed(), "Should not inline functions with parameters");
+    assert!(inliner.rewrites() == 0, "Should not inline functions with parameters");
     assert!(output.contains("d[\"a\"]"));
 }
 
@@ -122,7 +122,7 @@ fn test_inline_dot_notation() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed(), "Should have inlined dot notation call");
+    assert!(inliner.rewrites() > 0, "Should have inlined dot notation call");
     assert!(output.contains("42"), "Should contain inlined value 42");
     assert!(!output.contains("d.a()"), "Should not contain original call");
 }
@@ -141,7 +141,7 @@ fn test_inline_mixed_notation() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed(), "Should have inlined calls");
+    assert!(inliner.rewrites() > 0, "Should have inlined calls");
     assert!(output.contains("\"hello\""), "Should inline string");
     assert!(output.contains("123"), "Should inline number");
 }
@@ -157,7 +157,7 @@ fn test_inline_arrow_expression_body() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed(), "Should have inlined arrow function");
+    assert!(inliner.rewrites() > 0, "Should have inlined arrow function");
     assert!(output.contains("42"), "Should inline arrow expression");
     assert!(!output.contains("d.a()"), "Should not contain original call");
 }
@@ -170,7 +170,7 @@ fn block_arrow_without_return_yields_undefined() {
         ";
     let (output, inliner) = run_dispatcher_inliner(code);
     assert!(
-        !inliner.has_changed(),
+        inliner.rewrites() == 0,
         "a block body without return yields undefined: {output}"
     );
 }
@@ -187,7 +187,7 @@ fn test_no_inline_arrow_with_side_effects() {
 
     // Should not inline because console.log is not a literal
     assert!(
-        !inliner.has_changed() || !output.contains("42"),
+        inliner.rewrites() == 0 || !output.contains("42"),
         "Should not inline if last expression is not a literal"
     );
 }
@@ -199,7 +199,7 @@ fn identifier_return_is_not_moved_to_the_call_site() {
         "var d = { a: function() { return arguments; } };\nfunction f(x) { return d.a(); }",
     ] {
         let (output, inliner) = run_dispatcher_inliner(code);
-        assert!(!inliner.has_changed(), "{output}");
+        assert!(inliner.rewrites() == 0, "{output}");
     }
 }
 
@@ -222,7 +222,7 @@ fn replaced_or_escaping_dispatcher_is_not_inlined() {
 fn call_with_non_literal_arguments_is_kept() {
     let code = "var d = { a: function() { return 1; } };\nvar x = d.a(sideEffect());";
     let (output, inliner) = run_dispatcher_inliner(code);
-    assert!(!inliner.has_changed(), "{output}");
+    assert!(inliner.rewrites() == 0, "{output}");
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn test_inline_boolean_and_null() {
     let (output, inliner) = run_dispatcher_inliner(code);
     eprintln!("Output: {output}");
 
-    assert!(inliner.has_changed());
+    assert!(inliner.rewrites() > 0);
     assert!(output.contains("true"), "Should inline true");
     assert!(output.contains("false"), "Should inline false");
     assert!(output.contains("null"), "Should inline null");
@@ -265,7 +265,7 @@ fn test_complex_dispatcher() {
     eprintln!("Output: {output}");
 
     // Simple function inlining should work
-    assert!(inliner.has_changed());
+    assert!(inliner.rewrites() > 0);
     assert!(output.contains("\"logged_in\""), "Should inline login");
     assert!(output.contains("\"logged_out\""), "Should inline logout");
 }

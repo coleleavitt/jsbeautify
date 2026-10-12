@@ -6,18 +6,18 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct TernarySimplifier {
-    changed: bool,
+    rewrites: usize,
 }
 
 impl TernarySimplifier {
     #[must_use]
     pub const fn new() -> Self {
-        Self { changed: false }
+        Self { rewrites: 0 }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 
     fn get_constant_boolean(&self, expr: &Expression<'_>) -> Option<bool> {
@@ -42,8 +42,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for TernarySimplifier {
         if let Expression::ConditionalExpression(cond) = expr
             && let Some(condition_value) = self.get_constant_boolean(&cond.test)
         {
-            eprintln!("[AST] Simplifying ternary with constant condition: {condition_value}");
-            self.changed = true;
+            deob_trace!("[AST] Simplifying ternary with constant condition: {condition_value}");
+            self.rewrites += 1;
 
             let branch = if condition_value {
                 std::mem::replace(

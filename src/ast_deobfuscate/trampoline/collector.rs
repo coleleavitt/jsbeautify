@@ -183,9 +183,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineCollector {
             };
             if self.is_inlinable(symbol, &candidate, ctx.scoping()) {
                 let info = candidate.info;
-                eprintln!(
+                deob_trace!(
                     "[AST/tramp] found  {}.apply(this, [{}, arguments]) trampoline",
-                    info.dispatcher, info.state
+                    info.dispatcher,
+                    info.state
                 );
                 self.trampolines.insert(symbol, info);
             }

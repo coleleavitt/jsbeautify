@@ -40,12 +40,15 @@ impl ConstantFolder {
         }
         let number = Self::make_number(result, ctx)?;
 
-        eprintln!(
+        deob_trace!(
             "[AST] Folding: {} {:?} {} = {}",
-            left_val, expr.operator, right_val, result
+            left_val,
+            expr.operator,
+            right_val,
+            result
         );
 
-        self.changed = true;
+        self.rewrites += 1;
         Some(number)
     }
 
@@ -67,12 +70,15 @@ impl ConstantFolder {
             _ => return None,
         };
 
-        eprintln!(
+        deob_trace!(
             "[AST] Folding comparison: {} {:?} {} = {}",
-            left_val, expr.operator, right_val, result
+            left_val,
+            expr.operator,
+            right_val,
+            result
         );
 
-        self.changed = true;
+        self.rewrites += 1;
         Some(Self::make_boolean(result, ctx))
     }
 
@@ -90,12 +96,15 @@ impl ConstantFolder {
             LogicalOperator::Coalesce => return None,
         };
 
-        eprintln!(
+        deob_trace!(
             "[AST] Folding logical: {} {:?} {} = {}",
-            left_bool, expr.operator, right_bool, result
+            left_bool,
+            expr.operator,
+            right_bool,
+            result
         );
 
-        self.changed = true;
+        self.rewrites += 1;
         Some(Self::make_boolean(result, ctx))
     }
 
@@ -108,30 +117,30 @@ impl ConstantFolder {
             UnaryOperator::UnaryNegation if !matches!(expr.argument, Expression::NumericLiteral(_)) => {
                 let val = Self::extract_number(&expr.argument)?;
                 let number = Self::make_number(-val, ctx)?;
-                eprintln!("[AST] Folding unary: -{val}");
-                self.changed = true;
+                deob_trace!("[AST] Folding unary: -{val}");
+                self.rewrites += 1;
                 Some(number)
             }
             UnaryOperator::BitwiseNot => {
                 let val = Self::extract_number(&expr.argument)?;
                 let result = !to_int32(val);
                 let number = Self::make_number(f64::from(result), ctx)?;
-                eprintln!("[AST] Folding unary: ~{val} = {result}");
-                self.changed = true;
+                deob_trace!("[AST] Folding unary: ~{val} = {result}");
+                self.rewrites += 1;
                 Some(number)
             }
             UnaryOperator::LogicalNot => {
                 let val = Self::extract_boolean(&expr.argument)?;
                 let result = !val;
-                eprintln!("[AST] Folding unary: !{val} = {result}");
-                self.changed = true;
+                deob_trace!("[AST] Folding unary: !{val} = {result}");
+                self.rewrites += 1;
                 Some(Self::make_boolean(result, ctx))
             }
             UnaryOperator::UnaryPlus => {
                 let val = Self::extract_number(&expr.argument)?;
                 let number = Self::make_number(val, ctx)?;
-                eprintln!("[AST] Folding unary: +{val}");
-                self.changed = true;
+                deob_trace!("[AST] Folding unary: +{val}");
+                self.rewrites += 1;
                 Some(number)
             }
             _ => None,

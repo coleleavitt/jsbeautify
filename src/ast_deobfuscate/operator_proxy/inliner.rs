@@ -13,21 +13,18 @@ use super::types::OperatorProxyInfo;
 
 pub struct OperatorProxyInliner {
     proxies: FxHashMap<SymbolId, OperatorProxyInfo>,
-    changed: bool,
+    rewrites: usize,
 }
 
 impl OperatorProxyInliner {
     #[must_use]
     pub const fn new(proxies: FxHashMap<SymbolId, OperatorProxyInfo>) -> Self {
-        Self {
-            proxies,
-            changed: false,
-        }
+        Self { proxies, rewrites: 0 }
     }
 
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 
     fn is_proxy(&self, symbol: Option<SymbolId>) -> bool {
@@ -45,8 +42,8 @@ impl OperatorProxyInliner {
         };
         let (arg1, arg2) = (arg1.as_expression()?, arg2.as_expression()?);
 
-        eprintln!("[AST] Inlining operator proxy: {} -> {:?}", ident.name, proxy.operator);
-        self.changed = true;
+        deob_trace!("[AST] Inlining operator proxy: {} -> {:?}", ident.name, proxy.operator);
+        self.rewrites += 1;
 
         Some(Expression::new_binary_expression(
             SPAN,
@@ -81,7 +78,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for OperatorProxyInliner {
             _ => false,
         };
         if remove {
-            self.changed = true;
+            self.rewrites += 1;
             *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }

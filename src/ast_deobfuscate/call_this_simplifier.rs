@@ -93,7 +93,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallThisSimplifier {
         }
 
         if self.rewrites < 10 {
-            eprintln!("[AST/call-this] rewriting {callee_name}.call(this, ...) -> {callee_name}(...)");
+            deob_trace!("[AST/call-this] rewriting {callee_name}.call(this, ...) -> {callee_name}(...)");
         }
         self.rewrites += 1;
         *expr = Expression::new_call_expression(SPAN, new_callee, None, new_args, false, ctx);

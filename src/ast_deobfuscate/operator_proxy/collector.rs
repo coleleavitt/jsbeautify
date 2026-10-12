@@ -63,7 +63,7 @@ impl OperatorProxyCollector {
             && self.binary_calls_only.contains(&symbol)
             && let Some(info) = Self::extract_proxy_info(func)
         {
-            eprintln!("[AST] Found operator proxy -> {:?}", info.operator);
+            deob_trace!("[AST] Found operator proxy -> {:?}", info.operator);
             self.proxies.insert(symbol, info);
         }
     }

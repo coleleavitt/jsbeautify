@@ -10,8 +10,12 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 8.7: do-while-switch detector");
         let dowhile_detector = DoWhileSwitchDetector::new();
         let mut dowhile_dispatchers = dowhile_detector.detect(program);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 8.7: Found {} do-while-switch dispatchers",
+            dowhile_dispatchers.len()
+        );
         for (name, info) in &dowhile_dispatchers {
-            eprintln!(
+            deob_trace!(
                 "[DOWHILE] found {}({}, {}) with {} cases, exit_sentinel={}",
                 name,
                 info.state_param,
@@ -29,12 +33,17 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 9: Running function_collector");
         traverse_mut_with_ctx(&mut func_collector, program, &mut ctx);
         let single_use = func_collector.get_single_use_functions();
-        if !single_use.is_empty() {
+        let found = single_use.len();
+        let rewrites = if single_use.is_empty() {
+            0
+        } else {
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = FunctionInliner::new(single_use);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
-        }
+            inliner.rewrites()
+        };
+        eprintln!("[DEOBFUSCATE] Phase 9: Found {found} single-use functions, {rewrites} inline rewrites");
 
         eprintln!("[DEOBFUSCATE] Phase 9.5: dispatch inliner (string-array-factory resolution)");
         let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
@@ -96,6 +105,13 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.ternary_simplifier, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 10: Running try_catch_remover");
         traverse_mut_with_ctx(&mut self.try_catch_remover, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 10: Unpacked {} array accesses, converted {} dynamic properties, simplified {} ternaries, removed {} try/catch wrappers",
+            self.array_unpacker.rewrites(),
+            self.dynamic_property_converter.rewrites(),
+            self.ternary_simplifier.rewrites(),
+            self.try_catch_remover.rewrites()
+        );
         eprintln!("[DEOBFUSCATE] Phase 10: DONE");
 
         Self::run_dead_var_sweep(allocator, program, "10.7", "Post-Phase-10 dead-var sweep");
@@ -120,6 +136,12 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.void_replacer, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 11: Running object_sparsing_consolidator");
         traverse_mut_with_ctx(&mut self.object_sparsing_consolidator, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 11: Converted {} boolean literals, replaced {} void expressions, consolidated {} objects",
+            self.boolean_literal_converter.rewrites(),
+            self.void_replacer.rewrites(),
+            self.object_sparsing_consolidator.rewrites()
+        );
         eprintln!("[DEOBFUSCATE] Phase 11: DONE");
 
         Self::run_dead_var_sweep(allocator, program, "11.5", "Post-Phase-11 dead-var sweep");

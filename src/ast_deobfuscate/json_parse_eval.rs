@@ -56,7 +56,7 @@ counter_pass!(JsonParseEvaluator, evaluated_count, evaluated_count);
 impl<'a> Traverse<'a, DeobfuscateState> for JsonParseEvaluator {
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, _ctx: &mut Ctx<'a>) {
         if Self::is_json_parse_with_string(call) {
-            eprintln!("[JSON_PARSE] Detected JSON.parse() with string literal");
+            deob_trace!("[JSON_PARSE] Detected JSON.parse() with string literal");
             self.evaluated_count += 1;
         }
     }

@@ -139,7 +139,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
             pieces.push(arg, ctx);
         }
         if self.rewrites < 10 {
-            eprintln!(
+            deob_trace!(
                 "[AST/concat] rewriting <str>.concat({} args) -> template literal",
                 call.arguments.len()
             );

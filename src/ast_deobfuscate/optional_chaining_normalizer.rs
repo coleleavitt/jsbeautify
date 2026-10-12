@@ -55,7 +55,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for OptionalChainingNormalizer {
     fn enter_expression(&mut self, expr: &mut Expression<'a>, _ctx: &mut Ctx<'a>) {
         if let Expression::ChainExpression(chain) = expr {
             let depth = Self::count_chain_depth(chain);
-            eprintln!("[OPTIONAL_CHAINING] Detected optional chaining with depth {depth}");
+            deob_trace!("[OPTIONAL_CHAINING] Detected optional chaining with depth {depth}");
             self.detected_count += 1;
         }
     }

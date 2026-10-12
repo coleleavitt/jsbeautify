@@ -54,7 +54,7 @@ impl Default for NullishCoalescingSimplifier {
 impl<'a> Traverse<'a, DeobfuscateState> for NullishCoalescingSimplifier {
     fn enter_logical_expression(&mut self, expr: &mut LogicalExpression<'a>, _ctx: &mut Ctx<'a>) {
         if Self::is_nullish_coalescing(expr) && Self::has_nullish_left(expr) {
-            eprintln!("[NULLISH_COALESCING] Detected nullish coalescing chain");
+            deob_trace!("[NULLISH_COALESCING] Detected nullish coalescing chain");
             self.detected_count += 1;
         }
     }
