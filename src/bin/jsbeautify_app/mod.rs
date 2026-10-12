@@ -78,6 +78,9 @@ struct BeautifyArgs {
     #[command(flatten)]
     format: config::FormatArgs,
 
+    #[command(flatten)]
+    naming: config::DeobfuscationArgs,
+
     /// Apply original variable names from a sourcemap (.map) file.
     #[arg(long, value_name = "FILE")]
     sourcemap: Option<PathBuf>,

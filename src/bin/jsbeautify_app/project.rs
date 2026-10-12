@@ -29,7 +29,10 @@ pub(super) fn run_job(b: &BeautifyArgs, job: &str) -> Fallible {
     let input = job.input.to_string_lossy().into_owned();
     let output = job.output.to_string_lossy().into_owned();
     let config = b.format.load_config()?;
-    let options = options_for(b, &config, &input, Some(&output))?;
+    let mut options = options_for(b, &config, &input, Some(&output))?;
+    // The plan decides which export names name their locals (see
+    // `run_project`); the files' own Phase 0.95 must agree with it.
+    options.short_export_names = false;
     let code = fs::read_to_string(&job.input)?;
     let result = js_beautify_rs::beautifier::deobfuscate_with_project_seeds(&code, &options, job.seeds)?;
     fs::write(&job.output, result)?;
@@ -72,6 +75,14 @@ pub(super) fn run_project(b: &BeautifyArgs, root: &Path) -> Fallible {
         return Err("--project writes a copy: -o must not be the project directory".into());
     }
     let goal = |path: &Path| b.goal.parse_goal(&path.to_string_lossy());
+    if options_for(b, &b.format.load_config()?, "-", None)?.short_export_names {
+        // A short export name names its local exactly when no project file
+        // imports it (`plan_project`), so the flag would only add the
+        // internal names chunks share, which say nothing.
+        eprintln!(
+            "[PROJECT] --short-export-names is ignored: short export names already name their locals when no project file imports them"
+        );
+    }
     let all = list_files(root)?;
     let (scripts, others): (Vec<PathBuf>, Vec<PathBuf>) = all.into_iter().partition(|p| is_javascript(p));
     eprintln!(

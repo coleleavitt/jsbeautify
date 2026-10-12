@@ -20,8 +20,9 @@ use super::collector::AngularNameCollector;
 /// Bindings visible to a direct `eval` or exported by name are skipped, names
 /// are made unique along the scope chain, and a name that an unresolved
 /// (global) reference already uses is dropped so no reference is captured.
-/// Returns the number of rewritten identifiers.
-pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> usize {
+/// Returns the number of rewritten identifiers. `keep_fn_names` as
+/// [`RenameGuardCollector::keep_fn_names`].
+pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) -> usize {
     eprintln!("[DEOBFUSCATE] Phase 0.995: Angular check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -40,7 +41,7 @@ pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Progra
 
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut guard = RenameGuardCollector::new();
+    let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, program, &mut ctx);
     drop(ctx);
 

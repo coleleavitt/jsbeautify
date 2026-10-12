@@ -49,6 +49,7 @@ use trace::{TraceSpan, mem_ck};
 
 pub use trace::{ast_trace_enabled, deob_trace_enabled};
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct AstDeobfuscator {
     control_flow_unflattener: ControlFlowUnflattener,
     string_array_rotation: StringArrayRotation,
@@ -90,4 +91,7 @@ pub struct AstDeobfuscator {
     /// This file's part of a project naming plan (`--project`); empty for a
     /// single file.
     project: super::project::ProjectSeeds,
+    keep_fn_names: bool,
+    short_export_names: bool,
+    window_alias_es5: bool,
 }

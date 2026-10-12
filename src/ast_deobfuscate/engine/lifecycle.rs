@@ -58,6 +58,9 @@ impl AstDeobfuscator {
             parse_goal: ParseGoal::Auto,
             isolated: false,
             project: crate::ast_deobfuscate::project::ProjectSeeds::default(),
+            keep_fn_names: false,
+            short_export_names: false,
+            window_alias_es5: false,
         }
     }
 
@@ -101,6 +104,30 @@ impl AstDeobfuscator {
     #[must_use]
     pub const fn with_isolated(mut self, isolated: bool) -> Self {
         self.isolated = isolated;
+        self
+    }
+
+    /// Keep every binding a function or class takes its `.name` from (see
+    /// [`crate::Options::keep_fn_names`]).
+    #[must_use]
+    pub const fn with_keep_fn_names(mut self, keep: bool) -> Self {
+        self.keep_fn_names = keep;
+        self
+    }
+
+    /// Let one or two character export names name their locals (see
+    /// [`crate::Options::short_export_names`]).
+    #[must_use]
+    pub const fn with_short_export_names(mut self, allow: bool) -> Self {
+        self.short_export_names = allow;
+        self
+    }
+
+    /// Restrict window-alias propagation to ES5-era globals (see
+    /// [`crate::Options::window_alias_es5`]).
+    #[must_use]
+    pub const fn with_window_alias_es5(mut self, es5: bool) -> Self {
+        self.window_alias_es5 = es5;
         self
     }
 

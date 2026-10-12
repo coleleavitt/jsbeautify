@@ -47,6 +47,18 @@ pub struct Options {
     /// so a classic script may have them renamed or removed like module
     /// locals. Module and `CommonJS` input are already isolated.
     pub isolated: bool,
+    /// Never rename a binding a function or class takes its `.name` from
+    /// (like terser's `keep_fnames` / `keep_classnames`).
+    pub keep_fn_names: bool,
+    /// Let a one or two character export name (`export { r as ab }`) become
+    /// its minified local's name. Off by default because code-split chunks
+    /// share such names between files, where they say nothing about the
+    /// value; on for a single file whose short export names are its own.
+    pub short_export_names: bool,
+    /// Window-alias propagation (`var w = window; w.document` → `document`)
+    /// rewrites only names ES5-era browsers (Internet Explorer 9) define, not
+    /// ES2015 globals such as `Promise`, `Symbol`, `Map` or `crypto`.
+    pub window_alias_es5: bool,
 }
 
 /// How the input is parsed, and therefore who can observe its top-level
@@ -178,6 +190,9 @@ impl Default for Options {
             skip_annotations: false,
             parse_goal: ParseGoal::Auto,
             isolated: false,
+            keep_fn_names: false,
+            short_export_names: false,
+            window_alias_es5: false,
         }
     }
 }

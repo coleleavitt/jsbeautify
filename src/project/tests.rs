@@ -89,6 +89,19 @@ fn imported_export_helper_names_the_exporting_chunk() {
 }
 
 #[test]
+fn every_runtime_helper_variant_is_seeded_across_chunks() {
+    let files = indexed(&[
+        ("rt.js", r#"var j=e=>typeof e=="symbol"?e:e+"";export{j as k};"#),
+        ("entry.js", r#"import{k as t}from"./rt.js";console.log(t(1));"#),
+    ]);
+    let plan = plan_project(&files);
+    assert_eq!(
+        import_names(&plan.seeds[1]),
+        vec![("k", Some("__restKey"), Some("__restKey"))]
+    );
+}
+
+#[test]
 fn short_exports_are_names_only_when_public() {
     let files = indexed(&[
         ("lib.js", "var o=1,p=2;export{o as h,p as cx};"),

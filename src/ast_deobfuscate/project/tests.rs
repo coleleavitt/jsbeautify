@@ -75,6 +75,58 @@ fn seeds_rename_locals_but_keep_import_and_export_names() {
 }
 
 #[test]
+fn seeded_helpers_cover_every_helper_variant() {
+    let allocator = oxc_allocator::Allocator::default();
+    let code = r#"import{k as t,u as s}from"./rt.js";t(s);"#;
+    let program = oxc_parser::Parser::new(&allocator, code, oxc_span::SourceType::mjs())
+        .parse()
+        .program;
+    SemanticBuilder::new().build(&program);
+    let seeds = ProjectSeeds {
+        imports: vec![
+            import_seed("./rt.js", "k", None, Some("__restKey")),
+            import_seed("./rt.js", "u", None, Some("__callDispose")),
+        ],
+        ..ProjectSeeds::default()
+    };
+    let mut helpers: Vec<BunHelper> = seeded_helpers(&program, &seeds).into_values().collect();
+    helpers.sort_unstable_by_key(BunHelper::canonical);
+    assert_eq!(helpers, vec![BunHelper::CallDispose, BunHelper::RestKey]);
+}
+
+#[test]
+fn keep_fn_names_keeps_seeded_function_locals_but_names_imports() {
+    let code = r#"import{a as e}from"./x.js";function p(s){return e(s)}const n=e;export{p as q,n as r};"#;
+    let seeds = ProjectSeeds {
+        imports: vec![import_seed("./x.js", "a", Some("compute"), None)],
+        exports: vec![
+            ExportSeed {
+                exported: "q".to_string(),
+                name: "run".to_string(),
+            },
+            ExportSeed {
+                exported: "r".to_string(),
+                name: "alias".to_string(),
+            },
+        ],
+        ..ProjectSeeds::default()
+    };
+    let output = AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
+        .with_keep_fn_names(true)
+        .with_project_seeds(seeds)
+        .deobfuscate(code)
+        .expect("deobfuscation succeeds");
+    assert!(output.contains("function p("), "p.name stays \"p\": {output}");
+    assert!(output.contains("p as q"), "{output}");
+    assert!(
+        output.contains("a as compute"),
+        "an import binding has no .name: {output}"
+    );
+    assert!(output.contains("const alias = compute"), "{output}");
+}
+
+#[test]
 fn seeded_names_avoid_collisions_and_globals() {
     let code =
         r#"import{a as e}from"./x.js";function compute(){return e()}console.log(compute(),window);export{compute};"#;
@@ -118,6 +170,7 @@ fn seed_json_round_trips() {
     assert!(!json.contains("\"exports\""), "{json}");
     assert_eq!(serde_json::from_str::<ProjectSeeds>(&json).expect("parses"), seeds);
     assert_eq!(BunHelper::from_canonical("__esm"), Some(BunHelper::Esm));
+    assert_eq!(BunHelper::from_canonical("__callDispose"), Some(BunHelper::CallDispose));
     assert!(
         BunHelper::ALL
             .iter()

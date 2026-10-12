@@ -95,6 +95,9 @@ Options:
   -d, --deobfuscate                 Enable AST-based deobfuscation (multi-phase pipeline)
       --rename-vars                 Infer readable names for minified locals. Implies --deobfuscate
       --rename-llm                  LLM-assisted naming of residual locals (env-configured). Implies --rename-vars
+      --keep-fn-names               Never rename a binding a function or class takes its .name from
+      --short-export-names          Let 1-2 character export names name their minified locals
+      --window-alias-es5            Window-alias propagation rewrites only names ES5-era browsers define
   -s, --indent-size <N>             Indentation size [default: 4] (also -i, --indent)
   -c, --indent-char <CHAR>          Indentation character: a space or a tab ("\t")
   -t, --indent-with-tabs            One tab per indentation level (also --tabs)
@@ -132,7 +135,9 @@ upwards, and `~/.jsbeautifyrc`. Config keys may use `_` or `-`; a `"js"`
 section overrides top-level keys. Keys this tool does not honor (CSS/HTML
 options, `wrap_line_length`, ...) are ignored, so a file can be shared with
 js-beautify. `--editorconfig` overrides all of these for the properties the
-`.editorconfig` sets.
+`.editorconfig` sets. The deobfuscation trade-offs `--keep-fn-names`,
+`--short-export-names` and `--window-alias-es5` can also be turned on with
+the keys `keep_fn_names`, `short_export_names` and `window_alias_es5`.
 
 Differences from js-beautify:
 
@@ -234,7 +239,11 @@ runtime helper it is (`__export`, `__commonJS`, … imported from another chunk,
 which also lets the importer's `__export(…)` calls and lazy modules be named),
 the name its own chunk gives it, its real export name, or `<chunk>_<export>`.
 Exports no file of the project imports are the public surface, so their short
-names count as names. Mangled Turbopack keys are named by the `esmReexport`
+names count as names; `--short-export-names` is therefore ignored in project
+mode. `--keep-fn-names` and `--window-alias-es5` apply to every file; with
+`--keep-fn-names` a function's own binding keeps its name, while the import
+bindings of other chunks (which no `.name` reads) still take the plan's name.
+Mangled Turbopack keys are named by the `esmReexport`
 (`S([…])`) lists of other chunks. Import and export names never change. The
 output folder mirrors the input (other files are copied), with per-file logs in
 `.jsbeautify/logs/` and `project-index.json` (module links, plan, counts and a

@@ -202,7 +202,9 @@ pub(super) fn options_for(
         isolated: b.isolated,
         ..Options::default()
     };
-    b.format.options(config, base, &editorconfig_target)
+    let mut options = b.format.options(config, base, &editorconfig_target)?;
+    b.naming.apply(config, &mut options)?;
+    Ok(options)
 }
 
 fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut options: Options) -> Fallible {
@@ -215,6 +217,7 @@ fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut optio
             &code,
             options.parse_goal.resolve(&code, options.isolated),
             &sm,
+            options.keep_fn_names,
         )?;
     }
     if !sourcemap_rename && (b.sourcemap.is_some() || b.names_json.is_some() || b.bun_extract) {
@@ -240,8 +243,12 @@ fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut optio
             Some(suggester) => {
                 eprintln!("[RENAME] Querying LLM for residual minified names...");
                 let source_type = options.parse_goal.resolve(&code, options.isolated);
-                beautified =
-                    js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(&beautified, source_type, &suggester);
+                beautified = js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(
+                    &beautified,
+                    source_type,
+                    &suggester,
+                    options.keep_fn_names,
+                );
             }
             None => eprintln!(
                 "[RENAME] --rename-llm set but no endpoint configured \

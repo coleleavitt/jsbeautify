@@ -15,7 +15,7 @@ fn run(code: &str) -> String {
         parsed.diagnostics
     );
     let mut program = parsed.program;
-    rename_turbopack_bindings(&allocator, &mut program, &[]);
+    rename_turbopack_bindings(&allocator, &mut program, &[], false);
     let out = Codegen::new().build(&program).code;
     let reparsed = Parser::new(&allocator, &out, source_type).parse();
     assert!(reparsed.diagnostics.is_empty(), "output must parse: {out}");

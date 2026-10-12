@@ -173,11 +173,14 @@ pub(crate) fn seeded_helpers(program: &Program<'_>, seeds: &ProjectSeeds) -> FxH
 }
 
 /// Phase 0.84: rename the import bindings and specifier-exported locals
-/// `seeds` name. Returns the number of renamed bindings.
+/// `seeds` name; `keep_fn_names` as
+/// [`rename_guards::RenameGuardCollector::keep_fn_names`]. Returns the number
+/// of renamed bindings.
 pub(crate) fn apply_project_seeds<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     seeds: &ProjectSeeds,
+    keep_fn_names: bool,
 ) -> usize {
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let imports: FxHashMap<(&str, &str), &str> = seeds
@@ -204,7 +207,7 @@ pub(crate) fn apply_project_seeds<'a>(
         return 0;
     }
 
-    let guards = rename_guards::guards(allocator, program);
+    let guards = rename_guards::guards(allocator, program, keep_fn_names);
     plan.retain(|(_, name)| !guards.eval_names.contains(name));
     let guarded: FxHashSet<SymbolId> = guards.symbols.difference(&guards.specifier_exports).copied().collect();
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();

@@ -236,6 +236,303 @@ mod tests {
     }
 
     #[test]
+    fn detects_the_javascript_decorator_helpers_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on standard (JavaScript) decorators.
+        let code = r#"var st=Object.create;var j=Object.defineProperty;var S=Object.getOwnPropertyDescriptor;var ot=Object.getOwnPropertyNames;var dt=Object.prototype.hasOwnProperty;var T=(t,r)=>(r=Symbol[t])?r:Symbol.for("Symbol."+t),k=t=>{throw TypeError(t)};var U=(t,r,n)=>r in t?j(t,r,{enumerable:!0,configurable:!0,writable:!0,value:n}):t[r]=n;var P=(t,r)=>j(t,"name",{value:r,configurable:!0});var ft=(t,r)=>{for(var n in r)j(t,n,{get:r[n],enumerable:!0})},lt=(t,r,n,o)=>{if(r&&typeof r=="object"||typeof r=="function")for(let e of ot(r))!dt.call(t,e)&&e!==n&&j(t,e,{get:()=>r[e],enumerable:!(o=S(r,e))||o.enumerable});return t};var gt=t=>lt(j({},"__esModule",{value:!0}),t);var V=t=>{var r;return[,,,st((r=t==null?void 0:t[T("metadata")])!=null?r:null)]},W=["class","method","getter","setter","accessor","field","value","get","set"],I=t=>t!==void 0&&typeof t!="function"?k("Function expected"):t,ht=(t,r,n,o,e)=>({kind:W[t],name:r,metadata:o,addInitializer:s=>n._?k("Already initialized"):e.push(I(s||null))}),mt=(t,r)=>U(r,T("metadata"),t[3]),l=(t,r,n,o)=>{for(var e=0,s=t[r>>1],c=s&&s.length;e<c;e++)r&1?s[e].call(n):o=s[e].call(n,o);return o},h=(t,r,n,o,e,s)=>{var c,f,M,z,y,i=r&7,A=!!(r&8),m=!!(r&16),B=i>3?t.length+1:i?A?1:2:0,N=W[i+5],O=i>3&&(t[B-1]=[]),at=t[B]||(t[B]=[]),g=i&&(!m&&!A&&(e=e.prototype),i<5&&(i>3||!m)&&S(i<4?e:{get[n](){return R(this,s)},set[n](d){return Q(this,s,d)}},n));i?m&&i<4&&P(s,(i>2?"set ":i>1?"get ":"")+n):P(e,n);for(var C=o.length-1;C>=0;C--)z=ht(i,n,M={},t[3],at),i&&(z.static=A,z.private=m,y=z.access={has:m?d=>ct(e,d):d=>n in d},i^3&&(y.get=m?d=>(i^1?R:G)(d,e,i^4?s:g.get):d=>d[n]),i>2&&(y.set=m?(d,E)=>Q(d,e,E,i^4?s:g.set):(d,E)=>d[n]=E)),f=(0,o[C])(i?i<4?m?s:g[N]:i>4?void 0:{get:g.get,set:g.set}:e,z),M._=1,i^4||f===void 0?I(f)&&(i>4?O.unshift(f):i?m?s=f:g[N]=f:e=f):typeof f!="object"||f===null?k("Object expected"):(I(c=f.get)&&(g.get=c),I(c=f.set)&&(g.set=c),I(c=f.init)&&O.unshift(c));return i||mt(t,e),g&&j(e,n,g),m?i^4?s:g:e},X=(t,r,n)=>U(t,typeof r!="symbol"?r+"":r,n),F=(t,r,n)=>r.has(t)||k("Cannot "+n),ct=(t,r)=>Object(r)!==r?k('Cannot use the "in" operator on this value'):t.has(r),R=(t,r,n)=>(F(t,r,"read from private field"),n?n.call(t):r.get(t)),b=(t,r,n)=>r.has(t)?k("Cannot add the same private member more than once"):r instanceof WeakSet?r.add(t):r.set(t,n),Q=(t,r,n,o)=>(F(t,r,"write to private field"),o?o.call(t,n):r.set(t,n),n),G=(t,r,n)=>(F(t,r,"access private method"),n);"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("F", "__accessCheck"),
+                ("lt", "__copyProps"),
+                ("st", "__create"),
+                ("h", "__decorateElement"),
+                ("ht", "__decoratorContext"),
+                ("mt", "__decoratorMetadata"),
+                ("V", "__decoratorStart"),
+                ("W", "__decoratorStrings"),
+                ("U", "__defNormalProp"),
+                ("j", "__defProp"),
+                ("I", "__expectFn"),
+                ("ft", "__export"),
+                ("S", "__getOwnPropDesc"),
+                ("ot", "__getOwnPropNames"),
+                ("dt", "__hasOwnProp"),
+                ("T", "__knownSymbol"),
+                ("P", "__name"),
+                ("b", "__privateAdd"),
+                ("R", "__privateGet"),
+                ("ct", "__privateIn"),
+                ("G", "__privateMethod"),
+                ("Q", "__privateSet"),
+                ("X", "__publicField"),
+                ("l", "__runInitializers"),
+                ("gt", "__toCommonJS"),
+                ("k", "__typeError"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_typescript_decorator_helpers_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on TypeScript experimental decorators.
+        let code = r#"var l=Object.defineProperty;var g=Object.getOwnPropertyDescriptor;var p=Object.getOwnPropertyNames;var _=Object.prototype.hasOwnProperty;var f=(a,n,r)=>n in a?l(a,n,{enumerable:!0,configurable:!0,writable:!0,value:r}):a[n]=r;var h=(a,n)=>{for(var r in n)l(a,r,{get:n[r],enumerable:!0})},c=(a,n,r,o)=>{if(n&&typeof n=="object"||typeof n=="function")for(let t of p(n))!_.call(a,t)&&t!==r&&l(a,t,{get:()=>n[t],enumerable:!(o=g(n,t))||o.enumerable});return a};var w=a=>c(l({},"__esModule",{value:!0}),a),s=(a,n,r,o)=>{for(var t=o>1?void 0:o?g(n,r):n,y=a.length-1,m;y>=0;y--)(m=a[y])&&(t=(o?m(n,r,t):m(t))||t);return o&&t&&l(n,r,t),t},u=(a,n)=>(r,o)=>n(r,o,a);var i=(a,n,r)=>f(a,typeof n!="symbol"?n+"":n,r);"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("c", "__copyProps"),
+                ("s", "__decorateClass"),
+                ("u", "__decorateParam"),
+                ("f", "__defNormalProp"),
+                ("l", "__defProp"),
+                ("h", "__export"),
+                ("g", "__getOwnPropDesc"),
+                ("p", "__getOwnPropNames"),
+                ("_", "__hasOwnProp"),
+                ("i", "__publicField"),
+                ("w", "__toCommonJS"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_using_helpers_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on `using` / `await using`.
+        let code = r#"var l=Object.defineProperty;var S=Object.getOwnPropertyDescriptor;var d=Object.getOwnPropertyNames;var f=Object.prototype.hasOwnProperty;var h=(o,s)=>(s=Symbol[o])?s:Symbol.for("Symbol."+o),m=o=>{throw TypeError(o)};var w=(o,s)=>{for(var n in s)l(o,n,{get:s[n],enumerable:!0})},x=(o,s,n,a)=>{if(s&&typeof s=="object"||typeof s=="function")for(let u of d(s))!f.call(o,u)&&u!==n&&l(o,u,{get:()=>s[u],enumerable:!(a=S(s,u))||a.enumerable});return o};var D=o=>x(l({},"__esModule",{value:!0}),o);var g=(o,s,n)=>new Promise((a,u)=>{var t=i=>{try{y(n.next(i))}catch(e){u(e)}},c=i=>{try{y(n.throw(i))}catch(e){u(e)}},y=i=>i.done?a(i.value):Promise.resolve(i.value).then(t,c);y((n=n.apply(o,s)).next())});var p=(o,s,n)=>{if(s!=null){typeof s!="object"&&typeof s!="function"&&m("Object expected");var a,u;n&&(a=s[h("asyncDispose")]),a===void 0&&(a=s[h("dispose")],n&&(u=a)),typeof a!="function"&&m("Object not disposable"),u&&(a=function(){try{u.call(this)}catch(t){return Promise.reject(t)}}),o.push([n,a,s])}else n&&o.push([n]);return s},r=(o,s,n)=>{var a=typeof SuppressedError=="function"?SuppressedError:function(c,y,i,e){return e=Error(i),e.name="SuppressedError",e.error=c,e.suppressed=y,e},u=c=>s=n?new a(c,s,"An error was suppressed during disposal"):(n=!0,c),t=c=>{for(;c=o.pop();)try{var y=c[1]&&c[1].call(c[2]);if(c[0])return Promise.resolve(y).then(t,i=>(u(i),t()))}catch(i){u(i)}if(n)throw s};return t()};"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("g", "__async"),
+                ("r", "__callDispose"),
+                ("x", "__copyProps"),
+                ("l", "__defProp"),
+                ("w", "__export"),
+                ("S", "__getOwnPropDesc"),
+                ("d", "__getOwnPropNames"),
+                ("f", "__hasOwnProp"),
+                ("h", "__knownSymbol"),
+                ("D", "__toCommonJS"),
+                ("m", "__typeError"),
+                ("p", "__using"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_throwing_using_helpers_of_esbuild_0_19() {
+        // The runtime preamble of `esbuild 0.19.12 --bundle --format=cjs --minify --target=es2016`; before 0.21 the helpers throw instead of calling `__typeError`.
+        let code = r#"var l=Object.defineProperty;var m=Object.getOwnPropertyDescriptor;var S=Object.getOwnPropertyNames;var d=Object.prototype.hasOwnProperty;var h=(o,s)=>(s=Symbol[o])?s:Symbol.for("Symbol."+o);var f=(o,s)=>{for(var n in s)l(o,n,{get:s[n],enumerable:!0})},w=(o,s,n,u)=>{if(s&&typeof s=="object"||typeof s=="function")for(let a of S(s))!d.call(o,a)&&a!==n&&l(o,a,{get:()=>s[a],enumerable:!(u=m(s,a))||u.enumerable});return o};var x=o=>w(l({},"__esModule",{value:!0}),o);var g=(o,s,n)=>new Promise((u,a)=>{var e=i=>{try{y(n.next(i))}catch(t){a(t)}},c=i=>{try{y(n.throw(i))}catch(t){a(t)}},y=i=>i.done?u(i.value):Promise.resolve(i.value).then(e,c);y((n=n.apply(o,s)).next())});var p=(o,s,n)=>{if(s!=null){if(typeof s!="object"&&typeof s!="function")throw TypeError("Object expected");var u;if(n&&(u=s[h("asyncDispose")]),u===void 0&&(u=s[h("dispose")]),typeof u!="function")throw TypeError("Object not disposable");o.push([n,u,s])}else n&&o.push([n]);return s},r=(o,s,n)=>{var u=typeof SuppressedError=="function"?SuppressedError:function(c,y,i,t){return t=Error(i),t.name="SuppressedError",t.error=c,t.suppressed=y,t},a=c=>s=n?new u(c,s,"An error was suppressed during disposal"):(n=!0,c),e=c=>{for(;c=o.pop();)try{var y=c[1]&&c[1].call(c[2]);if(c[0])return Promise.resolve(y).then(e,i=>(a(i),e()))}catch(i){a(i)}if(n)throw s};return e()};"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("g", "__async"),
+                ("r", "__callDispose"),
+                ("w", "__copyProps"),
+                ("l", "__defProp"),
+                ("f", "__export"),
+                ("m", "__getOwnPropDesc"),
+                ("S", "__getOwnPropNames"),
+                ("d", "__hasOwnProp"),
+                ("h", "__knownSymbol"),
+                ("x", "__toCommonJS"),
+                ("p", "__using"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_async_generator_helpers_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on async generators and `for await`.
+        let code = r#"var x=Object.defineProperty;var P=Object.getOwnPropertyDescriptor;var R=Object.getOwnPropertyNames;var b=Object.prototype.hasOwnProperty;var f=(e,n)=>(n=Symbol[e])?n:Symbol.for("Symbol."+e),j=e=>{throw TypeError(e)};var k=(e,n)=>{for(var i in n)x(e,i,{get:n[i],enumerable:!0})},q=(e,n,i,a)=>{if(n&&typeof n=="object"||typeof n=="function")for(let t of R(n))!b.call(e,t)&&t!==i&&x(e,t,{get:()=>n[t],enumerable:!(a=P(n,t))||a.enumerable});return e};var z=e=>q(x({},"__esModule",{value:!0}),e);var G=(e,n,i)=>new Promise((a,t)=>{var s=o=>{try{u(i.next(o))}catch(c){t(c)}},r=o=>{try{u(i.throw(o))}catch(c){t(c)}},u=o=>o.done?a(o.value):Promise.resolve(o.value).then(s,r);u((i=i.apply(e,n)).next())}),w=function(e,n){this[0]=e,this[1]=n},g=(e,n,i)=>{var a=(u,o,c,l)=>{try{var d=i[u](o),p=(o=d.value)instanceof w,h=d.done;Promise.resolve(p?o[0]:o).then(y=>p?a(u==="return"?u:"next",o[1]?{done:y.done,value:y.value}:y,c,l):c({value:y,done:h})).catch(y=>a("throw",y,c,l))}catch(y){l(y)}},t=(u,o,c,l)=>r[u]=d=>(o=new Promise((p,h,y)=>(y=()=>a(u,d,p,h),s?s.then(y):y())),l=()=>s===c&&(s=0),s=c=o.then(l,l),o),s,r={};return i=i.apply(e,n),r[f("asyncIterator")]=()=>r,t("next"),t("throw"),t("return"),r},m=e=>{var n=e[f("asyncIterator")],i=!1,a,t={};return n==null?(n=e[f("iterator")](),a=s=>t[s]=r=>n[s](r)):(n=n.call(e),a=s=>t[s]=r=>{if(i){if(i=!1,s==="throw")throw r;return r}return i=!0,{done:!1,value:new w(new Promise(u=>{var o=n[s](r);o instanceof Object||j("Object expected"),u(o)}),1)}}),t[f("iterator")]=()=>t,a("next"),"throw"in n?a("throw"):t.throw=s=>{throw s},"return"in n&&a("return"),t},v=(e,n,i)=>(n=e[f("asyncIterator")])?n.call(e):(e=e[f("iterator")](),n={},i=(a,t)=>(t=e[a])&&(n[a]=s=>new Promise((r,u,o)=>(s=t.call(e,s),o=s.done,Promise.resolve(s.value).then(c=>r({value:c,done:o}),u)))),i("next"),i("return"),n);"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("G", "__async"),
+                ("g", "__asyncGenerator"),
+                ("w", "__await"),
+                ("q", "__copyProps"),
+                ("x", "__defProp"),
+                ("k", "__export"),
+                ("v", "__forAwait"),
+                ("P", "__getOwnPropDesc"),
+                ("R", "__getOwnPropNames"),
+                ("b", "__hasOwnProp"),
+                ("f", "__knownSymbol"),
+                ("z", "__toCommonJS"),
+                ("j", "__typeError"),
+                ("m", "__yieldStar"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_super_helpers_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on `super` in lowered async methods.
+        let code = r#"var l=Object.defineProperty;var d=Object.getOwnPropertyDescriptor;var g=Object.getOwnPropertyNames;var o=Object.getPrototypeOf,R=Object.prototype.hasOwnProperty;var b=Reflect.get,f=Reflect.set;var j=(s,r)=>{for(var t in r)l(s,t,{get:r[t],enumerable:!0})},k=(s,r,t,e)=>{if(r&&typeof r=="object"||typeof r=="function")for(let n of g(r))!R.call(s,n)&&n!==t&&l(s,n,{get:()=>r[n],enumerable:!(e=d(r,n))||e.enumerable});return s};var q=s=>k(l({},"__esModule",{value:!0}),s);var u=(s,r,t)=>b(o(s),t,r),i=(s,r,t,e)=>(f(o(s),t,e,r),e),m=(s,r,t)=>({get _(){return u(s,r,t)},set _(e){i(s,r,t,e)}});var w=(s,r,t)=>new Promise((e,n)=>{var v=a=>{try{x(t.next(a))}catch(y){n(y)}},p=a=>{try{x(t.throw(a))}catch(y){n(y)}},x=a=>a.done?e(a.value):Promise.resolve(a.value).then(v,p);x((t=t.apply(s,r)).next())});"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("w", "__async"),
+                ("k", "__copyProps"),
+                ("l", "__defProp"),
+                ("j", "__export"),
+                ("d", "__getOwnPropDesc"),
+                ("g", "__getOwnPropNames"),
+                ("o", "__getProtoOf"),
+                ("R", "__hasOwnProp"),
+                ("b", "__reflectGet"),
+                ("f", "__reflectSet"),
+                ("u", "__superGet"),
+                ("i", "__superSet"),
+                ("m", "__superWrapper"),
+                ("q", "__toCommonJS"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_private_wrapper_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on `this.#x++` and `[this.#x] = …`.
+        let code = r#"var b=Object.defineProperty;var R=Object.getOwnPropertyDescriptor;var d=Object.getOwnPropertyNames;var f=Object.prototype.hasOwnProperty;var l=s=>{throw TypeError(s)};var j=(s,t)=>{for(var i in t)b(s,i,{get:t[i],enumerable:!0})},k=(s,t,i,r)=>{if(t&&typeof t=="object"||typeof t=="function")for(let a of d(t))!f.call(s,a)&&a!==i&&b(s,a,{get:()=>t[a],enumerable:!(r=R(t,a))||r.enumerable});return s};var q=s=>k(b({},"__esModule",{value:!0}),s);var g=(s,t,i)=>t.has(s)||l("Cannot "+i),v=(s,t)=>Object(t)!==t?l('Cannot use the "in" operator on this value'):s.has(t),c=(s,t,i)=>(g(s,t,"read from private field"),i?i.call(s):t.get(s)),o=(s,t,i)=>t.has(s)?l("Cannot add the same private member more than once"):t instanceof WeakSet?t.add(s):t.set(s,i),x=(s,t,i,r)=>(g(s,t,"write to private field"),r?r.call(s,i):t.set(s,i),i);var u=(s,t,i,r)=>({set _(a){x(s,t,a,i)},get _(){return c(s,t,r)}});"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("g", "__accessCheck"),
+                ("k", "__copyProps"),
+                ("b", "__defProp"),
+                ("j", "__export"),
+                ("R", "__getOwnPropDesc"),
+                ("d", "__getOwnPropNames"),
+                ("f", "__hasOwnProp"),
+                ("o", "__privateAdd"),
+                ("c", "__privateGet"),
+                ("v", "__privateIn"),
+                ("x", "__privateSet"),
+                ("u", "__privateWrapper"),
+                ("q", "__toCommonJS"),
+                ("l", "__typeError"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_function_expression_helpers_of_esbuild_0_14() {
+        // The runtime preamble of `esbuild 0.14.54 --bundle --format=cjs --minify --target=es2016 --supported:for-of=false`, which emits the runtime as `function` expressions.
+        let code = r#"var B=Object.defineProperty;var j=Object.getOwnPropertyDescriptor;var k=Object.getOwnPropertyNames;var q=Object.prototype.hasOwnProperty;var y=function(s,t){for(var i in t)B(s,i,{get:t[i],enumerable:!0})},z=function(s,t,i,r){if(t&&typeof t=="object"||typeof t=="function")for(var o=k(t),l=0,d=o.length,e;l<d;l++)e=o[l],!q.call(s,e)&&e!==i&&B(s,e,{get:function(f){return t[f]}.bind(null,e),enumerable:!(r=j(t,e))||r.enumerable});return s};var A=function(s){return z(B({},"__esModule",{value:!0}),s)};var v=function(s,t,i){if(!t.has(s))throw TypeError("Cannot "+i)},w=function(s,t){if(Object(t)!==t)throw TypeError('Cannot use the "in" operator on this value');return s.has(t)},c=function(s,t,i){return v(s,t,"read from private field"),i?i.call(s):t.get(s)},x=function(s,t,i){if(t.has(s))throw TypeError("Cannot add the same private member more than once");t instanceof WeakSet?t.add(s):t.set(s,i)},b=function(s,t,i,r){return v(s,t,"write to private field"),r?r.call(s,i):t.set(s,i),i},u=function(s,t,i,r){return{set _(o){b(s,t,o,i)},get _(){return c(s,t,r)}}};"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("v", "__accessCheck"),
+                ("z", "__copyProps"),
+                ("B", "__defProp"),
+                ("y", "__export"),
+                ("j", "__getOwnPropDesc"),
+                ("k", "__getOwnPropNames"),
+                ("q", "__hasOwnProp"),
+                ("x", "__privateAdd"),
+                ("c", "__privateGet"),
+                ("w", "__privateIn"),
+                ("b", "__privateSet"),
+                ("u", "__privateWrapper"),
+                ("A", "__toCommonJS"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_binary_loader_helper_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016 --platform=browser --loader:.bin=binary`.
+        let code = r#"var i=Object.defineProperty;var l=Object.getOwnPropertyDescriptor;var u=Object.getOwnPropertyNames;var x=Object.prototype.hasOwnProperty;var y=(o,r)=>{for(var t in r)i(o,t,{get:r[t],enumerable:!0})},A=(o,r,t,m)=>{if(r&&typeof r=="object"||typeof r=="function")for(let a of u(r))!x.call(o,a)&&a!==t&&i(o,a,{get:()=>r[a],enumerable:!(m=l(r,a))||m.enumerable});return o};var R=o=>A(i({},"__esModule",{value:!0}),o);var s=Uint8Array.fromBase64||(()=>{for(var o=new Uint8Array(128),r=0;r<64;r++)o[r<26?r+65:r<52?r+71:r<62?r-4:r*4-205]=r;return t=>{for(var m=t.length,a=new Uint8Array((m-(t[m-1]=="=")-(t[m-2]=="="))*3/4|0),e=0,f=0;e<m;){var c=o[t.charCodeAt(e++)],n=o[t.charCodeAt(e++)],p=o[t.charCodeAt(e++)],d=o[t.charCodeAt(e++)];a[f++]=c<<2|n>>4,a[f++]=n<<4|p>>2,a[f++]=p<<6|d}return a}})();"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("A", "__copyProps"),
+                ("i", "__defProp"),
+                ("y", "__export"),
+                ("l", "__getOwnPropDesc"),
+                ("u", "__getOwnPropNames"),
+                ("x", "__hasOwnProp"),
+                ("s", "__toBinary"),
+                ("R", "__toCommonJS"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_binary_loader_helper_of_esbuild_0_14() {
+        // The runtime preamble of `esbuild 0.14.54 --bundle --format=cjs --minify --platform=browser --loader:.bin=binary`, before `Uint8Array.fromBase64`.
+        let code = r#"var y=Object.create;var f=Object.defineProperty;var A=Object.getOwnPropertyDescriptor;var R=Object.getOwnPropertyNames;var $=Object.getPrototypeOf,g=Object.prototype.hasOwnProperty;var h=(o,r)=>()=>(r||o((r={exports:{}}).exports,r),r.exports),j=(o,r)=>{for(var t in r)f(o,t,{get:r[t],enumerable:!0})},s=(o,r,t,m)=>{if(r&&typeof r=="object"||typeof r=="function")for(let a of R(r))!g.call(o,a)&&a!==t&&f(o,a,{get:()=>r[a],enumerable:!(m=A(r,a))||m.enumerable});return o};var k=(o,r,t)=>(t=o!=null?y($(o)):{},s(r||!o||!o.__esModule?f(t,"default",{value:o,enumerable:!0}):t,o)),q=o=>s(f({},"__esModule",{value:!0}),o);var b=(()=>{for(var o=new Uint8Array(128),r=0;r<64;r++)o[r<26?r+65:r<52?r+71:r<62?r-4:r*4-205]=r;return t=>{for(var m=t.length,a=new Uint8Array((m-(t[m-1]=="=")-(t[m-2]=="="))*3/4|0),e=0,i=0;e<m;){var u=o[t.charCodeAt(e++)],n=o[t.charCodeAt(e++)],p=o[t.charCodeAt(e++)],x=o[t.charCodeAt(e++)];a[i++]=u<<2|n>>4,a[i++]=n<<4|p>>2,a[i++]=p<<6|x}return a}})();"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("h", "__commonJS"),
+                ("s", "__copyProps"),
+                ("y", "__create"),
+                ("f", "__defProp"),
+                ("j", "__export"),
+                ("A", "__getOwnPropDesc"),
+                ("R", "__getOwnPropNames"),
+                ("$", "__getProtoOf"),
+                ("g", "__hasOwnProp"),
+                ("b", "__toBinary"),
+                ("q", "__toCommonJS"),
+                ("k", "__toESM"),
+            ])
+        );
+    }
+
+    #[test]
+    fn detects_the_rest_key_helper_of_esbuild_0_28() {
+        // The runtime preamble of `esbuild 0.28.2 --bundle --format=cjs --minify --target=es2016` on object rest with a computed key.
+        let code = r#"var c=Object.defineProperty,k=Object.defineProperties,q=Object.getOwnPropertyDescriptor,v=Object.getOwnPropertyDescriptors,z=Object.getOwnPropertyNames,o=Object.getOwnPropertySymbols;var b=Object.prototype.hasOwnProperty,d=Object.prototype.propertyIsEnumerable;var R=(t,e,r)=>e in t?c(t,e,{enumerable:!0,configurable:!0,writable:!0,value:r}):t[e]=r,f=(t,e)=>{for(var r in e||(e={}))b.call(e,r)&&R(t,r,e[r]);if(o)for(var r of o(e))d.call(e,r)&&R(t,r,e[r]);return t},i=(t,e)=>k(t,v(e));var j=t=>typeof t=="symbol"?t:t+"",u=(t,e)=>{var r={};for(var s in t)b.call(t,s)&&e.indexOf(s)<0&&(r[s]=t[s]);if(t!=null&&o)for(var s of o(t))e.indexOf(s)<0&&d.call(t,s)&&(r[s]=t[s]);return r};var S=(t,e)=>{for(var r in e)c(t,r,{get:e[r],enumerable:!0})},g=(t,e,r,s)=>{if(e&&typeof e=="object"||typeof e=="function")for(let n of z(e))!b.call(t,n)&&n!==r&&c(t,n,{get:()=>e[n],enumerable:!(s=q(e,n))||s.enumerable});return t};var h=t=>g(c({},"__esModule",{value:!0}),t);"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("g", "__copyProps"),
+                ("R", "__defNormalProp"),
+                ("c", "__defProp"),
+                ("k", "__defProps"),
+                ("S", "__export"),
+                ("q", "__getOwnPropDesc"),
+                ("v", "__getOwnPropDescs"),
+                ("z", "__getOwnPropNames"),
+                ("o", "__getOwnPropSymbols"),
+                ("b", "__hasOwnProp"),
+                ("u", "__objRest"),
+                ("d", "__propIsEnum"),
+                ("j", "__restKey"),
+                ("i", "__spreadProps"),
+                ("f", "__spreadValues"),
+                ("h", "__toCommonJS"),
+            ])
+        );
+    }
+    #[test]
+    fn detects_the_wrappers_esbuild_emits_without_object_accessors() {
+        // `internal/runtime/runtime.go` builds `__privateWrapper` and `__superWrapper` with
+        // `__defProp({}, '_', …)` when the target lacks object accessors, and `__toBinaryNode`
+        // falls back to `Buffer` when `Uint8Array.fromBase64` is missing.
+        let code = r#"var d=Object.defineProperty,o=Object.getPrototypeOf,b=Reflect.get,f=Reflect.set;var l=s=>{throw TypeError(s)};var g=(s,t,i)=>t.has(s)||l("Cannot "+i),c=(s,t,i)=>(g(s,t,"read from private field"),i?i.call(s):t.get(s)),x=(s,t,i,r)=>(g(s,t,"write to private field"),r?r.call(s,i):t.set(s,i),i);var u=(s,t,i,r)=>d({},"_",{set:a=>x(s,t,a,i),get:()=>c(s,t,r)});var p=(s,r,t)=>b(o(s),t,r),q=(s,r,t,e)=>(f(o(s),t,e,r),e),m=(s,r,t)=>d({},"_",{get:()=>p(s,r,t),set:e=>q(s,r,t,e)});var n=Uint8Array.fromBase64||(t=>new Uint8Array(Buffer.from(t,"base64")));"#;
+        assert_eq!(
+            detected(code),
+            expect(&[
+                ("d", "__defProp"),
+                ("o", "__getProtoOf"),
+                ("b", "__reflectGet"),
+                ("f", "__reflectSet"),
+                ("l", "__typeError"),
+                ("g", "__accessCheck"),
+                ("c", "__privateGet"),
+                ("x", "__privateSet"),
+                ("u", "__privateWrapper"),
+                ("p", "__superGet"),
+                ("q", "__superSet"),
+                ("m", "__superWrapper"),
+                ("n", "__toBinaryNode"),
+            ])
+        );
+    }
+
+    #[test]
     fn detects_the_unminified_lazy_wrappers() {
         // esbuild 0.28 (`try` + rethrow) and 0.14 forms without `--minify`.
         let code = r"var __getOwnPropNames = Object.getOwnPropertyNames;
