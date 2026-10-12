@@ -83,7 +83,7 @@ impl MethodCallForwarderCollector {
             && self.binary_calls_only.contains(&symbol)
             && let Some(info) = Self::extract_info(func)
         {
-            eprintln!("[AST/method-fwd] found forwarder to a.{}(b)", info.method);
+            deob_trace!("[AST/method-fwd] found forwarder to a.{}(b)", info.method);
             self.forwarders.insert(symbol, info);
         }
     }

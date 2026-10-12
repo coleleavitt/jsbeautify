@@ -19,12 +19,12 @@ impl AlgebraicSimplifier {
         let Expression::BooleanLiteral(left) = &logical.left else {
             return None;
         };
-        self.changed = true;
+        self.rewrites += 1;
         if left.value {
-            eprintln!("[AST] Simplifying true && x to x");
+            deob_trace!("[AST] Simplifying true && x to x");
             Some(logical.right.clone_in_with_semantic_ids(ctx.ast.allocator()))
         } else {
-            eprintln!("[AST] Simplifying false && x to false");
+            deob_trace!("[AST] Simplifying false && x to false");
             Some(Expression::new_boolean_literal(SPAN, false, ctx))
         }
     }
@@ -40,12 +40,12 @@ impl AlgebraicSimplifier {
         let Expression::BooleanLiteral(left) = &logical.left else {
             return None;
         };
-        self.changed = true;
+        self.rewrites += 1;
         if left.value {
-            eprintln!("[AST] Simplifying true || x to true");
+            deob_trace!("[AST] Simplifying true || x to true");
             Some(Expression::new_boolean_literal(SPAN, true, ctx))
         } else {
-            eprintln!("[AST] Simplifying false || x to x");
+            deob_trace!("[AST] Simplifying false || x to x");
             Some(logical.right.clone_in_with_semantic_ids(ctx.ast.allocator()))
         }
     }

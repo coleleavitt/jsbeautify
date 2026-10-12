@@ -173,3 +173,51 @@ fn source_type_and_isolated_decide_whether_globals_survive() {
     assert!(!deobfuscate_file("e.cjs", code, &[]).contains("unused"));
     assert!(!deobfuscate_file("f.mjs", code, &[]).contains("unused"));
 }
+
+fn deobfuscate_stderr(name: &str, code: &str, trace: bool) -> String {
+    let dir = std::env::temp_dir().join(format!("jsb-cli-log-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join(name);
+    std::fs::write(&path, code).expect("write input");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jsbeautify"));
+    command
+        .arg("-d")
+        .arg(&path)
+        .env_remove("JSB_TRACE_DEOB")
+        .env_remove("JSBEAUTIFY_TRACE_DEOB");
+    if trace {
+        command.env("JSB_TRACE_DEOB", "1");
+    }
+    let output = command.output().expect("run jsbeautify -d");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.status.success(), "jsbeautify failed: {output:?}");
+    String::from_utf8(output.stderr).expect("stderr is utf8")
+}
+
+#[test]
+fn deobfuscate_log_reports_counts_per_phase_not_lines_per_rewrite() {
+    let code = "function f(a) { return [!0, void 0, a?.b, 2 * 3]; }\n".repeat(2000);
+
+    let quiet = deobfuscate_stderr("many.js", &code, false);
+    assert!(quiet.lines().count() < 300, "{} stderr lines", quiet.lines().count());
+    assert!(
+        quiet.contains("Phase 19.6: Generated output re-parse succeeded"),
+        "{quiet}"
+    );
+    assert!(
+        quiet.contains("Phase 21.5: Generated output re-parse succeeded"),
+        "{quiet}"
+    );
+    assert!(
+        quiet.contains("Phase 16.9: Detected 2000 optional chaining expressions"),
+        "{quiet}"
+    );
+    assert!(quiet.contains("replaced 2000 void expressions"), "{quiet}");
+
+    let traced = deobfuscate_stderr("many.js", &code, true);
+    let per_node = traced
+        .lines()
+        .filter(|line| line.starts_with("[OPTIONAL_CHAINING]"))
+        .count();
+    assert_eq!(per_node, 2000, "JSB_TRACE_DEOB restores the per-node lines");
+}

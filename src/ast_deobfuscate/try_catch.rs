@@ -2,13 +2,13 @@ use oxc_ast::ast::{CatchClause, Statement};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct TryCatchRemover {
-    changed: bool,
+    rewrites: usize,
 }
 
 impl TryCatchRemover {
@@ -17,7 +17,7 @@ impl TryCatchRemover {
     }
 }
 
-flag_pass!(TryCatchRemover, changed, has_changed);
+counter_pass!(TryCatchRemover, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for TryCatchRemover {
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
@@ -39,7 +39,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TryCatchRemover {
             if !try_stmt.block.body.is_empty() {
                 return;
             }
-            self.changed = true;
+            self.rewrites += 1;
             *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }

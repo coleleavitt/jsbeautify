@@ -40,7 +40,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UndefinedPatternNormalizer {
             && is_empty_array(&cme.expression)
         {
             if self.replaced < 10 {
-                eprintln!("[AKAMAI/undef-pat] [][[]] -> undefined");
+                deob_trace!("[AKAMAI/undef-pat] [][[]] -> undefined");
             }
             self.replaced += 1;
             *expr = Expression::new_identifier(SPAN, "undefined", &ctx.ast);

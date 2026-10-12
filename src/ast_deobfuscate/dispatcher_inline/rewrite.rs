@@ -48,7 +48,7 @@ impl DispatcherInliner {
         let func_info = dispatcher.functions.get(key)?;
         let return_value = func_info.return_value.as_ref()?;
 
-        eprintln!("[AST] Inlining computed: {obj_name}[\"{key}\"]() → {return_value:?}");
+        deob_trace!("[AST] Inlining computed: {obj_name}[\"{key}\"]() → {return_value:?}");
 
         Some(Self::create_expression_from_return_value(return_value, ctx))
     }
@@ -70,7 +70,7 @@ impl DispatcherInliner {
         let func_info = dispatcher.functions.get(key)?;
         let return_value = func_info.return_value.as_ref()?;
 
-        eprintln!("[AST] Inlining static: {obj_name}.{key}() → {return_value:?}");
+        deob_trace!("[AST] Inlining static: {obj_name}.{key}() → {return_value:?}");
 
         Some(Self::create_expression_from_return_value(return_value, ctx))
     }

@@ -11,13 +11,13 @@ use oxc_ast::ast::{ComputedMemberExpression, Expression};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct StringArrayInliner {
-    changed: bool,
+    rewrites: usize,
 }
 
 impl StringArrayInliner {
@@ -26,18 +26,18 @@ impl StringArrayInliner {
         member: &ComputedMemberExpression<'a>,
         ctx: &mut Ctx<'a>,
     ) -> Option<Expression<'a>> {
-        eprintln!("[AST] Checking computed member expression for string array access");
+        deob_trace!("[AST] Checking computed member expression for string array access");
 
         let array_name = if let Expression::Identifier(ident) = &member.object {
-            eprintln!("[AST]   Object: {}", ident.name);
+            deob_trace!("[AST]   Object: {}", ident.name);
             ident.name.as_str()
         } else {
-            eprintln!("[AST]   Object is not identifier");
+            deob_trace!("[AST]   Object is not identifier");
             return None;
         };
 
         let array_info = ctx.state.string_arrays.get(array_name)?;
-        eprintln!(
+        deob_trace!(
             "[AST]   Found array: {} with {} strings",
             array_name,
             array_info.strings.len()
@@ -45,15 +45,15 @@ impl StringArrayInliner {
 
         let index = if let Expression::NumericLiteral(lit) = &member.expression {
             let idx = lit.value as usize;
-            eprintln!("[AST]   Index: {idx}");
+            deob_trace!("[AST]   Index: {idx}");
             idx
         } else {
-            eprintln!("[AST]   Index is not numeric literal");
+            deob_trace!("[AST]   Index is not numeric literal");
             return None;
         };
 
         if index >= array_info.strings.len() {
-            eprintln!(
+            deob_trace!(
                 "[AST]   Index {} out of bounds (array has {} elements)",
                 index,
                 array_info.strings.len()
@@ -62,14 +62,14 @@ impl StringArrayInliner {
         }
 
         let string_value = &array_info.strings[index];
-        eprintln!("[AST] ✓ Inlining: {array_name}[{index}] → \"{string_value}\"");
+        deob_trace!("[AST] ✓ Inlining: {array_name}[{index}] → \"{string_value}\"");
 
         let string_value = ctx.ast.allocator().alloc_str(string_value);
         Some(Expression::new_string_literal(SPAN, string_value, None, &ctx.ast))
     }
 }
 
-flag_pass!(StringArrayInliner, changed, has_changed);
+counter_pass!(StringArrayInliner, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for StringArrayInliner {
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
@@ -77,7 +77,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for StringArrayInliner {
             && let Some(new_expr) = self.try_inline_array_access(member, ctx)
         {
             *expr = new_expr;
-            self.changed = true;
+            self.rewrites += 1;
         }
     }
 }
@@ -129,7 +129,7 @@ mod tests {
         let (output, inliner) = run_string_array_inline(code);
         eprintln!("Output:\n{output}");
 
-        assert!(inliner.has_changed(), "Should have inlined array access");
+        assert!(inliner.rewrites() > 0, "Should have inlined array access");
         assert!(output.contains("\"hello\""), "Should contain inlined 'hello'");
         assert!(output.contains("\"world\""), "Should contain inlined 'world'");
         assert!(!output.contains("_0x1234[0]"), "Should not contain array access");
@@ -153,7 +153,7 @@ mod tests {
         let (output, inliner) = run_string_array_inline(code);
         eprintln!("Output:\n{output}");
 
-        assert!(inliner.has_changed(), "Should have inlined array access");
+        assert!(inliner.rewrites() > 0, "Should have inlined array access");
         assert!(output.contains("\"c\""), "Should contain rotated first element");
     }
 
@@ -167,7 +167,7 @@ mod tests {
         let (output, inliner) = run_string_array_inline(code);
         eprintln!("Output:\n{output}");
 
-        assert!(!inliner.has_changed(), "Should not inline out-of-bounds access");
+        assert!(inliner.rewrites() == 0, "Should not inline out-of-bounds access");
         assert!(output.contains("_0x1234[10]"), "Should preserve out-of-bounds access");
     }
 
@@ -182,7 +182,7 @@ mod tests {
         let (output, inliner) = run_string_array_inline(code);
         eprintln!("Output:\n{output}");
 
-        assert!(!inliner.has_changed(), "Should not inline variable index");
+        assert!(inliner.rewrites() == 0, "Should not inline variable index");
         assert!(output.contains("_0x1234[i]"), "Should preserve variable index");
     }
 
@@ -198,7 +198,7 @@ mod tests {
         let (output, inliner) = run_string_array_inline(code);
         eprintln!("Output:\n{output}");
 
-        assert!(inliner.has_changed(), "Should have inlined literal indices");
+        assert!(inliner.rewrites() > 0, "Should have inlined literal indices");
         assert!(output.contains("\"a\""), "Should inline index 0");
         assert!(output.contains("\"c\""), "Should inline index 2");
         assert!(output.contains("_0x1234[someVar]"), "Should preserve variable index");

@@ -46,7 +46,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CommaReturnSimplifier {
             seq.expressions.pop();
             self.simplified += 1;
             if self.simplified <= 10 {
-                eprintln!("[AST/comma-return] simplified redundant trailing identifier");
+                deob_trace!("[AST/comma-return] simplified redundant trailing identifier");
             }
         }
     }

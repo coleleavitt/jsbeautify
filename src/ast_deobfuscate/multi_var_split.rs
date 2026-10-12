@@ -54,7 +54,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
             if let Statement::VariableDeclaration(var_decl) = stmt
                 && var_decl.declarations.len() > 1
             {
-                eprintln!(
+                deob_trace!(
                     "[MULTI_VAR_SPLIT] Splitting {:?} declaration with {} declarators in program body",
                     var_decl.kind,
                     var_decl.declarations.len()
@@ -76,7 +76,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
             new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
-        eprintln!("[MULTI_VAR_SPLIT] Program body: {before} -> {after} statements");
+        deob_trace!("[MULTI_VAR_SPLIT] Program body: {before} -> {after} statements");
         program.body = new_body;
     }
 
@@ -98,7 +98,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
             if let Statement::VariableDeclaration(var_decl) = stmt
                 && var_decl.declarations.len() > 1
             {
-                eprintln!(
+                deob_trace!(
                     "[MULTI_VAR_SPLIT] Splitting {:?} declaration with {} declarators in block",
                     var_decl.kind,
                     var_decl.declarations.len()
@@ -120,7 +120,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
             new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_body.len();
-        eprintln!("[MULTI_VAR_SPLIT] Block body: {before} -> {after} statements");
+        deob_trace!("[MULTI_VAR_SPLIT] Block body: {before} -> {after} statements");
         block.body = new_body;
     }
 
@@ -142,7 +142,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
             if let Statement::VariableDeclaration(var_decl) = stmt
                 && var_decl.declarations.len() > 1
             {
-                eprintln!(
+                deob_trace!(
                     "[MULTI_VAR_SPLIT] Splitting {:?} declaration with {} declarators in function body",
                     var_decl.kind,
                     var_decl.declarations.len()
@@ -164,7 +164,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for MultiVarSplitter {
             new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
         let after = new_stmts.len();
-        eprintln!("[MULTI_VAR_SPLIT] Function body: {before} -> {after} statements");
+        deob_trace!("[MULTI_VAR_SPLIT] Function body: {before} -> {after} statements");
         body.statements = new_stmts;
     }
 }

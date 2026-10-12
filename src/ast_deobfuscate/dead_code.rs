@@ -8,7 +8,7 @@ use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -18,10 +18,10 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 /// hoisted bindings, so its `var` names are kept as a bare `var` statement and
 /// unreachable function, class and lexical declarations are kept verbatim.
 pub struct DeadCodeEliminator {
-    changed: bool,
+    rewrites: usize,
 }
 
-flag_pass!(DeadCodeEliminator, changed, has_changed);
+counter_pass!(DeadCodeEliminator, rewrites, rewrites);
 
 /// `ToBoolean` of a literal test, or `None` when the test is not a literal.
 fn literal_truthiness(expr: &Expression<'_>) -> Option<bool> {
@@ -163,7 +163,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadCodeEliminator {
             _ => return,
         };
         if let Some(replacement) = replacement {
-            self.changed = true;
+            self.rewrites += 1;
             *stmt = replacement;
         }
     }
@@ -191,7 +191,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadCodeEliminator {
             }
         }
         body.extend(hoisted.into_statement(ctx));
-        self.changed = true;
+        self.rewrites += 1;
         block.body = body;
     }
 }

@@ -2,7 +2,7 @@ use oxc_ast::ast::{Expression, Statement};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -11,9 +11,9 @@ mod constructors;
 mod rules;
 
 pub struct ExpressionSimplifier {
-    changed: bool,
+    rewrites: usize,
 }
-flag_pass!(ExpressionSimplifier, changed, has_changed);
+counter_pass!(ExpressionSimplifier, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ExpressionSimplifier {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
@@ -34,8 +34,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExpressionSimplifier {
 
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
         if let Statement::DebuggerStatement(_) = stmt {
-            eprintln!("[AST] Removing debugger statement");
-            self.changed = true;
+            deob_trace!("[AST] Removing debugger statement");
+            self.rewrites += 1;
             *stmt = Statement::new_empty_statement(SPAN, ctx);
         }
     }

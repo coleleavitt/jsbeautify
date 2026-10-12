@@ -17,14 +17,14 @@ impl ControlFlowUnflattener {
 
             if let Some(init) = &decl.init {
                 if let Some(sequence) = self.extract_split_sequence(init) {
-                    eprintln!("[AST] Found control flow sequence: {var_name} = {sequence:?}");
+                    deob_trace!("[AST] Found control flow sequence: {var_name} = {sequence:?}");
                     self.detected_sequences.insert(var_name.to_string(), sequence);
                 }
 
                 if self.is_zero_initializer(init)
                     && let Some(seq_var) = self.find_associated_sequence_var(var_name)
                 {
-                    eprintln!("[AST] Found index variable: {var_name} for sequence {seq_var}");
+                    deob_trace!("[AST] Found index variable: {var_name} for sequence {seq_var}");
                     self.detected_index_vars.insert(seq_var, var_name.to_string());
                 }
             }
@@ -80,11 +80,11 @@ impl ControlFlowUnflattener {
     pub(super) fn is_control_flow_while(&self, while_stmt: &WhileStatement<'_>) -> bool {
         let is_while_true = match &while_stmt.test {
             Expression::BooleanLiteral(lit) => {
-                eprintln!("[AST]   while test is BooleanLiteral: {}", lit.value);
+                deob_trace!("[AST]   while test is BooleanLiteral: {}", lit.value);
                 lit.value
             }
             other => {
-                eprintln!(
+                deob_trace!(
                     "[AST]   while test is not BooleanLiteral: {:?}",
                     std::mem::discriminant(other)
                 );
@@ -93,12 +93,12 @@ impl ControlFlowUnflattener {
         };
 
         if !is_while_true {
-            eprintln!("[AST]   Rejecting: not while(true)");
+            deob_trace!("[AST]   Rejecting: not while(true)");
             return false;
         }
 
         let has_switch = self.body_contains_switch(&while_stmt.body);
-        eprintln!("[AST]   Body contains switch: {has_switch}");
+        deob_trace!("[AST]   Body contains switch: {has_switch}");
         has_switch
     }
 
@@ -114,13 +114,13 @@ impl ControlFlowUnflattener {
         let is_infinite = for_stmt.init.is_none() && for_stmt.test.is_none() && for_stmt.update.is_none();
 
         if !is_infinite {
-            eprintln!("[AST]   Rejecting: not for(;;)");
+            deob_trace!("[AST]   Rejecting: not for(;;)");
             return false;
         }
 
-        eprintln!("[AST]   for(;;) detected");
+        deob_trace!("[AST]   for(;;) detected");
         let has_switch = self.body_contains_switch(&for_stmt.body);
-        eprintln!("[AST]   Body contains switch: {has_switch}");
+        deob_trace!("[AST]   Body contains switch: {has_switch}");
         has_switch
     }
 
@@ -151,46 +151,46 @@ impl ControlFlowUnflattener {
     }
 
     fn is_sequence_access(&self, expr: &Expression<'_>) -> Option<String> {
-        eprintln!("[AST]   Checking discriminant: {:?}", std::mem::discriminant(expr));
+        deob_trace!("[AST]   Checking discriminant: {:?}", std::mem::discriminant(expr));
 
         let array_name = match expr {
             Expression::ComputedMemberExpression(member) => {
-                eprintln!("[AST]   Discriminant is ComputedMemberExpression");
+                deob_trace!("[AST]   Discriminant is ComputedMemberExpression");
                 if let Expression::Identifier(ident) = &member.object {
-                    eprintln!("[AST]   Array name: {}", ident.name);
+                    deob_trace!("[AST]   Array name: {}", ident.name);
                     ident.name.as_str()
                 } else {
-                    eprintln!("[AST]   Member object is not Identifier");
+                    deob_trace!("[AST]   Member object is not Identifier");
                     return None;
                 }
             }
             Expression::UpdateExpression(update) => {
-                eprintln!("[AST]   Discriminant is UpdateExpression");
+                deob_trace!("[AST]   Discriminant is UpdateExpression");
                 if let SimpleAssignmentTarget::ComputedMemberExpression(member) = &update.argument {
                     if let Expression::Identifier(ident) = &member.object {
-                        eprintln!("[AST]   Array name: {}", ident.name);
+                        deob_trace!("[AST]   Array name: {}", ident.name);
                         ident.name.as_str()
                     } else {
-                        eprintln!("[AST]   Member object is not Identifier");
+                        deob_trace!("[AST]   Member object is not Identifier");
                         return None;
                     }
                 } else {
-                    eprintln!("[AST]   Update argument is not ComputedMemberExpression");
+                    deob_trace!("[AST]   Update argument is not ComputedMemberExpression");
                     return None;
                 }
             }
             _ => {
-                eprintln!("[AST]   Discriminant is neither ComputedMemberExpression nor UpdateExpression");
+                deob_trace!("[AST]   Discriminant is neither ComputedMemberExpression nor UpdateExpression");
                 return None;
             }
         };
 
         if self.detected_sequences.contains_key(array_name) {
-            eprintln!("[AST]   Found sequence access for: {array_name}");
+            deob_trace!("[AST]   Found sequence access for: {array_name}");
             return Some(array_name.to_string());
         }
 
-        eprintln!(
+        deob_trace!(
             "[AST]   Array {} not in detected sequences: {:?}",
             array_name,
             self.detected_sequences.keys().collect::<Vec<_>>()

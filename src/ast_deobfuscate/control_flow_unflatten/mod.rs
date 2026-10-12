@@ -37,7 +37,7 @@ use types::UnflattenAction;
 pub struct ControlFlowUnflattener {
     detected_sequences: FxHashMap<String, Vec<String>>,
     detected_index_vars: FxHashMap<String, String>,
-    changed: bool,
+    rewrites: usize,
 }
 
 impl ControlFlowUnflattener {
@@ -46,12 +46,12 @@ impl ControlFlowUnflattener {
         Self {
             detected_sequences: FxHashMap::default(),
             detected_index_vars: FxHashMap::default(),
-            changed: false,
+            rewrites: 0,
         }
     }
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 }
 
@@ -142,7 +142,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
                     if let Statement::WhileStatement(while_stmt) = &program.body[*idx]
                         && let Some(stmts) = self.extract_unflattened_while(while_stmt, ctx)
                     {
-                        eprintln!("[AST] Unflattened while control flow: {} statements", stmts.len());
+                        deob_trace!("[AST] Unflattened while control flow: {} statements", stmts.len());
                         unflattened_stmts.insert(*idx, stmts);
                     }
                 }
@@ -150,7 +150,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
                     if let Statement::ForStatement(for_stmt) = &program.body[*idx]
                         && let Some(stmts) = self.extract_unflattened_for(for_stmt, ctx)
                     {
-                        eprintln!("[AST] Unflattened for(;;) control flow: {} statements", stmts.len());
+                        deob_trace!("[AST] Unflattened for(;;) control flow: {} statements", stmts.len());
                         unflattened_stmts.insert(*idx, stmts);
                     }
                 }
@@ -179,7 +179,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
                 UnflattenAction::UnflattenWhile(_) | UnflattenAction::UnflattenFor(_) => {
                     // Replace with unflattened statements
                     if let Some(stmts) = unflattened_stmts.remove(&idx) {
-                        self.changed = true;
+                        self.rewrites += 1;
                         for s in stmts {
                             new_body.push(s);
                         }

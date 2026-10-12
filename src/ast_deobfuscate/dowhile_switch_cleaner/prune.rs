@@ -41,7 +41,7 @@ impl DoWhileSwitchCleaner {
             .count();
 
         if dead_count > 0 {
-            eprintln!(
+            deob_trace!(
                 "[DOWHILE] dispatcher {name}: {dead_count}/{total} cases are dead (not pruning immutable FunctionDeclaration)"
             );
         }
@@ -80,7 +80,7 @@ impl DoWhileSwitchCleaner {
 
         let removed = before - switch.cases.len();
         if removed > 0 {
-            eprintln!("[DOWHILE] pruned {removed}/{total} dead cases from {name}");
+            deob_trace!("[DOWHILE] pruned {removed}/{total} dead cases from {name}");
             self.pruned_cases += removed;
         }
     }

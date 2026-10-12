@@ -234,7 +234,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionCollector {
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, func) in candidates {
             if self.is_inlinable(symbol, &func, ctx.scoping()) {
-                eprintln!("[AST] Found inlinable function: {} ({} params)", func.name, func.params);
+                deob_trace!("[AST] Found inlinable function: {} ({} params)", func.name, func.params);
                 self.inlinable.insert(symbol, func);
             }
         }

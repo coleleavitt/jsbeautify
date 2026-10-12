@@ -146,9 +146,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyCollector {
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, info) in candidates {
             if self.is_single_use(symbol, &info, ctx.scoping()) {
-                eprintln!(
+                deob_trace!(
                     "[AST] Found call proxy -> {} ({} params)",
-                    info.target_name, info.params
+                    info.target_name,
+                    info.params
                 );
                 self.proxies.insert(symbol, info);
             }

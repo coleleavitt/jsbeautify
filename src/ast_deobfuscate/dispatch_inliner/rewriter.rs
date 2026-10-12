@@ -59,7 +59,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerRewriter {
         };
 
         if self.inlined < 10 {
-            eprintln!(
+            deob_trace!(
                 "[AST/dispatch-inline] {}()[{}] -> {:?}",
                 callee.name.as_str(),
                 index,

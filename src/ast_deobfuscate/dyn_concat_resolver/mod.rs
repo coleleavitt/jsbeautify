@@ -161,14 +161,14 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
                 let folded = fold_adjacent_literals(expr, ctx);
                 let total = subs_l + subs_r;
                 if (total > 0 || folded) && self.rewrites < 10 {
-                    eprintln!("[AST/dyn-concat] inlined {total} ident(s) into '+' chain (folded={folded})");
+                    deob_trace!("[AST/dyn-concat] inlined {total} ident(s) into '+' chain (folded={folded})");
                 }
                 self.rewrites = self.rewrites.saturating_add(total);
             }
             Expression::TemplateLiteral(tmpl) => {
                 let subs = substitute_in_template(tmpl, self, ctx);
                 if subs > 0 && self.rewrites < 10 {
-                    eprintln!("[AST/dyn-concat] inlined {subs} ident(s) into template literal");
+                    deob_trace!("[AST/dyn-concat] inlined {subs} ident(s) into template literal");
                 }
                 self.rewrites = self.rewrites.saturating_add(subs);
             }

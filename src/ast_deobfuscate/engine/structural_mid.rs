@@ -21,6 +21,10 @@ impl AstDeobfuscator {
 
         eprintln!("[DEOBFUSCATE] Phase 1: Running control_flow_unflattener");
         traverse_mut_with_ctx(&mut self.control_flow_unflattener, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 1: Unflattened {} control-flow loops",
+            self.control_flow_unflattener.rewrites()
+        );
         eprintln!("[DEOBFUSCATE] Phase 1: control_flow_unflattener DONE");
 
         eprintln!("[DEOBFUSCATE] Phase 2: SemanticBuilder for string_array_rotation");
@@ -29,6 +33,8 @@ impl AstDeobfuscator {
 
         eprintln!("[DEOBFUSCATE] Phase 2: Running string_array_rotation");
         traverse_mut_with_ctx(&mut self.string_array_rotation, program, &mut ctx);
+        let (arrays, rotations) = self.string_array_rotation.detected();
+        eprintln!("[DEOBFUSCATE] Phase 2: Found {arrays} string arrays, {rotations} rotation IIFEs");
         eprintln!("[DEOBFUSCATE] Phase 2: string_array_rotation DONE");
 
         let mut state = ctx.into_state();
@@ -57,6 +63,12 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.string_array_inliner, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 3: Running dispatcher_inliner");
         traverse_mut_with_ctx(&mut self.dispatcher_inliner, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 3: Inlined {} decoder calls, {} string-array accesses, {} dispatcher calls",
+            self.decoder_inliner.rewrites(),
+            self.string_array_inliner.rewrites(),
+            self.dispatcher_inliner.rewrites()
+        );
         eprintln!("[DEOBFUSCATE] Phase 3: DONE");
     }
 
@@ -68,12 +80,17 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 4: Running call_proxy_collector");
         traverse_mut_with_ctx(&mut call_proxy_collector, program, &mut ctx);
         let call_proxies = call_proxy_collector.get_single_use_proxies();
-        if !call_proxies.is_empty() {
+        let found = call_proxies.len();
+        let rewrites = if call_proxies.is_empty() {
+            0
+        } else {
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = CallProxyInliner::new(call_proxies);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
-        }
+            inliner.rewrites()
+        };
+        eprintln!("[DEOBFUSCATE] Phase 4: Found {found} call proxies, {rewrites} inline rewrites");
 
         Self::run_operator_proxy(allocator, program);
         Self::run_unary_proxy(allocator, program);
@@ -88,12 +105,17 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 5: Running operator_proxy_collector");
         traverse_mut_with_ctx(&mut op_proxy_collector, program, &mut ctx);
         let op_proxies = op_proxy_collector.get_proxies();
-        if !op_proxies.is_empty() {
+        let found = op_proxies.len();
+        let rewrites = if op_proxies.is_empty() {
+            0
+        } else {
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = OperatorProxyInliner::new(op_proxies);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
-        }
+            inliner.rewrites()
+        };
+        eprintln!("[DEOBFUSCATE] Phase 5: Found {found} operator proxies, {rewrites} inline rewrites");
     }
 
     fn run_unary_proxy<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
@@ -178,6 +200,12 @@ impl AstDeobfuscator {
         traverse_mut_with_ctx(&mut self.constant_folder, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 6: Running algebraic_simplifier");
         traverse_mut_with_ctx(&mut self.algebraic_simplifier, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 6: Simplified {} expressions, folded {} constants, simplified {} logical expressions",
+            self.expression_simplifier.rewrites(),
+            self.constant_folder.rewrites(),
+            self.algebraic_simplifier.rewrites()
+        );
         eprintln!("[DEOBFUSCATE] Phase 6: Running array_coerce_fold");
         traverse_mut_with_ctx(&mut self.array_coerce_fold, program, &mut ctx);
         eprintln!(

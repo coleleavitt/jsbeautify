@@ -70,7 +70,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarEliminator {
                     if let BindingPattern::BindingIdentifier(ident) = &decl.id
                         && crate::ast_deobfuscate::ast_trace_enabled()
                     {
-                        eprintln!("[AST] Eliminating dead variable: {}", ident.name);
+                        deob_trace!("[AST] Eliminating dead variable: {}", ident.name);
                     }
                 }
                 self.removed_declarators += var_decl.declarations.len();
@@ -86,7 +86,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarEliminator {
                         new_declarations.push(Self::clone_declarator(decl, ctx));
                     } else if let BindingPattern::BindingIdentifier(ident) = &decl.id {
                         if crate::ast_deobfuscate::ast_trace_enabled() {
-                            eprintln!("[AST] Eliminating dead variable: {}", ident.name);
+                            deob_trace!("[AST] Eliminating dead variable: {}", ident.name);
                         }
                         self.removed_declarators += 1;
                     }

@@ -58,7 +58,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanArithmeticFolder {
         {
             let val = f64::from(u8::from(b.value));
             if self.folded < 20 {
-                eprintln!("[AKAMAI/bool-arith] +{} -> {}", b.value, val as i64);
+                deob_trace!("[AKAMAI/bool-arith] +{} -> {}", b.value, val as i64);
             }
             self.folded += 1;
             *expr = Self::make_number(val, ctx);
@@ -90,7 +90,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for BooleanArithmeticFolder {
                 return;
             }
             if self.folded < 20 {
-                eprintln!("[AKAMAI/bool-arith] {l} {:?} {r} -> {}", binary.operator, result as i64);
+                deob_trace!("[AKAMAI/bool-arith] {l} {:?} {r} -> {}", binary.operator, result as i64);
             }
             self.folded += 1;
             *expr = Self::make_number(result, ctx);

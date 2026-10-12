@@ -83,7 +83,7 @@ impl UnaryProxyCollector {
             && self.unary_calls_only.contains(&symbol)
             && let Some(info) = Self::extract_proxy_info(func)
         {
-            eprintln!("[AST] Found unary proxy -> {:?}", info.operator);
+            deob_trace!("[AST] Found unary proxy -> {:?}", info.operator);
             self.proxies.insert(symbol, info);
         }
     }
@@ -141,7 +141,7 @@ impl UnaryProxyInliner {
         let info = self.proxies.get(&symbol)?;
         let arg = call.arguments.first()?.as_expression()?;
         if self.inlined < 10 {
-            eprintln!("[AST] Inlining unary proxy: {} -> {:?}", ident.name, info.operator);
+            deob_trace!("[AST] Inlining unary proxy: {} -> {:?}", ident.name, info.operator);
         }
         self.inlined += 1;
         Some(Expression::new_unary_expression(

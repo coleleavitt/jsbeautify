@@ -21,17 +21,17 @@ mod consolidate;
 mod types;
 
 pub struct ObjectSparsingConsolidator {
-    changed: bool,
+    rewrites: usize,
 }
 
 impl ObjectSparsingConsolidator {
     #[must_use]
     pub const fn new() -> Self {
-        Self { changed: false }
+        Self { rewrites: 0 }
     }
     #[must_use]
-    pub const fn has_changed(&self) -> bool {
-        self.changed
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
     }
 }
 impl Default for ObjectSparsingConsolidator {

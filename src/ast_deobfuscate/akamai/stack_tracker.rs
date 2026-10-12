@@ -60,7 +60,7 @@ impl StackTrackerRemover {
         let mut ranked: Vec<(&String, &TrackerStats)> = candidates.iter().collect();
         ranked.sort_by_key(|(_, stats)| Reverse(stats.write_calls));
 
-        eprintln!(
+        deob_trace!(
             "[AKAMAI/stack-tracker] Scanned {} candidate identifiers. Top 10 by write_calls:",
             candidates.len()
         );
@@ -76,26 +76,32 @@ impl StackTrackerRemover {
             } else {
                 "(unknown)"
             };
-            eprintln!(
+            deob_trace!(
                 "[AKAMAI/stack-tracker]   {:>6} : writes={:>4}  reads={:>4}  declared={}  => {}",
-                name, stats.write_calls, stats.reads, stats.declared, verdict
+                name,
+                stats.write_calls,
+                stats.reads,
+                stats.declared,
+                verdict
             );
         }
 
         for (name, stats) in candidates {
             if stats.is_pure_tracker() {
-                eprintln!(
+                deob_trace!(
                     "[AKAMAI/stack-tracker] PROMOTING '{}' to tracker ({} writes, {} reads)",
-                    name, stats.write_calls, stats.reads
+                    name,
+                    stats.write_calls,
+                    stats.reads
                 );
                 self.tracker_names.insert(name);
             }
         }
 
         if self.tracker_names.is_empty() {
-            eprintln!("[AKAMAI/stack-tracker] No pure stack-tracker variable identified");
+            deob_trace!("[AKAMAI/stack-tracker] No pure stack-tracker variable identified");
         } else {
-            eprintln!("[AKAMAI/stack-tracker] Will strip calls on: {:?}", self.tracker_names);
+            deob_trace!("[AKAMAI/stack-tracker] Will strip calls on: {:?}", self.tracker_names);
         }
     }
 
@@ -141,7 +147,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for StackTrackerRemover {
                         _ => None,
                     })
                     .collect();
-                eprintln!("[AKAMAI/stack-tracker] removing declaration: var {};", names.join(", "));
+                deob_trace!("[AKAMAI/stack-tracker] removing declaration: var {};", names.join(", "));
                 *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);
                 return;
             }
@@ -152,9 +158,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for StackTrackerRemover {
             && self.is_tracker_call(&es.expression)
         {
             if self.removed_calls < 10 {
-                eprintln!("[AKAMAI/stack-tracker] removing call #{}", self.removed_calls + 1);
+                deob_trace!("[AKAMAI/stack-tracker] removing call #{}", self.removed_calls + 1);
             } else if self.removed_calls == 10 {
-                eprintln!("[AKAMAI/stack-tracker] ... further removals silenced");
+                deob_trace!("[AKAMAI/stack-tracker] ... further removals silenced");
             }
             self.removed_calls += 1;
             *stmt = Statement::new_empty_statement(SPAN, &ctx.ast);

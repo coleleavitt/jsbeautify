@@ -54,9 +54,11 @@ impl SelfDefendingStringArray {
             match rotation_count {
                 Some(count) => {
                     apply_rotation(strings, count);
-                    eprintln!(
+                    deob_trace!(
                         "[SELF-DEFENDING] Applied checksum rotation to {}: {} rotations (target={})",
-                        rot.wrapper_ref, count, rot.target
+                        rot.wrapper_ref,
+                        count,
+                        rot.target
                     );
                 }
                 None => {

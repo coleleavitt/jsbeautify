@@ -51,7 +51,7 @@ impl SelfDefendingStringArray {
             return;
         }
 
-        eprintln!(
+        deob_trace!(
             "[SELF-DEFENDING] Found array wrapper: {func_name} with {} strings",
             strings.len()
         );
@@ -149,7 +149,7 @@ impl SelfDefendingStringArray {
             return;
         }
 
-        eprintln!(
+        deob_trace!(
             "[SELF-DEFENDING] Found decoder candidate: {func_name} -> wrapper_ref={wrapper}, offset={offset_op:?} {offset}"
         );
         self.decoder_candidates.insert(
@@ -205,7 +205,7 @@ impl SelfDefendingStringArray {
             return;
         };
 
-        eprintln!(
+        deob_trace!(
             "[SELF-DEFENDING] Found rotation candidate: wrapper_ref={wrapper_ref}, decoder_ref={decoder_ref}, target={target}, terms={}",
             terms.len()
         );

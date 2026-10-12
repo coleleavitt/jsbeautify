@@ -21,7 +21,7 @@ fn walk_stmt(stmt: &Statement<'_>, map: &mut DispatcherMap) {
                 func.params.items.len()
             );
             if let Some(info) = try_extract_dispatcher(func, None) {
-                eprintln!(
+                deob_trace!(
                     "[DISPATCHER] found {}({}, {}) with {} cases",
                     info.name,
                     info.state_param,
@@ -216,7 +216,7 @@ fn check_var_declarator(declarator: &VariableDeclarator<'_>, map: &mut Dispatche
         func.params.items.len()
     );
     if let Some(info) = try_extract_dispatcher(func, Some(var_name)) {
-        eprintln!(
+        deob_trace!(
             "[DISPATCHER] found {}({}, {}) with {} cases (alt_name={:?})",
             info.name,
             info.state_param,

@@ -92,7 +92,7 @@ impl EqualityProxyUnwrapper {
         };
         if let Some(op) = Self::extract_equality_op(func) {
             let name = id.name.as_str().to_string();
-            eprintln!("[AKAMAI/eq-proxy] found  {name}(a, b) {{ return a {op:?} b }}");
+            deob_trace!("[AKAMAI/eq-proxy] found  {name}(a, b) {{ return a {op:?} b }}");
             self.proxies.insert(name, op);
         }
     }
@@ -100,7 +100,7 @@ impl EqualityProxyUnwrapper {
     fn try_extract_equality_proxy_fn(func: &Function<'_>) -> Option<(String, BinaryOperator)> {
         let name = func.id.as_ref()?.name.as_str().to_string();
         let op = Self::extract_equality_op(func)?;
-        eprintln!("[AKAMAI/eq-proxy] found  function {name}(a, b) {{ return a {op:?} b }}");
+        deob_trace!("[AKAMAI/eq-proxy] found  function {name}(a, b) {{ return a {op:?} b }}");
         Some((name, op))
     }
 
@@ -180,7 +180,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for EqualityProxyUnwrapper {
                     .to_expression()
                     .clone_in_with_semantic_ids(ctx.ast.allocator());
                 if self.unwrapped < 10 {
-                    eprintln!(
+                    deob_trace!(
                         "[AKAMAI/eq-proxy] inline {}(a, b) -> a {:?} b  (call #{})",
                         name,
                         op,

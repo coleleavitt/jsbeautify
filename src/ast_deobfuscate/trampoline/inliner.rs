@@ -67,7 +67,7 @@ impl TrampolineInliner {
         let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id();
         let info = self.trampoline_of(symbol)?;
         if self.inlined < 10 {
-            eprintln!(
+            deob_trace!(
                 "[AST/tramp] inline {}({} args) -> {}({}, [...])",
                 ident.name.as_str(),
                 call.arguments.len(),

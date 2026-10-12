@@ -3,13 +3,13 @@ use oxc_ast::ast::{BinaryOperator, ComputedMemberExpression, Expression, MemberE
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct DynamicPropertyConverter {
-    changed: bool,
+    rewrites: usize,
 }
 
 impl DynamicPropertyConverter {
@@ -24,8 +24,8 @@ impl DynamicPropertyConverter {
             return None;
         }
 
-        eprintln!("[AST] Converting dynamic property [\"{property_name}\"] -> .{property_name}");
-        self.changed = true;
+        deob_trace!("[AST] Converting dynamic property [\"{property_name}\"] -> .{property_name}");
+        self.rewrites += 1;
 
         let object = Self::clone_expression(&computed.object, ctx);
 
@@ -57,7 +57,7 @@ impl DynamicPropertyConverter {
     }
 }
 
-flag_pass!(DynamicPropertyConverter, changed, has_changed);
+counter_pass!(DynamicPropertyConverter, rewrites, rewrites);
 
 fn is_valid_identifier(s: &str) -> bool {
     if s.is_empty() || s.len() > 100 {

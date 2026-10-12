@@ -2,13 +2,13 @@ use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{ComputedMemberExpression, Expression};
 use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::ast_deobfuscate::pass::flag_pass;
+use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct ArrayUnpacker {
-    changed: bool,
+    rewrites: usize,
 }
 
 /// Literals whose evaluation has no side effects. Only these may be selected
@@ -43,13 +43,13 @@ impl ArrayUnpacker {
             .map(|element| element.as_expression().filter(|expr| is_primitive_literal(expr)))
             .collect::<Option<Vec<_>>>()?;
 
-        eprintln!("[AST] Unpacking array access at index {index}");
-        self.changed = true;
+        deob_trace!("[AST] Unpacking array access at index {index}");
+        self.rewrites += 1;
         Some(elements[index as usize].clone_in_with_semantic_ids(ctx.ast.allocator()))
     }
 }
 
-flag_pass!(ArrayUnpacker, changed, has_changed);
+counter_pass!(ArrayUnpacker, rewrites, rewrites);
 
 impl<'a> Traverse<'a, DeobfuscateState> for ArrayUnpacker {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {

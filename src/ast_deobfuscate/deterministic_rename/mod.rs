@@ -59,11 +59,11 @@ impl DeterministicRenamer {
     /// Extracts the alphabet from the source and builds the rename map
     pub fn analyze_source(&mut self, source: &str) {
         self.alphabet = extract_alphabet_from_source(source);
-        eprintln!(
+        deob_trace!(
             "[SLOT_RENAME] Extracted HEAD: {}",
             &self.alphabet.head[..20.min(self.alphabet.head.len())]
         );
-        eprintln!(
+        deob_trace!(
             "[SLOT_RENAME] Extracted TAIL: {}",
             &self.alphabet.tail[..20.min(self.alphabet.tail.len())]
         );
