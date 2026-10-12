@@ -1,4 +1,4 @@
-use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
+use oxc_allocator::{TakeIn, Vec as OxcVec};
 use oxc_ast::ast::{
     BinaryOperator, BlockStatement, Expression, FunctionBody, IfStatement, LogicalExpression, LogicalOperator, Program,
     Statement, SwitchCase, UnaryOperator,
@@ -30,58 +30,73 @@ pub fn is_short_circuit_expr_stmt(stmt: &Statement<'_>) -> bool {
     )
 }
 
-fn build_if_from_logical<'a>(logical: &LogicalExpression<'a>, ctx: &mut Ctx<'a>) -> Statement<'a> {
-    let action_expr = logical
-        .right
-        .without_parentheses()
-        .clone_in_with_semantic_ids(ctx.allocator());
-    let action_stmt = Statement::new_expression_statement(SPAN, action_expr, &ctx.ast);
+/// Strips the parentheses `Expression::without_parentheses` looks through,
+/// keeping the inner expression.
+pub fn into_without_parentheses(mut expr: Expression<'_>) -> Expression<'_> {
+    while let Expression::ParenthesizedExpression(paren) = expr {
+        expr = paren.unbox().expression;
+    }
+    expr
+}
+
+/// Rewrites `x && y;` to `if (x) { y; }` (and `x || y;` to `if (!x) { y; }`),
+/// or gives `stmt` back when it is not such a statement.
+pub fn short_circuit_to_if<'a>(stmt: Statement<'a>, ctx: &mut Ctx<'a>) -> Result<Statement<'a>, Statement<'a>> {
+    if !is_short_circuit_expr_stmt(&stmt) {
+        return Err(stmt);
+    }
+    let Statement::ExpressionStatement(expr_stmt) = stmt else {
+        unreachable!("is_short_circuit_expr_stmt matched")
+    };
+    let Expression::LogicalExpression(logical) = expr_stmt.unbox().expression else {
+        unreachable!("is_short_circuit_expr_stmt matched")
+    };
+    let LogicalExpression {
+        left, operator, right, ..
+    } = logical.unbox();
+    let action_stmt = Statement::new_expression_statement(SPAN, into_without_parentheses(right), &ctx.ast);
     let mut body_stmts = OxcVec::new_in(ctx);
     body_stmts.push(action_stmt);
     let block_scope_id = ctx.create_child_scope_of_current(ScopeFlags::empty());
     let block = Statement::new_block_statement_with_scope_id(SPAN, body_stmts, block_scope_id, &ctx.ast);
 
-    let test = match logical.operator {
-        LogicalOperator::And | LogicalOperator::Coalesce => logical.left.clone_in_with_semantic_ids(ctx.allocator()),
-        LogicalOperator::Or => negate_condition(&logical.left, ctx),
+    let test = match operator {
+        LogicalOperator::And | LogicalOperator::Coalesce => left,
+        LogicalOperator::Or => negate_condition(left, ctx),
     };
 
-    Statement::IfStatement(IfStatement::boxed(SPAN, test, block, None, &ctx.ast))
+    Ok(Statement::IfStatement(IfStatement::boxed(
+        SPAN, test, block, None, &ctx.ast,
+    )))
 }
 
 /// Negates `expr` for a position where only its truthiness is observed (an
 /// `if` test): `!x` becomes `x`, equality operators flip, and De Morgan is
 /// applied when it cancels a negation on at least one operand.
-fn negate_condition<'a>(expr: &Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
-    let inner = expr.without_parentheses();
-    match inner {
-        Expression::UnaryExpression(unary) if unary.operator == UnaryOperator::LogicalNot => {
-            return unary.argument.clone_in_with_semantic_ids(ctx.allocator());
-        }
-        Expression::BinaryExpression(binary) => {
-            if let Some(operator) = negated_equality(binary.operator) {
-                let left = binary.left.clone_in_with_semantic_ids(ctx.allocator());
-                let right = binary.right.clone_in_with_semantic_ids(ctx.allocator());
-                return Expression::new_binary_expression(SPAN, left, operator, right, &ctx.ast);
-            }
+fn negate_condition<'a>(expr: Expression<'a>, ctx: &mut Ctx<'a>) -> Expression<'a> {
+    match into_without_parentheses(expr) {
+        Expression::UnaryExpression(unary) if unary.operator == UnaryOperator::LogicalNot => unary.unbox().argument,
+        Expression::BinaryExpression(binary) if negated_equality(binary.operator).is_some() => {
+            let binary = binary.unbox();
+            let operator = negated_equality(binary.operator).expect("guard checked the operator");
+            Expression::new_binary_expression(SPAN, binary.left, operator, binary.right, &ctx.ast)
         }
         Expression::LogicalExpression(logical)
             if logical.operator != LogicalOperator::Coalesce
                 && (cancels_negation(&logical.left) || cancels_negation(&logical.right)) =>
         {
+            let logical = logical.unbox();
             let operator = if logical.operator == LogicalOperator::And {
                 LogicalOperator::Or
             } else {
                 LogicalOperator::And
             };
-            let left = negate_condition(&logical.left, ctx);
-            let right = negate_condition(&logical.right, ctx);
-            return Expression::new_logical_expression(SPAN, left, operator, right, &ctx.ast);
+            let left = negate_condition(logical.left, ctx);
+            let right = negate_condition(logical.right, ctx);
+            Expression::new_logical_expression(SPAN, left, operator, right, &ctx.ast)
         }
-        _ => {}
+        inner => Expression::new_unary_expression(SPAN, UnaryOperator::LogicalNot, inner, &ctx.ast),
     }
-    let inner = inner.clone_in_with_semantic_ids(ctx.allocator());
-    Expression::new_unary_expression(SPAN, UnaryOperator::LogicalNot, inner, &ctx.ast)
 }
 
 fn cancels_negation(expr: &Expression<'_>) -> bool {
@@ -109,26 +124,20 @@ impl ShortCircuitToIf {
         if !stmts.iter().any(is_short_circuit_expr_stmt) {
             return;
         }
-
-        let mut new_stmts = OxcVec::new_in(ctx);
-        for stmt in stmts.iter() {
-            if let Statement::ExpressionStatement(expr_stmt) = stmt
-                && let Expression::LogicalExpression(logical) = &expr_stmt.expression
-                && matches!(logical.operator, LogicalOperator::And | LogicalOperator::Or)
-            {
-                let mut converted = build_if_from_logical(logical, ctx);
-                if let Statement::IfStatement(if_stmt) = &mut converted
-                    && let Statement::BlockStatement(block) = &mut if_stmt.consequent
-                {
-                    self.convert_statements(&mut block.body, ctx);
+        for stmt in stmts.take_in(ctx) {
+            match short_circuit_to_if(stmt, ctx) {
+                Ok(mut converted) => {
+                    if let Statement::IfStatement(if_stmt) = &mut converted
+                        && let Statement::BlockStatement(block) = &mut if_stmt.consequent
+                    {
+                        self.convert_statements(&mut block.body, ctx);
+                    }
+                    stmts.push(converted);
+                    self.converted_count += 1;
                 }
-                new_stmts.push(converted);
-                self.converted_count += 1;
-                continue;
+                Err(stmt) => stmts.push(stmt),
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
-        *stmts = new_stmts;
     }
 }
 
