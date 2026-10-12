@@ -1,13 +1,11 @@
 use super::{
-    Allocator, AstDeobfuscator, BodyBlockWrapper, BunRuntimeCollector, BundleRuntime, Codegen, DeobfuscateState,
-    LetToConst, MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx,
-    SemanticBaseline, SemanticBuilder, SourceType, checkpoint_error_context, eliminate_dead_vars, mem_ck,
+    Allocator, AstDeobfuscator, BunRuntimeCollector, BundleRuntime, Codegen, DeobfuscateState, LetToConst,
+    MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx, SemanticBaseline,
+    SemanticBuilder, SourceType, StatementSplitNormalizer, checkpoint_error_context, eliminate_dead_vars, mem_ck,
     traverse_mut_with_ctx,
 };
 
 use rustc_hash::FxHashSet;
-
-const STATEMENT_SPLIT_MAX_ROUNDS: usize = 8;
 
 impl AstDeobfuscator {
     pub(super) fn run_cosmetic_a(&mut self, intermediate: &str, source_type: SourceType) -> Result<String> {
@@ -235,35 +233,16 @@ impl AstDeobfuscator {
         self.generate_final_output(&program, source_type, &helpers, runtime.bundler, baseline)
     }
 
-    /// Each statement-split pass rewrites only the statement lists it exits, so
-    /// a statement one pass creates (the `if` body `short_circuit_to_if` builds
-    /// from `x && (y ? f() : g())`) is only revisited by another round. The
-    /// passes only create scopes, never read bindings, so a round shares one
-    /// semantic build.
+    /// The statement-split rewrites only create scopes and never read
+    /// bindings, so one semantic build serves the whole normalization.
     fn run_statement_split_fixpoint<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
-        let mut return_splitter = ReturnSequenceSplitter::new();
-        let mut body_wrapper = BodyBlockWrapper::new();
-        let total = |this: &Self, return_splitter: &ReturnSequenceSplitter, body_wrapper: &BodyBlockWrapper| {
-            this.short_circuit_to_if.converted_count()
-                + this.ternary_to_if_else.converted_count()
-                + this.sequence_expression_splitter.split_count()
-                + return_splitter.split_count()
-                + body_wrapper.wrapped_count()
-        };
-        for round in 1..=STATEMENT_SPLIT_MAX_ROUNDS {
-            let before = total(self, &return_splitter, &body_wrapper);
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            traverse_mut_with_ctx(&mut body_wrapper, program, &mut ctx);
-            traverse_mut_with_ctx(&mut self.short_circuit_to_if, program, &mut ctx);
-            traverse_mut_with_ctx(&mut self.ternary_to_if_else, program, &mut ctx);
-            traverse_mut_with_ctx(&mut self.sequence_expression_splitter, program, &mut ctx);
-            traverse_mut_with_ctx(&mut return_splitter, program, &mut ctx);
-            let rewrites = total(self, &return_splitter, &body_wrapper) - before;
-            eprintln!("[DEOBFUSCATE] Phase 17: round {round}: {rewrites} statement rewrites");
-            if rewrites == 0 {
-                break;
-            }
-        }
+        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+        let mut normalizer = StatementSplitNormalizer::new();
+        traverse_mut_with_ctx(&mut normalizer, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 17: {} statement rewrites",
+            normalizer.rewrite_count()
+        );
     }
 }

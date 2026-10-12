@@ -3,9 +3,9 @@ use super::{
     CommaReturnSimplifier, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DecoderInliner,
     DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
     JsonParseEvaluator, Layout, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
-    OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, ShortCircuitToIf,
-    StringArrayInliner, StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover,
-    VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
+    OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, StringArrayInliner,
+    StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover, VariableRenamer,
+    VoidReplacer, encrypted_eval, semantic_baseline,
 };
 use crate::ParseGoal;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -47,7 +47,6 @@ impl AstDeobfuscator {
             multi_var_splitter: MultiVarSplitter::new(),
             ternary_to_if_else: TernaryToIfElse::new(),
             switch_true_converter: SwitchTrueConverter::new(),
-            short_circuit_to_if: ShortCircuitToIf::new(),
             iife_unwrap: IifeUnwrap::new(),
             json_parse_evaluator: JsonParseEvaluator::new(),
             optional_chaining_normalizer: OptionalChainingNormalizer::new(),
