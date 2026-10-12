@@ -9,8 +9,9 @@ use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::webpack::shapes::{getter_target, resolve, resolve_expr, simple_params};
 
@@ -68,13 +69,16 @@ const NODE_RUNTIME_MEMBERS: [&str; 3] = ["w", "x", "y"];
 /// Collects the desired name of every Turbopack binding, in priority order.
 #[derive(Default)]
 pub(super) struct NameCollector {
-    /// `__turbopack_context__` parameters of the registered factories.
-    contexts: FxHashSet<SymbolId>,
+    /// `__turbopack_context__` parameters of the registered factories, with
+    /// the factory's chunk item id.
+    contexts: FxHashMap<SymbolId, String>,
     /// The runtime's `Context` constructors and their prototype aliases.
     constructors: FxHashSet<SymbolId>,
     prototypes: FxHashSet<SymbolId>,
     plan: Vec<(SymbolId, String)>,
     planned: FxHashSet<SymbolId>,
+    /// Locals exported as `default`, named after every other binding.
+    defaults: Vec<DefaultExport>,
     with_scopes: Vec<ScopeId>,
     /// Functions installed under a [`RUNTIME_SPECIFIC_MEMBERS`] member, named
     /// once the runtime is known.
@@ -134,27 +138,42 @@ impl NameCollector {
             return None;
         };
         resolve_expr(&member.object, ctx)
-            .is_some_and(|symbol| self.contexts.contains(&symbol))
+            .is_some_and(|symbol| self.contexts.contains_key(&symbol))
             .then_some(member.property.name.as_str())
     }
 
-    fn plan_exports(&mut self, list: &ArrayExpression<'_>, ctx: &Ctx<'_>) {
+    /// The bindings of `__turbopack_context__.s(list, id?)`, where `id` names a
+    /// module scope-hoisted into this factory; otherwise the factory's own.
+    /// Mangled production keys are not names, but a `default` local still is.
+    fn plan_exports(&mut self, call: &CallExpression<'_>, list: &ArrayExpression<'_>, ctx: &Ctx<'_>) {
+        let hoisted = call.arguments.get(1).and_then(Argument::as_expression);
+        let module = hoisted.map_or_else(|| self.factory_module(&call.callee, ctx), module_id);
         let bindings = esm_bindings(list);
         let names: Vec<&str> = bindings.iter().map(|(name, _)| *name).collect();
-        if has_mangled_keys(&names) {
-            return;
-        }
+        let mangled = has_mangled_keys(&names);
         for (name, binding) in bindings {
             let local = match binding {
                 EsmBinding::Value(value) => resolve_expr(value, ctx),
                 EsmBinding::Getter(getter) => getter_target(getter).and_then(|id| resolve(id, ctx)),
             };
-            if is_recoverable_export_name(name)
-                && let Some(symbol) = local
-            {
+            let Some(symbol) = local else { continue };
+            if name == "default" {
+                self.defaults.push(DefaultExport {
+                    local: symbol,
+                    module: module.clone(),
+                });
+            } else if !mangled && is_recoverable_export_name(name) {
                 self.plan(symbol, name);
             }
         }
+    }
+
+    /// The chunk item id of the factory whose context `callee` is a member of.
+    fn factory_module(&self, callee: &Expression<'_>, ctx: &Ctx<'_>) -> Option<String> {
+        let Expression::StaticMemberExpression(member) = callee.without_parentheses() else {
+            return None;
+        };
+        resolve_expr(&member.object, ctx).and_then(|symbol| self.contexts.get(&symbol).cloned())
     }
 
     /// `x = __turbopack_context__.i(123)` / `.r(123)` → `module_123`, with a
@@ -189,8 +208,10 @@ impl NameCollector {
             for group in groups {
                 self.found.factories += 1;
                 let params = factory_params(group.factory).and_then(simple_params);
-                if let Some(context) = self.plan_params(params, &FACTORY_PARAMS) {
-                    self.contexts.insert(context);
+                if let Some(context) = self.plan_params(params, &FACTORY_PARAMS)
+                    && let Some(id) = group.ids.into_iter().next()
+                {
+                    self.contexts.insert(context, id);
                 }
             }
         }
@@ -410,6 +431,13 @@ fn is_context_constructor(func: &Function<'_>, ctx: &Ctx<'_>) -> bool {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        let defaults = std::mem::take(&mut self.defaults);
+        for (symbol, name) in default_export_names(program, ctx.scoping(), defaults) {
+            self.plan(symbol, &name);
+        }
+    }
+
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
         if let Some(symbol) = func.id.as_ref().and_then(|id| id.symbol_id.get())
             && is_context_constructor(func, ctx)
@@ -446,7 +474,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         match self.context_member(&call.callee, ctx) {
             Some("s") => {
                 if let Some(Argument::ArrayExpression(list)) = call.arguments.first() {
-                    self.plan_exports(list, ctx);
+                    self.plan_exports(call, list, ctx);
                 }
             }
             Some("a") => {

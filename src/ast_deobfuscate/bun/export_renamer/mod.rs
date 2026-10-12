@@ -5,7 +5,9 @@
 //!
 //! This is the AST-based replacement for the regex approach in `bun_extract.rs`.
 //! It fires during the deobfuscation pipeline (Phase 0.95) so that all subsequent
-//! passes see the readable names.
+//! passes see the readable names. The minified local behind a `default` key, or
+//! behind a native `export default` / `export { x as default }`, is named by
+//! [`crate::ast_deobfuscate::default_export`].
 //!
 //! Example:
 //! ```js

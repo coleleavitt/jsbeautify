@@ -115,7 +115,7 @@ fn names_legacy_callback_chunks() {
 fn skips_mangled_and_reserved_export_names() {
     let code = r"self.webpackChunk([1],{1(e,t,n){n.d(t,{A:()=>a,default:()=>b,class:()=>c,Ay:()=>d});var a,b,c,d}});";
     let out = run_script(code);
-    assert!(out.contains("var a, b, c, d"), "{out}");
+    assert!(out.contains("var a, default_1, c, d"), "{out}");
 }
 
 #[test]
@@ -213,4 +213,31 @@ fn factories_with_patterns_or_extra_params_are_skipped() {
     let code = r"webpackJsonp([0],{1:function({a},t){t.x=a},2:function(a,b,c,d){b.x=d}});";
     let out = run_script(code);
     assert!(!out.contains("exports"), "{out}");
+}
+
+#[test]
+fn names_default_export_locals_after_their_module() {
+    let code = r#"(self.webpackChunkapp=self.webpackChunkapp||[]).push([[1],{
+        10(e,t,r){r.d(t,{default:()=>n,Size:()=>o});function n(){return o}var o=1},
+        "./src/components/Button.tsx"(e,t,r){r.d(t,{default:()=>a});var a=class{}},
+        20(e,t,r){r.d(t,{default:()=>s});var s=function renderList(){}},
+        30(e,t,r){r.d(t,{default:()=>u});var u=r(10)}
+    }]);"#;
+    let out = run_script(code);
+    assert!(out.contains("function default_10()"), "{out}");
+    assert!(out.contains("var Size = 1"), "{out}");
+    assert!(out.contains("var Button_default = class {}"), "{out}");
+    assert!(out.contains("default: () => renderList"), "{out}");
+    assert!(
+        out.contains("var module_10 = __webpack_require__(10)"),
+        "import names win over default names: {out}"
+    );
+}
+
+#[test]
+fn names_webpack4_string_form_default_exports_by_array_index() {
+    let code =
+        r#"webpackJsonp([0],[,function(t,r,e){"use strict";e.d(r,"default",function(){return o});function o(){}}]);"#;
+    let out = run_script(code);
+    assert!(out.contains("function default_1()"), "{out}");
 }

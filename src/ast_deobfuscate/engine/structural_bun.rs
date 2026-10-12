@@ -55,16 +55,26 @@ impl AstDeobfuscator {
                 class_map.entry(k).or_insert(v);
             }
 
-            if !class_map.is_empty() {
-                let guarded = rename_guards::guarded_symbols(allocator, program);
-                class_map.retain(|sym, _| !guarded.contains(sym));
-            }
+            let eval_names = if class_map.is_empty() {
+                FxHashSet::default()
+            } else {
+                let guards = rename_guards::guards(allocator, program);
+                class_map.retain(|sym, _| !guards.symbols.contains(sym));
+                guards.eval_names
+            };
             if !class_map.is_empty() {
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
                     class_map.len()
                 );
                 let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+                // Two classes may carry the same `this.name`, and a name may
+                // already be bound or read as a global in scope.
+                let reserved = rename_guards::free_global_names(program, &scoping)
+                    .into_iter()
+                    .chain(eval_names.iter().map(String::as_str))
+                    .collect();
+                let class_map = bun::export_renamer::make_names_unique(class_map, &scoping, &reserved);
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
                 let mut renamer = ClassNameRenamer::new(class_map);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
@@ -145,7 +155,9 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     runtime
 }
 
-/// Phase 0.95: renames the locals passed to the `__export` helper to their export names.
+/// Phase 0.95: renames the locals passed to the `__export` helper to their
+/// export names, and minified `default` export locals (of `__export` and of
+/// native `export default`) per [`crate::ast_deobfuscate::default_export`].
 fn rename_exports<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
@@ -176,7 +188,7 @@ fn rename_exports<'a>(
     };
 
     if export_map.is_empty() {
-        eprintln!("[DEOBFUSCATE] Phase 0.95: No __export() calls found");
+        eprintln!("[DEOBFUSCATE] Phase 0.95: No export names found");
     } else {
         eprintln!(
             "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",

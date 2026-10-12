@@ -45,21 +45,26 @@ pub(super) fn function_params<'b, 'a>(expr: &'b Expression<'a>) -> Option<&'b Fo
     }
 }
 
-const fn is_module_id(key: &PropertyKey<'_>) -> bool {
-    matches!(key, PropertyKey::NumericLiteral(_) | PropertyKey::StringLiteral(_))
+fn module_id(key: &PropertyKey<'_>) -> Option<String> {
+    match key {
+        PropertyKey::NumericLiteral(n) => Some(n.value.to_string()),
+        PropertyKey::StringLiteral(s) => Some(s.value.to_string()),
+        _ => None,
+    }
 }
 
-/// The factory functions of a webpack module collection: an object keyed by
-/// module id (`{12: function(e,t,n){…}, "./a.js"(e){…}}`) or a factory array
-/// (`[function(e,t){…}, , function(e){…}]`). Every entry must be a factory.
-pub(super) fn module_factories<'b, 'a>(expr: &'b Expression<'a>) -> Option<Vec<&'b FormalParameters<'a>>> {
+/// The module ids and factory functions of a webpack module collection: an
+/// object keyed by module id (`{12: function(e,t,n){…}, "./a.js"(e){…}}`) or a
+/// factory array indexed by id (`[function(e,t){…}, , function(e){…}]`).
+/// Every entry must be a factory.
+pub(super) fn module_factories<'b, 'a>(expr: &'b Expression<'a>) -> Option<Vec<(String, &'b FormalParameters<'a>)>> {
     match expr.without_parentheses() {
         Expression::ObjectExpression(obj) => obj
             .properties
             .iter()
             .map(|prop| match prop {
-                ObjectPropertyKind::ObjectProperty(p) if !p.computed && is_module_id(&p.key) => {
-                    function_params(&p.value)
+                ObjectPropertyKind::ObjectProperty(p) if !p.computed => {
+                    Some((module_id(&p.key)?, function_params(&p.value)?))
                 }
                 _ => None,
             })
@@ -67,8 +72,9 @@ pub(super) fn module_factories<'b, 'a>(expr: &'b Expression<'a>) -> Option<Vec<&
         Expression::ArrayExpression(arr) => arr
             .elements
             .iter()
-            .filter(|el| !matches!(el, ArrayExpressionElement::Elision(_)))
-            .map(|el| el.as_expression().and_then(function_params))
+            .enumerate()
+            .filter(|(_, el)| !matches!(el, ArrayExpressionElement::Elision(_)))
+            .map(|(id, el)| Some((id.to_string(), el.as_expression().and_then(function_params)?)))
             .collect(),
         _ => None,
     }

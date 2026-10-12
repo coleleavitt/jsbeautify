@@ -57,6 +57,14 @@ fn detects_this_name_in_constructor() {
 }
 
 #[test]
+fn detects_this_name_in_a_joined_constructor_statement() {
+    // Minifiers join `super(H); this.name = "AbortError";` into one sequence.
+    let code = r#"var c5 = class extends Error { constructor(H) { super(H), this.name = "AbortError"; } };"#;
+    let map = collect(code);
+    assert!(map.values().any(|name| name == "AbortError"), "{map:?}");
+}
+
+#[test]
 fn skips_xml_names() {
     let code = r#"
             class x1 {

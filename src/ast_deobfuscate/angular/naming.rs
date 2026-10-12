@@ -2,12 +2,6 @@ use oxc_ast::ast::{ArrayExpressionElement, Expression, ObjectExpression, ObjectP
 
 use super::DefKind;
 
-/// Minifiers emit one- to three-character bindings; anything longer is
-/// treated as an author-chosen name and left alone.
-pub(super) fn is_minified(name: &str) -> bool {
-    name.chars().count() <= 3
-}
-
 pub(super) fn object_property<'b, 'a>(obj: &'b ObjectExpression<'a>, name: &str) -> Option<&'b Expression<'a>> {
     obj.properties.iter().find_map(|prop| match prop {
         ObjectPropertyKind::ObjectProperty(p) if p.key.static_name().is_some_and(|key| key == name) => Some(&p.value),

@@ -11,7 +11,8 @@
 //!   bootstrap IIFE argument, and JSONP / `importScripts` chunk payloads) become
 //!   `module`, `exports`, `__webpack_require__`, in that positional order;
 //! - locals exposed through `__webpack_require__.d(exports, …)` take their
-//!   public export name;
+//!   public export name, and a minified `default` export local a name derived
+//!   from its module id (see [`crate::ast_deobfuscate::default_export`]);
 //! - `var x = __webpack_require__(123)` becomes `module_123`, and its
 //!   `__webpack_require__.n(x)` interop getter `module_123_default`.
 //!

@@ -29,6 +29,7 @@ mod util;
 
 pub use collectors::{ClassNameCollector, DisplayNameCollector};
 pub use renamer::ClassNameRenamer;
+pub use util::constructor_this_name;
 
 #[cfg(test)]
 mod tests;

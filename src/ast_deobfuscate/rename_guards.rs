@@ -19,8 +19,9 @@
 //!    `export const K = 2`, and `export { H }` expose the *binding name itself*
 //!    as the module's public surface (there is no separate alias to preserve
 //!    it). Renaming the binding changes what importers see. `export default …`
-//!    is safe (the public name is always `default`), and `export … from "mod"`
-//!    re-exports a foreign binding (nothing local is exposed by name).
+//!    and `export { H as default }` are safe (the public name is always
+//!    `default`), and `export … from "mod"` re-exports a foreign binding
+//!    (nothing local is exposed by name).
 //!
 //! 3. **Classic-script globals** — in a script (not a module or `CommonJS`
 //!    body), every top-level binding is shared: `var` and `function` become
@@ -251,15 +252,6 @@ pub struct RenameGuards {
     pub eval_names: FxHashSet<String>,
 }
 
-/// Runs [`RenameGuardCollector`] over `program` and resolves its guarded set.
-pub fn guarded_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> FxHashSet<SymbolId> {
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut collector = RenameGuardCollector::new();
-    traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    collector.into_guarded(&ctx.into_scoping())
-}
-
 /// Runs [`RenameGuardCollector`] over `program` and resolves its
 /// [`RenameGuards`].
 pub fn guards<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> RenameGuards {
@@ -321,6 +313,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
     fn enter_export_named_declaration(&mut self, export: &mut ExportNamedDeclaration<'a>, ctx: &mut Ctx<'a>) {
         for spec in &export.specifiers {
             if let ModuleExportName::IdentifierReference(local) = &spec.local
+                && spec.exported.name() != "default"
                 && let Some(symbol_id) = ctx.scoping().get_reference(local.reference_id()).symbol_id()
             {
                 self.preserved.insert(symbol_id);
@@ -450,6 +443,15 @@ mod tests {
             "default export local should not be guarded: {names:?}"
         );
         assert!(!names.contains("K"), "plain local should not be guarded: {names:?}");
+    }
+
+    #[test]
+    fn flags_a_default_specifier_local_only_when_also_exported_by_name() {
+        let names = guarded_names("let n = 1, m = 2; export { n as default, m as default2 };");
+        assert!(!names.contains("n"), "`n as default` exposes only `default`: {names:?}");
+        assert!(names.contains("m"), "{names:?}");
+        let names = guarded_names("let n = 1; export { n as default, n };");
+        assert!(names.contains("n"), "{names:?}");
     }
 
     #[test]

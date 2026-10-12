@@ -18,7 +18,8 @@
 //!   async module body's parameters to `__turbopack_handle_async_dependencies__`,
 //!   `__turbopack_async_result__` (Turbopack's own names before minification);
 //! - locals exported through `__turbopack_context__.s([name, getter | 0, value, …])`
-//!   to their export name;
+//!   to their export name, and a minified `default` export local to a name
+//!   derived from its module id (see [`crate::ast_deobfuscate::default_export`]);
 //! - `x = __turbopack_context__.i(123)` / `.r(123)` to `module_123`, and with a
 //!   development id `.i("[project]/src/foo.ts [app-client] (ecmascript)")` to
 //!   `module_src_foo_ts` (the id stays in the call); `x = __turbopack_context__.x("react", …)`

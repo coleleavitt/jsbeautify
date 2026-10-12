@@ -8,11 +8,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::bun::export_renamer::make_names_unique;
 use crate::ast_deobfuscate::class_name_renamer::ClassNameRenamer;
+use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::collector::AngularNameCollector;
-use super::naming::is_minified;
 
 /// Rename minified Angular class bindings (from `ɵcmp`/`ɵdir`/`ɵpipe`
 /// definitions) and `NgRx` action creators to derived names, by `SymbolId`.

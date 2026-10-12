@@ -1,5 +1,6 @@
 use oxc_ast::ast::{
-    Argument, ArrayExpressionElement, BindingPattern, CallExpression, Expression, VariableDeclarator, WithStatement,
+    Argument, ArrayExpressionElement, BindingPattern, CallExpression, Expression, Program, VariableDeclarator,
+    WithStatement,
 };
 use oxc_syntax::identifier::is_identifier_name;
 use oxc_syntax::keyword::is_reserved_keyword_or_global_object;
@@ -8,6 +9,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Runtime;
@@ -24,6 +26,10 @@ pub(super) struct NameCollector {
     plan: Vec<(SymbolId, String)>,
     planned: FxHashSet<SymbolId>,
     imports: FxHashMap<SymbolId, String>,
+    /// Module id of each factory's `exports` parameter.
+    module_ids: FxHashMap<SymbolId, String>,
+    /// Locals exported as `default`, named after every other binding.
+    defaults: Vec<DefaultExport>,
     with_scopes: Vec<ScopeId>,
     /// Module factories seen in runtime module maps and chunk payloads.
     module_count: usize,
@@ -37,6 +43,8 @@ impl NameCollector {
             plan: Vec::new(),
             planned: FxHashSet::default(),
             imports: FxHashMap::default(),
+            module_ids: FxHashMap::default(),
+            defaults: Vec::new(),
             with_scopes: Vec::new(),
             module_count: 0,
         };
@@ -69,10 +77,13 @@ impl NameCollector {
     fn name_factories(&mut self, modules: &Expression<'_>) {
         let factories = module_factories(modules).unwrap_or_default();
         self.module_count += factories.len();
-        for params in factories {
+        for (id, params) in factories {
             let Some(symbols) = simple_params(params) else { continue };
             if symbols.len() > FACTORY_PARAMS.len() {
                 continue;
+            }
+            if let Some(&exports) = symbols.get(1) {
+                self.module_ids.insert(exports, id);
             }
             for (symbol, name) in symbols.iter().zip(FACTORY_PARAMS) {
                 self.plan(*symbol, name);
@@ -87,25 +98,32 @@ impl NameCollector {
         resolve_expr(expr, ctx).is_some_and(|symbol| self.requires.contains(&symbol))
     }
 
-    fn plan_export(&mut self, name: &str, local: &Expression<'_>, ctx: &Ctx<'_>) {
-        if is_recoverable_export_name(name)
-            && let Some(symbol) = resolve_expr(local, ctx)
-        {
+    fn plan_export(&mut self, name: &str, local: Option<SymbolId>, module: Option<&String>) {
+        let Some(symbol) = local else { return };
+        if name == "default" {
+            self.defaults.push(DefaultExport {
+                local: symbol,
+                module: module.cloned(),
+            });
+        } else if is_recoverable_export_name(name) {
             self.plan(symbol, name);
         }
     }
 
-    fn plan_getter_export(&mut self, name: &str, getter: &Expression<'_>, ctx: &Ctx<'_>) {
-        if is_recoverable_export_name(name)
-            && let Some(symbol) = getter_target(getter).and_then(|id| resolve(id, ctx))
-        {
-            self.plan(symbol, name);
-        }
+    fn plan_getter_export(&mut self, name: &str, getter: &Expression<'_>, module: Option<&String>, ctx: &Ctx<'_>) {
+        let local = getter_target(getter).and_then(|id| resolve(id, ctx));
+        self.plan_export(name, local, module);
     }
 
     /// `R.d(exports, {name: getter})`, `R.d(exports, ["name", getter, "name2", 0, value])`
     /// and webpack 4's `R.d(exports, "name", getter)`.
     fn collect_exports(&mut self, args: &[Argument<'_>], ctx: &Ctx<'_>) {
+        let module = args
+            .first()
+            .and_then(Argument::as_expression)
+            .and_then(|exports| resolve_expr(exports, ctx))
+            .and_then(|exports| self.module_ids.get(&exports).cloned());
+        let module = module.as_ref();
         match args {
             [_, Argument::ObjectExpression(obj)] => {
                 for prop in &obj.properties {
@@ -113,7 +131,7 @@ impl NameCollector {
                         && !p.computed
                         && let Some(name) = p.key.static_name()
                     {
-                        self.plan_getter_export(&name, &p.value, ctx);
+                        self.plan_getter_export(&name, &p.value, module, ctx);
                     }
                 }
             }
@@ -125,11 +143,11 @@ impl NameCollector {
                             let Some(value) = elements.next().and_then(ArrayExpressionElement::as_expression) else {
                                 break;
                             };
-                            self.plan_export(&name.value, value, ctx);
+                            self.plan_export(&name.value, resolve_expr(value, ctx), module);
                         }
                         Some(getter) => {
                             let Some(getter) = getter.as_expression() else { break };
-                            self.plan_getter_export(&name.value, getter, ctx);
+                            self.plan_getter_export(&name.value, getter, module, ctx);
                         }
                         None => break,
                     }
@@ -137,7 +155,7 @@ impl NameCollector {
             }
             [_, Argument::StringLiteral(name), getter] => {
                 if let Some(getter) = getter.as_expression() {
-                    self.plan_getter_export(&name.value, getter, ctx);
+                    self.plan_getter_export(&name.value, getter, module, ctx);
                 }
             }
             _ => {}
@@ -178,6 +196,13 @@ fn is_recoverable_export_name(name: &str) -> bool {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        let defaults = std::mem::take(&mut self.defaults);
+        for (symbol, name) in default_export_names(program, ctx.scoping(), defaults) {
+            self.plan(symbol, &name);
+        }
+    }
+
     fn enter_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>, ctx: &mut Ctx<'a>) {
         let BindingPattern::BindingIdentifier(id) = &decl.id else {
             return;
