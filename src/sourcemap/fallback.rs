@@ -2,19 +2,19 @@ use super::tree::{ReversedSource, write_reversed_sources};
 use crate::ast_deobfuscate::bun::Bundler;
 use crate::bun_extract::{ModuleType, split_bundle};
 use crate::turbopack_extract::detect_turbopack_chunk;
-use regex::Regex;
+use oxc_allocator::Allocator;
+use oxc_ast::ast::{
+    AssignmentExpression, AssignmentTarget, BindingPattern, Class, Expression, Function, VariableDeclaration,
+    VariableDeclarationKind, VariableDeclarator,
+};
+use oxc_ast_visit::{Visit, walk};
+use oxc_parser::Parser;
+use oxc_span::{SourceType, Span};
+use oxc_syntax::operator::AssignmentOperator;
+use oxc_syntax::scope::ScopeFlags;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::ops::Range;
 use std::path::Path;
-use std::sync::LazyLock;
-
-static FUNCTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:async\s+)?function\s*\*?\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").expect("valid function regex")
-});
-
-static CLASS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)\b").expect("valid class regex"));
 
 pub(super) fn reconstruct_without_sourcemap(bundle_source: &str, output_dir: &Path) -> Result<Vec<String>, String> {
     write_reversed_sources(synthetic_sources(bundle_source), output_dir)
@@ -108,26 +108,18 @@ enum BoundaryKind {
     Function,
 }
 
+/// One named function or class cut from the bundle, already a standalone
+/// parseable unit.
 struct Boundary {
-    range: Range<usize>,
     name: String,
     kind: BoundaryKind,
+    content: String,
 }
 
 fn named_boundary_sources(bundle_source: &str) -> Vec<ReversedSource> {
-    let mut boundaries = Vec::new();
-    collect_boundaries(bundle_source, &FUNCTION_RE, BoundaryKind::Function, &mut boundaries);
-    collect_boundaries(bundle_source, &CLASS_RE, BoundaryKind::Class, &mut boundaries);
-    boundaries.sort_by_key(|b| (b.range.start, b.range.end));
-
     let mut out = Vec::new();
     let mut paths = BTreeMap::new();
-    let mut last_end = 0;
-    for boundary in boundaries {
-        if boundary.range.start < last_end {
-            continue;
-        }
-        last_end = boundary.range.end;
+    for boundary in named_boundaries(bundle_source) {
         let dir = match boundary.kind {
             BoundaryKind::Class => "classes",
             BoundaryKind::Function => "functions",
@@ -136,161 +128,130 @@ fn named_boundary_sources(bundle_source: &str) -> Vec<ReversedSource> {
             &mut out,
             &mut paths,
             format!("synthetic/{dir}/{}.js", safe_component(&boundary.name)),
-            bundle_source[boundary.range].trim().to_string(),
+            boundary.content,
         );
     }
     out
 }
 
-fn collect_boundaries(source: &str, re: &Regex, kind: BoundaryKind, out: &mut Vec<Boundary>) {
-    for caps in re.captures_iter(source) {
-        let Some(mat) = caps.get(0) else {
-            continue;
-        };
-        let Some(name) = caps.get(1) else {
-            continue;
-        };
-        let start = semantic_start(mat.start(), mat.as_str());
-        let Some(end) = find_braced_region_end(source, start) else {
-            continue;
-        };
-        out.push(Boundary {
-            range: start..end,
-            name: name.as_str().to_string(),
+/// The outermost named functions and classes, in source order, cut at their
+/// Oxc spans. An anonymous class is cut with the binding that names it
+/// (`var X = class …;`, `X = class …`). A bundle that fails to parse both as
+/// a `.cjs` script and as a module has no boundaries.
+fn named_boundaries(source: &str) -> Vec<Boundary> {
+    crate::stack::run_on_sized_stack(source.len(), || {
+        [SourceType::cjs(), SourceType::mjs()]
+            .into_iter()
+            .find_map(|source_type| {
+                let allocator = Allocator::default();
+                let parsed = Parser::new(&allocator, source, source_type).parse();
+                if parsed.panicked || !parsed.diagnostics.is_empty() {
+                    return None;
+                }
+                let mut finder = BoundaryFinder {
+                    source,
+                    declaration_kind: None,
+                    boundaries: Vec::new(),
+                };
+                finder.visit_program(&parsed.program);
+                Some(finder.boundaries)
+            })
+    })
+    .unwrap_or_default()
+}
+
+struct BoundaryFinder<'s> {
+    source: &'s str,
+    /// The keyword of the variable declaration being walked, when a
+    /// declarator of it can stand alone as `<keyword> <declarator>;`.
+    declaration_kind: Option<&'static str>,
+    boundaries: Vec<Boundary>,
+}
+
+impl BoundaryFinder<'_> {
+    fn push(&mut self, name: &str, kind: BoundaryKind, content: String) {
+        self.boundaries.push(Boundary {
+            name: name.to_string(),
             kind,
+            content,
         });
     }
+
+    fn text(&self, span: Span) -> &str {
+        &self.source[span.start as usize..span.end as usize]
+    }
 }
 
-fn semantic_start(offset: usize, matched: &str) -> usize {
-    let mut skip = 0;
-    for byte in matched.bytes() {
-        if byte.is_ascii_whitespace() || byte == b';' {
-            skip += 1;
-        } else {
-            break;
+fn is_anonymous_class(expr: &Expression<'_>) -> bool {
+    matches!(expr.without_parentheses(), Expression::ClassExpression(class) if class.id.is_none())
+}
+
+impl<'a> Visit<'a> for BoundaryFinder<'_> {
+    fn visit_function(&mut self, func: &Function<'a>, flags: ScopeFlags) {
+        match &func.id {
+            Some(id) => {
+                let content = self.text(func.span).to_string();
+                self.push(&id.name, BoundaryKind::Function, content);
+            }
+            None => walk::walk_function(self, func, flags),
         }
     }
-    offset + skip
-}
 
-fn find_braced_region_end(source: &str, start: usize) -> Option<usize> {
-    let open = source.get(start..)?.find('{')? + start;
-    matching_brace_end(source, open)
-}
-
-#[derive(Clone, Copy)]
-enum ScanState {
-    Code,
-    LineComment,
-    BlockComment,
-    RegexLiteral { in_class: bool },
-    String(u8),
-}
-
-fn matching_brace_end(source: &str, open: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
-    if bytes.get(open).copied()? != b'{' {
-        return None;
-    }
-
-    let mut depth = 1usize;
-    let mut state = ScanState::Code;
-    let mut last_significant = None;
-    let mut i = open + 1;
-    while i < bytes.len() {
-        let byte = bytes[i];
-        match state {
-            ScanState::Code => match byte {
-                b'{' => {
-                    depth += 1;
-                    last_significant = Some(byte);
-                }
-                b'}' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        return Some(i + 1);
-                    }
-                    last_significant = Some(byte);
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                    state = ScanState::LineComment;
-                    i += 1;
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                    state = ScanState::BlockComment;
-                    i += 1;
-                }
-                b'/' if regex_literal_can_start_after(last_significant) => {
-                    state = ScanState::RegexLiteral { in_class: false };
-                }
-                b'"' | b'\'' | b'`' => state = ScanState::String(byte),
-                _ if !byte.is_ascii_whitespace() => last_significant = Some(byte),
-                _ => {}
-            },
-            ScanState::LineComment => {
-                if byte == b'\n' {
-                    state = ScanState::Code;
-                }
+    fn visit_class(&mut self, class: &Class<'a>) {
+        match &class.id {
+            Some(id) => {
+                let content = self.text(class.span).to_string();
+                self.push(&id.name, BoundaryKind::Class, content);
             }
-            ScanState::BlockComment => {
-                if byte == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                    state = ScanState::Code;
-                    i += 1;
-                }
-            }
-            ScanState::RegexLiteral { mut in_class } => {
-                if byte == b'\\' {
-                    i += 1;
-                } else if byte == b'[' {
-                    in_class = true;
-                    state = ScanState::RegexLiteral { in_class };
-                } else if byte == b']' {
-                    in_class = false;
-                    state = ScanState::RegexLiteral { in_class };
-                } else if byte == b'/' && !in_class {
-                    state = ScanState::Code;
-                    last_significant = Some(b'/');
-                }
-            }
-            ScanState::String(quote) => {
-                if byte == b'\\' {
-                    i += 1;
-                } else if byte == quote {
-                    state = ScanState::Code;
-                    last_significant = Some(quote);
-                }
-            }
+            None => walk::walk_class(self, class),
         }
-        i += 1;
     }
-    None
-}
 
-const fn regex_literal_can_start_after(previous: Option<u8>) -> bool {
-    matches!(
-        previous,
-        None | Some(
-            b'(' | b'{'
-                | b'['
-                | b'='
-                | b':'
-                | b','
-                | b';'
-                | b'!'
-                | b'?'
-                | b'&'
-                | b'|'
-                | b'+'
-                | b'-'
-                | b'*'
-                | b'%'
-                | b'^'
-                | b'~'
-                | b'<'
-                | b'>'
-        )
-    )
+    fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
+        let outer = self.declaration_kind.replace(match decl.kind {
+            VariableDeclarationKind::Var => "var",
+            VariableDeclarationKind::Let => "let",
+            VariableDeclarationKind::Const => "const",
+            VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing => {
+                self.declaration_kind = None;
+                walk::walk_variable_declaration(self, decl);
+                return;
+            }
+        });
+        walk::walk_variable_declaration(self, decl);
+        self.declaration_kind = outer;
+    }
+
+    fn visit_variable_declarator(&mut self, declarator: &VariableDeclarator<'a>) {
+        if let (Some(keyword), BindingPattern::BindingIdentifier(id), Some(init)) =
+            (self.declaration_kind, &declarator.id, &declarator.init)
+            && is_anonymous_class(init)
+        {
+            let content = format!("{keyword} {};", self.text(declarator.span));
+            self.push(&id.name, BoundaryKind::Class, content);
+            return;
+        }
+        let outer = self.declaration_kind.take();
+        walk::walk_variable_declarator(self, declarator);
+        self.declaration_kind = outer;
+    }
+
+    fn visit_assignment_expression(&mut self, assign: &AssignmentExpression<'a>) {
+        let name = match &assign.left {
+            AssignmentTarget::AssignmentTargetIdentifier(id) => Some(id.name.as_str()),
+            AssignmentTarget::StaticMemberExpression(member) => Some(member.property.name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = name
+            && assign.operator == AssignmentOperator::Assign
+            && is_anonymous_class(&assign.right)
+        {
+            let content = format!("{};", self.text(assign.span));
+            self.push(name, BoundaryKind::Class, content);
+            return;
+        }
+        walk::walk_assignment_expression(self, assign);
+    }
 }
 
 fn push_source(
@@ -339,5 +300,125 @@ fn safe_component(raw: &str) -> String {
         "anonymous".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `(path, content)` of every synthetic source, asserting each one parses
+    /// on its own as a classic script.
+    fn split(bundle: &str) -> Vec<(String, String)> {
+        synthetic_sources(bundle)
+            .into_iter()
+            .map(|source| {
+                let allocator = Allocator::default();
+                let parsed = Parser::new(&allocator, &source.content, SourceType::script()).parse();
+                assert!(
+                    parsed.diagnostics.is_empty(),
+                    "{} does not parse alone: {:?}\n{}",
+                    source.source_path,
+                    parsed.diagnostics,
+                    source.content
+                );
+                (source.source_path, source.content)
+            })
+            .collect()
+    }
+
+    fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+        expected
+            .iter()
+            .map(|(path, content)| ((*path).to_string(), (*content).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn anonymous_classes_are_cut_with_their_binding() {
+        let bundle = concat!(
+            "var m=class extends Error{name=\"A\"},n=1;",
+            "let B;B=class extends m{constructor(e){super(e)}};",
+            "e.C=class{};",
+            "f(class extends m{});"
+        );
+        assert_eq!(
+            split(bundle),
+            pairs(&[
+                ("synthetic/classes/m.js", "var m=class extends Error{name=\"A\"};"),
+                ("synthetic/classes/B.js", "B=class extends m{constructor(e){super(e)}};"),
+                ("synthetic/classes/C.js", "e.C=class{};"),
+            ])
+        );
+    }
+
+    #[test]
+    fn functions_with_braces_in_their_parameters_are_cut_whole() {
+        let bundle = "async function L(e,o={}){return o}function q({a:b,c:d=\"}\"},...r){return b}";
+        assert_eq!(
+            split(bundle),
+            pairs(&[
+                ("synthetic/functions/L.js", "async function L(e,o={}){return o}"),
+                ("synthetic/functions/q.js", "function q({a:b,c:d=\"}\"},...r){return b}"),
+            ])
+        );
+    }
+
+    #[test]
+    fn keywords_inside_strings_comments_and_templates_are_not_boundaries() {
+        let bundle = concat!(
+            "var s=\"class here \\u2014 function nope(x){\";",
+            "/* class Gone {} */",
+            "var t=`function also(){} ${s} class Not{}`;",
+            "function f(){return s+t}"
+        );
+        assert_eq!(
+            split(bundle),
+            pairs(&[("synthetic/functions/f.js", "function f(){return s+t}")])
+        );
+    }
+
+    #[test]
+    fn regex_and_template_braces_do_not_end_a_boundary_early() {
+        let bundle = "function f(t){let r=/\\{(?<a>[^}]*)\\}/;return`${ {a:t}.a }}`+r}function*k$(r){yield*r}";
+        assert_eq!(
+            split(bundle),
+            pairs(&[
+                (
+                    "synthetic/functions/f.js",
+                    "function f(t){let r=/\\{(?<a>[^}]*)\\}/;return`${ {a:t}.a }}`+r}"
+                ),
+                ("synthetic/functions/k$.js", "function*k$(r){yield*r}"),
+            ])
+        );
+    }
+
+    #[test]
+    fn nested_boundaries_stay_inside_the_outermost_one() {
+        let bundle = "!function(){function outer(){function inner(){}class Local{}}class Top{m(){function no(){}}}}();";
+        assert_eq!(
+            split(bundle),
+            pairs(&[
+                (
+                    "synthetic/functions/outer.js",
+                    "function outer(){function inner(){}class Local{}}"
+                ),
+                ("synthetic/classes/Top.js", "class Top{m(){function no(){}}}"),
+            ])
+        );
+    }
+
+    #[test]
+    fn module_bundles_are_split_and_unparseable_ones_kept_whole() {
+        let module = "import a from\"a\";export function g(){return a}export default class extends a{}";
+        assert_eq!(
+            split(module),
+            pairs(&[("synthetic/functions/g.js", "function g(){return a}")])
+        );
+        let broken = "function a(){ class B {";
+        let sources = synthetic_sources(broken);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_path, "synthetic/chunks/bundle.js");
+        assert_eq!(sources[0].content, broken);
     }
 }
