@@ -88,8 +88,9 @@ pub fn is_global_symbol<State>(ctx: &TraverseCtx<'_, State>, symbol: SymbolId) -
     program_source_type(ctx).is_some_and(|source_type| is_global_binding(source_type, ctx.scoping(), symbol))
 }
 
-/// Whether `func` is a sloppy-mode function declaration nested in a block or
-/// an `if`/`switch`/label body. Annex B also assigns it to a same-named `var`
+/// Whether `func` is a sloppy-mode plain function declaration nested in a
+/// block or an `if`/`switch`/label body (Annex B.3.3 leaves async functions
+/// and generators block-scoped). Annex B also assigns it to a same-named `var`
 /// of the enclosing function or global scope, so its name is observable
 /// outside the block even where `oxc_semantic` binds it block-scoped.
 ///
@@ -98,6 +99,8 @@ pub fn is_global_symbol<State>(ctx: &TraverseCtx<'_, State>, symbol: SymbolId) -
 #[must_use]
 pub fn is_annex_b_function<State>(ctx: &TraverseCtx<'_, State>, func: &Function<'_>) -> bool {
     func.is_declaration()
+        && !func.r#async
+        && !func.generator
         && !ctx.current_scope_flags().is_strict_mode()
         && !matches!(
             ctx.parent(),
@@ -564,9 +567,10 @@ mod tests {
 
     #[test]
     fn flags_sloppy_block_functions() {
-        let code = "function g() { { function f() {} } { function f() {} } if (g) function h() {} }";
+        let code = "function g() { { function f() {} } { function f() {} } if (g) function h() {} { async function a() {} function* b() {} } }";
         let names = guarded_names_as(code, SourceType::cjs());
         assert!(names.contains("f") && names.contains("h"), "{names:?}");
+        assert!(!names.contains("a") && !names.contains("b"), "block-scoped: {names:?}");
         assert!(!names.contains("g"), "{names:?}");
         let strict = guarded_names_as(code, SourceType::mjs());
         assert!(
