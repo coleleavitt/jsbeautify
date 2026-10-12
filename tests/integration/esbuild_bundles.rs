@@ -65,8 +65,34 @@ fn labels_a_bun_bundle_from_its_export_helper() {
 }
 
 #[test]
+fn names_exports_listed_in_the_cjs_export_names_hint() {
+    // esbuild appends `0 && (module.exports = {...})` for Node's
+    // cjs-module-lexer; its free references are never evaluated.
+    let out = deobfuscate(
+        "var d=Object.defineProperty;\
+         var X=(e,t)=>{for(var n in t)d(e,n,{get:t[n],enumerable:!0})};\
+         var a={};X(a,{AgentSkill:()=>yr});var yr=class{};module.exports=a;\
+         0&&(module.exports={AgentSkill});",
+    );
+    assert!(out.contains("var AgentSkill = class"), "{out}");
+    assert!(!out.contains("AgentSkill$1"), "{out}");
+}
+
+#[test]
+fn keeps_avoiding_a_free_global_read_outside_the_hint() {
+    let out = deobfuscate(
+        "var d=Object.defineProperty;\
+         var X=(e,t)=>{for(var n in t)d(e,n,{get:t[n],enumerable:!0})};\
+         var a={};X(a,{AgentSkill:()=>yr});var yr=class{};module.exports=a;\
+         AgentSkill.load();0&&(module.exports={AgentSkill});",
+    );
+    assert!(out.contains("var AgentSkill$1 = class"), "{out}");
+    assert!(out.contains("AgentSkill.load()"), "{out}");
+}
+
+#[test]
 fn omits_the_bundler_without_a_distinguishing_helper() {
     let out = deobfuscate("var E=(e,t)=>()=>(e&&(t=e(e=0)),t);var m=E(()=>{});module.exports=m;");
-    assert!(out.contains("//   __esm → __esm"), "{out}");
+    assert!(out.contains("//   __esm\n"), "{out}");
     assert!(!out.contains("Runtime:"), "{out}");
 }

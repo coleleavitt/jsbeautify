@@ -179,10 +179,8 @@ fn rename_exports<'a>(
         // Legal, unique-per-scope names (reserved words like `instanceof`,
         // duplicate `ZodType`/`Client`) that never capture a global or a
         // name read by `eval("name")`.
-        let reserved = scoping
-            .root_unresolved_references()
-            .keys()
-            .map(Ident::as_str)
+        let reserved = rename_guards::free_global_names(program, &scoping)
+            .into_iter()
             .chain(eval_names.iter().map(String::as_str))
             .collect();
         let export_map = bun::export_renamer::make_names_unique(export_map, &scoping, &reserved);

@@ -2,21 +2,21 @@ use oxc_ast::ast::{Expression, Ident};
 use oxc_span::SPAN;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashSet;
+use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::utils::{is_always_defined_global, is_delete_operand, is_reserved_word};
+use super::utils::{GlobalObject, is_always_defined_global, is_delete_operand, is_reserved_word};
 
 pub struct WindowAliasPropagator {
-    aliases: FxHashSet<SymbolId>,
+    aliases: FxHashMap<SymbolId, GlobalObject>,
     rewrites: usize,
 }
 
 impl WindowAliasPropagator {
     #[must_use]
-    pub const fn new(aliases: FxHashSet<SymbolId>) -> Self {
+    pub const fn new(aliases: FxHashMap<SymbolId, GlobalObject>) -> Self {
         Self { aliases, rewrites: 0 }
     }
 
@@ -48,20 +48,19 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasPropagator {
         let Some(symbol_id) = ctx.scoping().get_reference(reference_id).symbol_id() else {
             return;
         };
-        if !self.aliases.contains(&symbol_id) {
+        let Some(&global) = self.aliases.get(&symbol_id) else {
             return;
-        }
+        };
         let prop_name = sme.property.name.as_str();
         // `alias.in` → `in` would be a bare reserved word: invalid JS. Skip it.
         if is_reserved_word(prop_name) {
             return;
         }
-        // Only rewrite properties that are *always defined* as global bindings.
-        // For an arbitrary `alias.foo`, `window.foo` reads `undefined` when `foo`
-        // is absent, but bare `foo` THROWS a ReferenceError — not behavior-
-        // preserving. Restricting to known globals also keeps the bare form the
-        // canonical call (`document.x()`), so the `this`-receiver is unchanged.
-        if !is_always_defined_global(prop_name) {
+        // Only rewrite properties that are *always defined* as global bindings
+        // of the global object the alias holds. For an arbitrary `alias.foo`,
+        // `window.foo` reads `undefined` when `foo` is absent, but bare `foo`
+        // THROWS a ReferenceError — not behavior-preserving.
+        if !is_always_defined_global(prop_name, global) {
             return;
         }
         // `delete alias.foo` → `delete foo` is a SyntaxError in strict mode (MJS

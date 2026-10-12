@@ -38,11 +38,13 @@
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, BindingIdentifier, CallExpression, Declaration, ExportDeclaration, ExportNamedDeclaration, Expression,
-    Function, IdentifierReference, ModuleExportName, Program,
+    Argument, AssignmentTarget, BindingIdentifier, CallExpression, Declaration, ExportDeclaration,
+    ExportNamedDeclaration, Expression, Function, IdentifierReference, LogicalOperator, ModuleExportName,
+    ObjectExpression, ObjectPropertyKind, Program, Statement,
 };
 use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::SourceType;
+use oxc_syntax::reference::ReferenceId;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Ancestor, ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
@@ -100,6 +102,65 @@ pub fn is_annex_b_function<State>(ctx: &TraverseCtx<'_, State>, func: &Function<
 #[must_use]
 pub fn binds_global<State>(ctx: &TraverseCtx<'_, State>, id: &BindingIdentifier<'_>) -> bool {
     id.symbol_id.get().is_some_and(|symbol| is_global_symbol(ctx, symbol))
+}
+
+/// Names the program reads as free globals, leaving out the references in the
+/// export-name hint esbuild appends to `CommonJS` output,
+/// `0 && (module.exports = { a, b })`. The hint is never evaluated (it exists
+/// for Node's cjs-module-lexer), so renaming a binding to one of its names
+/// cannot change what the program does.
+#[must_use]
+pub fn free_global_names<'s>(program: &Program<'_>, scoping: &'s Scoping) -> FxHashSet<&'s str> {
+    let hint: FxHashSet<ReferenceId> = program
+        .body
+        .iter()
+        .filter_map(cjs_export_names_hint)
+        .flat_map(|object| &object.properties)
+        .filter_map(|property| match property {
+            ObjectPropertyKind::ObjectProperty(property) => match &property.value {
+                Expression::Identifier(id) => id.reference_id.get(),
+                _ => None,
+            },
+            ObjectPropertyKind::SpreadProperty(_) => None,
+        })
+        .collect();
+    scoping
+        .root_unresolved_references()
+        .iter()
+        .filter(|(_, references)| references.iter().any(|reference| !hint.contains(reference)))
+        .map(|(name, _)| name.as_str())
+        .collect()
+}
+
+/// The object of a `0 && (module.exports = {...})` statement.
+fn cjs_export_names_hint<'p, 'a>(statement: &'p Statement<'a>) -> Option<&'p ObjectExpression<'a>> {
+    let Statement::ExpressionStatement(statement) = statement else {
+        return None;
+    };
+    let Expression::LogicalExpression(logical) = statement.expression.without_parentheses() else {
+        return None;
+    };
+    if logical.operator != LogicalOperator::And
+        || !matches!(&logical.left, Expression::NumericLiteral(zero) if zero.value == 0.0)
+    {
+        return None;
+    }
+    let Expression::AssignmentExpression(assign) = logical.right.without_parentheses() else {
+        return None;
+    };
+    let AssignmentTarget::StaticMemberExpression(target) = &assign.left else {
+        return None;
+    };
+    let Expression::Identifier(module) = &target.object else {
+        return None;
+    };
+    if module.name != "module" || target.property.name != "exports" {
+        return None;
+    }
+    let Expression::ObjectExpression(object) = &assign.right else {
+        return None;
+    };
+    Some(object)
 }
 
 /// The identifier `name` when `call` is `eval("name")`: the evaluated code is

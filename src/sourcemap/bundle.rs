@@ -210,6 +210,18 @@ mod tests {
     }
 
     #[test]
+    fn reconstruct_bundle_tree_does_not_take_calls_to_a_plain_y_for_modules() {
+        // Grok Bot's preload bundle: no runtime helpers, but `var Ee=y(...)`
+        // calls an ordinary function `y`; it is not a CommonJS module.
+        let written = split_paths(
+            "plain-y",
+            "function y(e){let n=new Set(e);return t=>n.has(t)}var Ee=y(Object.keys(ge));",
+        );
+        assert!(written.iter().all(|path| !path.contains("commonjs")), "{written:?}");
+        assert!(written.contains(&"synthetic/functions/y.js".to_string()), "{written:?}");
+    }
+
+    #[test]
     fn reconstruct_bundle_tree_splits_claude_style_bun_wrapper_without_source_map() {
         let dir = std::env::temp_dir().join(format!("jsb-bundle-claude-nosmtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

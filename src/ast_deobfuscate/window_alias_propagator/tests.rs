@@ -252,7 +252,7 @@ fn does_not_rewrite_unknown_global_property() {
 #[test]
 fn rewrites_known_spec_and_browser_globals() {
     // Allowlisted globals (spec + browser) are safe to strip.
-    for prop in ["document", "location", "console", "JSON", "Math", "Promise", "fetch"] {
+    for prop in ["document", "location", "console", "JSON", "Math", "Promise", "crypto"] {
         let out = run(&format!("var Q = window; var r = Q.{prop};"));
         assert!(out.contains(&format!("var r = {prop}")), "{prop} should rewrite: {out}");
         assert!(
@@ -268,4 +268,62 @@ fn local_named_window_is_not_the_global_object() {
     assert!(out.contains("w.console"), "got: {out}");
     let out = run("var self = {};\nvar s = self;\nexport const c = s.console;");
     assert!(out.contains("s.console"), "got: {out}");
+}
+
+#[test]
+fn keeps_names_the_aliased_global_may_lack() {
+    // A worker's `self` has no `document`, Node's `global` no `navigator`, and
+    // `globalThis` may be either; bare names would throw where the property
+    // read yields `undefined`.
+    let out = run("var s = self; var a = s.document, b = s.window, c = s.postMessage;");
+    assert!(
+        out.contains("s.document") && out.contains("s.window") && out.contains("s.postMessage"),
+        "{out}"
+    );
+    let out = run("var g = global; var a = g.navigator, b = g.document;");
+    assert!(out.contains("g.navigator") && out.contains("g.document"), "{out}");
+    let out = run("var g = globalThis; var a = g.document, b = g.addEventListener;");
+    assert!(
+        out.contains("g.document") && out.contains("g.addEventListener"),
+        "{out}"
+    );
+}
+
+#[test]
+fn keeps_feature_detected_globals_qualified() {
+    let out = run(
+        "var w = window; var a = w.caches, b = w.Notification, c = w.fetch, d = w.SharedArrayBuffer, e = w.BigInt, f = w.structuredClone;",
+    );
+    for kept in [
+        "w.caches",
+        "w.Notification",
+        "w.fetch",
+        "w.SharedArrayBuffer",
+        "w.BigInt",
+        "w.structuredClone",
+    ] {
+        assert!(out.contains(kept), "{kept}: {out}");
+    }
+}
+
+#[test]
+fn rewrites_names_every_aliased_global_defines() {
+    let out = run("var s = self; s.addEventListener(\"message\", f); var p = s.Promise;");
+    assert!(
+        out.contains("addEventListener(\"message\", f)") && out.contains("var p = Promise"),
+        "{out}"
+    );
+    let out = run("var g = global; var a = g.process, b = g.setTimeout;");
+    assert!(
+        out.contains("var a = process") && out.contains("b = setTimeout"),
+        "{out}"
+    );
+    let out = run("var w = window; var c = w.crypto ? w.crypto : w.msCrypto;");
+    assert!(out.contains("crypto ? crypto : w.msCrypto"), "{out}");
+}
+
+#[test]
+fn an_alias_of_window_and_self_gets_the_names_both_define() {
+    let out = run("var w = window; w = self; var a = w.document, b = w.navigator;");
+    assert!(out.contains("w.document") && out.contains("b = navigator"), "{out}");
 }
