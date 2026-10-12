@@ -42,7 +42,12 @@ pub fn reconstruct_bundle_tree(
 fn source_mapping_url(bundle_source: &str) -> Option<&str> {
     let marker = "sourceMappingURL=";
     bundle_source.lines().rev().find_map(|line| {
-        let (_, raw) = line.split_once(marker)?;
+        // The footer is a comment line of its own; the marker inside code (a
+        // runtime that appends inline maps to `eval`ed modules) is not one.
+        let comment = line.trim_start();
+        let raw = ["//# ", "//@ ", "/*# ", "/*@ "]
+            .iter()
+            .find_map(|prefix| comment.strip_prefix(prefix)?.strip_prefix(marker))?;
         let value = raw.trim();
         let value = value.strip_suffix("*/").unwrap_or(value).trim();
         value
@@ -206,6 +211,20 @@ mod tests {
             ["synthetic/turbopack/chunk.js", "synthetic/turbopack/module_1.js"]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_mapping_url_ignores_the_marker_inside_code() {
+        let bundle = "function e(t){return t+\"\\n//# sourceMappingURL=data:application/json;base64,\"+btoa(m)}";
+        assert_eq!(source_mapping_url(bundle), None);
+        assert_eq!(
+            source_mapping_url("x();\n  //# sourceMappingURL=a.js.map\n"),
+            Some("a.js.map")
+        );
+        assert_eq!(
+            source_mapping_url("x();\n/*# sourceMappingURL=a.js.map */"),
+            Some("a.js.map")
+        );
     }
 
     fn split_paths(name: &str, bundle: &str) -> Vec<String> {
