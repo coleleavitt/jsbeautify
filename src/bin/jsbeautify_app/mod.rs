@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 mod align;
 mod config;
+mod project;
 mod runner;
 mod sources;
 
@@ -98,6 +99,19 @@ struct BeautifyArgs {
     /// module and `CommonJS` input.
     #[arg(long)]
     isolated: bool,
+
+    /// Deobfuscate every .js/.mjs/.cjs file under DIR together, naming
+    /// bindings across files (imports of other chunks' runtime helpers and
+    /// exports, Turbopack keys re-exported by other chunks). Writes the folder
+    /// with its other files copied, per-file logs under .jsbeautify/logs and
+    /// project-index.json to the -o directory. Implies --deobfuscate.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["inputs", "files", "replace", "rename_llm", "sourcemap", "names_json", "bun_extract"])]
+    project: Option<PathBuf>,
+
+    /// One file of a --project run: reads `{input, output, seeds}` JSON from
+    /// the given file or stdin.
+    #[arg(long, value_name = "FILE", hide = true)]
+    project_job: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
