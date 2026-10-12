@@ -1,11 +1,11 @@
-use oxc_ast::ast::{BindingPattern, Class, ClassElement, Expression, MethodDefinitionKind, VariableDeclarator};
+use oxc_ast::ast::{BindingPattern, Class, Expression, VariableDeclarator};
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::bun::export_renamer::names::{is_valid_identifier, sanitize_identifier};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
-use super::util::{find_this_name_assignment, is_xml_name};
+use super::util::{constructor_this_name, is_xml_name};
 use super::{ClassNameMap, Ctx};
 
 pub struct ClassNameCollector {
@@ -37,24 +37,8 @@ impl ClassNameCollector {
             return None;
         }
 
-        // Look for constructor with this.name = "..."
-        for element in &class.body.body {
-            let ClassElement::MethodDefinition(method) = element else {
-                continue;
-            };
-            if method.kind != MethodDefinitionKind::Constructor {
-                continue;
-            }
-            let Some(body) = &method.value.body else { continue };
-            if let Some(real_name) = find_this_name_assignment(body)
-                && real_name != mangled
-                && real_name.len() > 2
-                && !is_xml_name(real_name)
-            {
-                return Some(real_name);
-            }
-        }
-        None
+        constructor_this_name(class)
+            .filter(|real_name| *real_name != mangled && real_name.len() > 2 && !is_xml_name(real_name))
     }
 
     fn try_extract_from_class(&mut self, class: &Class<'_>) {

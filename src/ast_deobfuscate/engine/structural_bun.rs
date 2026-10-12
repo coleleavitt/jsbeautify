@@ -55,16 +55,26 @@ impl AstDeobfuscator {
                 class_map.entry(k).or_insert(v);
             }
 
-            if !class_map.is_empty() {
-                let guarded = rename_guards::guarded_symbols(allocator, program);
-                class_map.retain(|sym, _| !guarded.contains(sym));
-            }
+            let eval_names = if class_map.is_empty() {
+                FxHashSet::default()
+            } else {
+                let guards = rename_guards::guards(allocator, program);
+                class_map.retain(|sym, _| !guards.symbols.contains(sym));
+                guards.eval_names
+            };
             if !class_map.is_empty() {
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
                     class_map.len()
                 );
                 let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+                // Two classes may carry the same `this.name`, and a name may
+                // already be bound or read as a global in scope.
+                let reserved = rename_guards::free_global_names(program, &scoping)
+                    .into_iter()
+                    .chain(eval_names.iter().map(String::as_str))
+                    .collect();
+                let class_map = bun::export_renamer::make_names_unique(class_map, &scoping, &reserved);
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
                 let mut renamer = ClassNameRenamer::new(class_map);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);

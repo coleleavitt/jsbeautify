@@ -251,15 +251,6 @@ pub struct RenameGuards {
     pub eval_names: FxHashSet<String>,
 }
 
-/// Runs [`RenameGuardCollector`] over `program` and resolves its guarded set.
-pub fn guarded_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> FxHashSet<SymbolId> {
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut collector = RenameGuardCollector::new();
-    traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    collector.into_guarded(&ctx.into_scoping())
-}
-
 /// Runs [`RenameGuardCollector`] over `program` and resolves its
 /// [`RenameGuards`].
 pub fn guards<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> RenameGuards {
