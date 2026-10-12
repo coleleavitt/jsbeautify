@@ -33,6 +33,10 @@ use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::symbol::SymbolId;
 use serde::Serialize;
 
+pub use merged::MergedModule;
+
+mod merged;
+
 use crate::ast_deobfuscate::turbopack::shapes::{
     FactoryGroup, Payload, ReexportSource, Registration, chunk_list, context_map, edge_entry, esm_bindings,
     factory_params, has_use_strict, module_id, module_ident, node_entry_runtime, program_node_chunk, reexport_groups,
@@ -119,19 +123,6 @@ pub struct Reexport {
     pub names: Vec<(String, String)>,
 }
 
-/// A module scope hoisting merged into a factory.
-///
-/// Read from its `// MERGED MODULE: <ident>` marker
-/// (`turbopack-ecmascript/src/lib.rs`). Hoisting inlines a dependency at its import, so the range runs from the
-/// marker to the next marker or the factory's end; an importer's code that
-/// follows an inlined dependency falls into the dependency's range.
-#[derive(Debug, Clone, Serialize)]
-pub struct MergedModule {
-    pub ident: String,
-    pub start: usize,
-    pub end: usize,
-}
-
 /// A module merged into another module's factory by scope hoisting; its
 /// exports are declared with `__turbopack_context__.s([…], id)`.
 #[derive(Debug, Clone, Serialize)]
@@ -206,19 +197,19 @@ struct RegistrationFinder<'s> {
 impl RegistrationFinder<'_> {
     fn module_factory(&self, group: &FactoryGroup<'_, '_>) -> ModuleFactory {
         let factory_span = group.factory.span();
-        let (scope, has_directive, body_end) = match group.factory.without_parentheses() {
+        let (scope, has_directive, body) = match group.factory.without_parentheses() {
             Expression::FunctionExpression(func) => (
                 func.scope_id.get(),
                 func.body.as_ref().is_some_and(|body| has_use_strict(body)),
-                func.body.as_ref().map(|body| body.span.end as usize - 1),
+                func.body.as_deref(),
             ),
             Expression::ArrowFunctionExpression(arrow) => (
                 arrow.scope_id.get(),
                 arrow.has_use_strict_directive(),
-                Some(match &arrow.body {
-                    ArrowFunctionBody::FunctionBody(body) => body.span.end as usize - 1,
-                    body => body.span().end as usize,
-                }),
+                match &arrow.body {
+                    ArrowFunctionBody::FunctionBody(body) => Some(&**body),
+                    _ => None,
+                },
             ),
             _ => (None, false, None),
         };
@@ -243,21 +234,20 @@ impl RegistrationFinder<'_> {
         if scan.context.is_some() {
             scan.visit_expression(group.factory);
         }
-        let body_end = body_end.unwrap_or(factory_span.end as usize);
-        let inside: Vec<&(usize, String)> = self
-            .markers
-            .iter()
-            .filter(|(start, _)| (factory_span.start as usize..body_end).contains(start))
-            .collect();
-        let merged = inside
-            .iter()
-            .enumerate()
-            .map(|(index, (start, ident))| MergedModule {
-                ident: ident.clone(),
-                start: *start,
-                end: inside.get(index + 1).map_or(body_end, |(next, _)| *next),
+        let merged = body
+            .filter(|body| {
+                let range = body.span.start as usize..body.span.end as usize;
+                self.markers.iter().any(|(start, _)| range.contains(start))
             })
-            .collect();
+            .map_or_else(Vec::new, |body| {
+                merged::merged_modules(
+                    &body.statements,
+                    body.span.start as usize,
+                    self.markers,
+                    self.scoping,
+                    scan.context,
+                )
+            });
         ModuleFactory {
             ids: group.ids.clone(),
             start: factory_span.start as usize,
@@ -547,9 +537,9 @@ impl TurbopackChunk {
                     let stub = unique_name(&mut names, format!("hoisted/module_{}.js", module_ident(&hoisted.id)));
                     stubs.push((stub, hoisted_stub(hoisted, module, &file)));
                 }
-                for merged in &module.merged {
+                for (index, merged) in module.merged.iter().enumerate() {
                     let part = unique_name(&mut names, format!("merged/module_{}.js", module_ident(&merged.ident)));
-                    stubs.push((part, merged_part(source, merged, module, &file)));
+                    stubs.push((part, merged_part(source, module, index, &file)));
                 }
             }
         }
@@ -685,15 +675,34 @@ fn hoisted_stub(hoisted: &HoistedModule, module: &ModuleFactory, file: &str) -> 
     )
 }
 
-fn merged_part(source: &str, merged: &MergedModule, module: &ModuleFactory, file: &str) -> String {
-    format!(
-        "// Turbopack module {} is scope-hoisted into module {} ({file}).\n\
-         // Source from its MERGED MODULE marker to the next marker; code its importer\n\
-         // runs after an inlined dependency appears in the dependency's part.\n{}\n",
+fn merged_part(source: &str, module: &ModuleFactory, index: usize, file: &str) -> String {
+    let merged = &module.merged[index];
+    let mut out = format!(
+        "// Turbopack module {} is scope-hoisted into module {} ({file}).\n",
         merged.ident,
-        module.id(),
-        source[merged.start..merged.end].trim_end()
-    )
+        module.id()
+    );
+    if let Some(parent) = merged.parent {
+        let _ = writeln!(out, "// Inlined into {}.", module.merged[parent].ident);
+    }
+    let mut pieces: Vec<(usize, String)> = merged
+        .own
+        .iter()
+        .map(|&(start, end)| (start, source[start..end].to_string()))
+        .collect();
+    pieces.extend(
+        module
+            .merged
+            .iter()
+            .filter(|child| child.parent == Some(index))
+            .map(|child| (child.start, format!("// (inlined here: {})", child.ident))),
+    );
+    pieces.sort_by_key(|(start, _)| *start);
+    for (_, piece) in pieces {
+        out.push_str(piece.trim_end());
+        out.push('\n');
+    }
+    out
 }
 
 fn unique_name(names: &mut BTreeMap<String, usize>, name: String) -> String {
@@ -906,7 +915,7 @@ mod tests {
 
     #[test]
     fn splits_merged_module_markers() {
-        let source = "module.exports = [\n99665, ((__turbopack_context__) => {\n\"use strict\";\n\n// MERGED MODULE: [project]/src/app/api/hello/route.ts [app-route] (ecmascript)\n;\n// MERGED MODULE: [project]/src/lib/shared.ts [app-route] (ecmascript)\n;\nfunction greeting(name) {\n    return name;\n}\n;\nasync function GET() {}\n__turbopack_context__.s([\n    \"GET\",\n    0,\n    GET\n], 99665);\n}),\n];\n";
+        let source = "module.exports = [\n99665, ((__turbopack_context__) => {\n\"use strict\";\n\n// MERGED MODULE: [project]/src/app/api/hello/route.ts [app-route] (ecmascript)\n;\n// MERGED MODULE: [project]/src/lib/shared.ts [app-route] (ecmascript)\n;\nfunction greeting(name) {\n    return name;\n}\nconst VERSION = 1;\n;\nasync function GET() {}\n__turbopack_context__.s([\n    \"GET\",\n    0,\n    GET\n], 99665);\n}),\n];\n";
         let chunk = detect_turbopack_chunk(source).expect("node chunk");
         let module = chunk.modules().next().expect("one factory");
         let idents: Vec<_> = module.merged.iter().map(|m| m.ident.as_str()).collect();
@@ -917,7 +926,13 @@ mod tests {
                 "[project]/src/lib/shared.ts [app-route] (ecmascript)"
             ]
         );
-        assert!(source[module.merged[1].start..module.merged[1].end].ends_with("], 99665);\n"));
+        let (route, shared) = (&module.merged[0], &module.merged[1]);
+        assert_eq!(shared.parent, Some(0));
+        assert!(source[route.start..route.end].ends_with("], 99665);"));
+        assert!(
+            source[shared.start..shared.end].ends_with("const VERSION = 1;"),
+            "the route's removed import `;` starts its body"
+        );
         let files = chunk.module_files(source);
         let names: Vec<_> = files.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
@@ -940,7 +955,60 @@ mod tests {
             "{shared}"
         );
         assert!(shared.contains("function greeting(name)"), "{shared}");
-        assert!(!files[2].1.contains("function greeting"), "{}", files[2].1);
+        assert!(!shared.contains("GET"), "{shared}");
+        let route = &files[2].1;
+        assert!(route.contains("async function GET() {}"), "{route}");
+        assert!(
+            route.contains("// (inlined here: [project]/src/lib/shared.ts"),
+            "{route}"
+        );
+        assert!(!route.contains("function greeting"), "{route}");
+    }
+
+    /// Shapes from the unminified Next.js 16.4 build: an import variable after
+    /// an inlined module returns to the importer's hoisted part, a statement
+    /// reading an importer's import variable is the importer's, and `s(…, id)`
+    /// ends a module.
+    #[test]
+    fn merged_module_extents_follow_hoisting() {
+        let source = r#"module.exports = [
+1, 2, ((__turbopack_context__) => {
+"use strict";
+// MERGED MODULE: [project]/a.js [ssr] (ecmascript)
+;
+var __TURBOPACK__imported__module__7__ = __turbopack_context__.i(7);
+// MERGED MODULE: [project]/b.js [ssr] (ecmascript)
+;
+function b() {}
+var __TURBOPACK__imported__module__8__ = __turbopack_context__.i(8);
+// MERGED MODULE: [project]/c.js [ssr] (ecmascript)
+;
+var __TURBOPACK__imported__module__7__1 = __TURBOPACK__imported__module__7__;
+;
+const c = __TURBOPACK__imported__module__7__1.x;
+__turbopack_context__.s(["c", 0, c], 2);
+;
+;
+;
+'use client';
+const a = __TURBOPACK__imported__module__8__.y + b() + c;
+__turbopack_context__.s(["a", 0, a], 1);
+}),
+];
+"#;
+        let chunk = detect_turbopack_chunk(source).expect("node chunk");
+        let merged = &chunk.modules().next().expect("one factory").merged;
+        let text = |m: &MergedModule| source[m.start..m.end].to_string();
+        let own = |m: &MergedModule| -> Vec<&str> { m.own.iter().map(|&(s, e)| source[s..e].trim()).collect() };
+        let (a, b, c) = (&merged[0], &merged[1], &merged[2]);
+        assert_eq!((b.parent, c.parent), (Some(0), Some(0)));
+        assert!(text(b).ends_with("function b() {}"), "{}", text(b));
+        assert!(text(c).ends_with("], 2);"), "{}", text(c));
+        assert!(text(a).ends_with("], 1);"), "{}", text(a));
+        let a_own = own(a).join("\n");
+        assert!(a_own.contains("__turbopack_context__.i(8)"), "{a_own}");
+        assert!(a_own.contains("'use client';\nconst a ="), "{a_own}");
+        assert!(!a_own.contains("function b"), "{a_own}");
     }
 
     #[test]
