@@ -132,10 +132,10 @@ pub(super) fn is_blocked_name(
     name: &str,
     current_name: &str,
     local: &FxHashSet<String>,
-    subtree_names: Option<&FxHashSet<String>>,
-    free_names: Option<&FxHashSet<String>>,
+    subtree_names: Option<&FxHashSet<&str>>,
+    free_names: Option<&FxHashSet<&str>>,
     ancestor_scopes: &[ScopeId],
-    scope_name_sets: &FxHashMap<ScopeId, FxHashSet<String>>,
+    scope_name_sets: &FxHashMap<ScopeId, FxHashSet<&str>>,
     assigned: &FxHashMap<ScopeId, FxHashSet<String>>,
 ) -> bool {
     if name == current_name {

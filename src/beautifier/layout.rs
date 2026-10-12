@@ -83,7 +83,27 @@ impl Layout {
     ) -> Result<String> {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, code, source_type).parse();
-        let expected = minified(&parsed.program);
+        self.apply_parsed(
+            code,
+            &parsed.program,
+            parsed.diagnostics.is_empty(),
+            source_type,
+            blank_lines,
+        )
+    }
+
+    /// [`Layout::apply`] on the current stack for `code` already parsed into
+    /// `program` (`parsed_clean`: without parse errors), so a caller that
+    /// parsed the text for its own checks does not parse it twice.
+    pub(crate) fn apply_parsed(
+        &self,
+        code: &str,
+        program: &Program<'_>,
+        parsed_clean: bool,
+        source_type: SourceType,
+        blank_lines: &[(usize, usize)],
+    ) -> Result<String> {
+        let expected = minified(program);
         let mut scan = Scan {
             code,
             layout: self,
@@ -91,12 +111,11 @@ impl Layout {
             ranges: Vec::new(),
             edits: Vec::new(),
             blank_lines: blank_lines.to_vec(),
-            comment_ends: parsed.program.comments.iter().map(|c| c.span.end).collect(),
+            comment_ends: program.comments.iter().map(|c| c.span.end).collect(),
             do_body: None,
         };
-        scan.visit_program(&parsed.program);
-        let mut javadoc: Vec<(usize, usize)> = parsed
-            .program
+        scan.visit_program(program);
+        let mut javadoc: Vec<(usize, usize)> = program
             .comments
             .iter()
             .filter(|c| c.kind == CommentKind::MultiLineBlock)
@@ -133,7 +152,7 @@ impl Layout {
             },
         }
         .write();
-        verify(&expected, parsed.diagnostics.is_empty(), &laid_out, source_type)?;
+        verify(&expected, parsed_clean, &laid_out, source_type)?;
         Ok(laid_out)
     }
 }
@@ -142,12 +161,15 @@ impl Layout {
 /// minification inside template literals, where the spec normalizes `\r\n`
 /// and `\r` to `\n`, so they are normalized here too.
 pub(super) fn minified(program: &Program<'_>) -> String {
-    Codegen::new()
+    let code = Codegen::new()
         .with_options(CodegenOptions::minify())
         .build(program)
-        .code
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
+        .code;
+    if code.contains('\r') {
+        code.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        code
+    }
 }
 
 /// The laid-out text must parse (when its input did) to the same program.

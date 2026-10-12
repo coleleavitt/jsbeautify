@@ -23,7 +23,7 @@ use crate::beautifier::Layout;
 use crate::{BeautifyError, Result};
 
 use super::{
-    AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker, BodyBlockWrapper,
+    AkamaiDeobfuscator, AlgebraicSimplifier, ApplyCallSimplifier, ArrayCoerceFold, ArrayUnpacker,
     BooleanLiteralConverter, BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer,
     BunRuntimeCollector, BunRuntimeRenamer, BunSyntaxNormalizer, BundleRuntime, Bundler, CallProxyCollector,
     CallProxyInliner, CallThisSimplifier, CffUnflattener, ClassNameCollector, ClassNameRenamer, CommaReturnSimplifier,
@@ -35,15 +35,17 @@ use super::{
     MethodCallForwarderCollector, MethodCallForwarderInliner, MinifierIdiomReverser, MultiVarSplitter,
     NullishCoalescingSimplifier, ObjectSparsingConsolidator, OperatorProxyCollector, OperatorProxyInliner,
     OptionalChainingNormalizer, ParamHeuristicRenamer, ReturnSequenceSplitter, SelfDefendingStringArray,
-    SelfInitAccessorFlattener, SequenceExpressionSplitter, ShortCircuitToIf, StringArrayInliner, StringArrayRotation,
-    SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TrampolineCollector, TrampolineInliner, TryCatchRemover,
-    UnaryProxyCollector, UnaryProxyInliner, VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator,
-    annotate_namespace_modules, annotate_runtime, annotate_ts_enums, bun, collect_case_bodies, collect_constants,
-    eliminate_dead_vars, encrypted_eval, expand_arrow_sequences, flatten_top_level_cjs_wrapper, heuristic_rename,
-    rename_guards, resolve_compound_transitions,
+    SelfInitAccessorFlattener, SequenceExpressionSplitter, StatementSplitNormalizer, StringArrayInliner,
+    StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TrampolineCollector,
+    TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, VariableRenamer, VoidReplacer,
+    WindowAliasCollector, WindowAliasPropagator, annotate_namespace_modules, annotate_runtime, annotate_ts_enums, bun,
+    collect_case_bodies, collect_constants, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences,
+    flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards, resolve_compound_transitions,
 };
 use annotations::annotate_webpack_modules;
-use checkpoint::{SemanticBaseline, checkpoint_error_context, log_output_validity, semantic_baseline};
+use checkpoint::{
+    SemanticBaseline, checkpoint_error_context, log_output_validity, log_parsed_validity, semantic_baseline,
+};
 use trace::{TraceSpan, mem_ck};
 
 pub use trace::{ast_trace_enabled, deob_trace_enabled};
@@ -75,7 +77,6 @@ pub struct AstDeobfuscator {
     multi_var_splitter: MultiVarSplitter,
     ternary_to_if_else: TernaryToIfElse,
     switch_true_converter: SwitchTrueConverter,
-    short_circuit_to_if: ShortCircuitToIf,
     iife_unwrap: IifeUnwrap,
     json_parse_evaluator: JsonParseEvaluator,
     optional_chaining_normalizer: OptionalChainingNormalizer,

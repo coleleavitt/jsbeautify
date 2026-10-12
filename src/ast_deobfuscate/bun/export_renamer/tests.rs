@@ -354,3 +354,46 @@ fn export_rename_sanitizes_numeric_export_keys() {
         "Should rename references to prefixed key: {out}"
     );
 }
+
+/// Direct `make_names_unique` plan for `code`, desired names keyed by binding name.
+fn unique_plan(code: &str, desired: &[(&str, &str)], reserved: &[&str]) -> Vec<(String, String)> {
+    let alloc = Allocator::default();
+    let prog = Parser::new(&alloc, code, SourceType::mjs()).parse().program;
+    let scoping = semantic::scoping(&prog);
+    let symbol = |name: &str| {
+        scoping
+            .symbol_ids()
+            .find(|&s| scoping.symbol_name(s) == name)
+            .expect("binding")
+    };
+    let map = desired
+        .iter()
+        .map(|&(from, to)| (symbol(from), to.to_string()))
+        .collect();
+    let reserved: FxHashSet<&str> = reserved.iter().copied().collect();
+    let plan = make_names_unique(map, &scoping, &reserved);
+    let mut out: Vec<_> = plan
+        .into_iter()
+        .map(|(sym, name)| (scoping.symbol_name(sym).to_string(), name))
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn unique_names_follow_the_scope_chain() {
+    let code = "var a; function f() { var b; function h() { var Client; } } function g() { var c; }";
+    let plan = unique_plan(code, &[("a", "Client"), ("b", "Client"), ("c", "Client")], &[]);
+    // `a` (root) must avoid the descendant binding `Client`; `b` must avoid
+    // its ancestor's assigned `Client$1` and its own subtree's `Client`; `c`
+    // sits in a sibling of `f` and only sees the root's names.
+    let expected = [("a", "Client$1"), ("b", "Client$2"), ("c", "Client")];
+    assert_eq!(plan, expected.map(|(a, b)| (a.to_string(), b.to_string())));
+}
+
+#[test]
+fn unique_names_skip_reserved_and_keywords() {
+    let plan = unique_plan("var a, b;", &[("a", "Buffer"), ("b", "instanceof")], &["Buffer"]);
+    let expected = [("a", "Buffer$1"), ("b", "instanceof$")];
+    assert_eq!(plan, expected.map(|(a, b)| (a.to_string(), b.to_string())));
+}

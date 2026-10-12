@@ -19,8 +19,9 @@
 //! `ExpressionStatement`. Sequences inside `for` init, `return`, ternary
 //! conditions, etc. are left untouched.
 
-use oxc_allocator::{CloneIn, GetAllocator, Vec as OxcVec};
+use oxc_allocator::{TakeIn, Vec as OxcVec};
 use oxc_ast::ast::{BlockStatement, Expression, FunctionBody, Program, Statement, SwitchCase};
+use oxc_ast::builder::AstBuilder;
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -42,30 +43,44 @@ pub fn is_sequence_stmt(stmt: &Statement<'_>) -> bool {
     )
 }
 
+/// Splits `a, b;` into `a; b;`, or gives `stmt` back when it is not a
+/// sequence statement.
+pub fn split_sequence_stmt<'a>(
+    stmt: Statement<'a>,
+    ast: &AstBuilder<'a>,
+) -> Result<OxcVec<'a, Statement<'a>>, Statement<'a>> {
+    if !is_sequence_stmt(&stmt) {
+        return Err(stmt);
+    }
+    let Statement::ExpressionStatement(expr_stmt) = stmt else {
+        unreachable!("is_sequence_stmt matched")
+    };
+    let Expression::SequenceExpression(seq) = expr_stmt.unbox().expression else {
+        unreachable!("is_sequence_stmt matched")
+    };
+    Ok(OxcVec::from_iter_in(
+        seq.unbox()
+            .expressions
+            .into_iter()
+            .map(|expr| Statement::new_expression_statement(SPAN, expr, ast)),
+        ast,
+    ))
+}
+
 impl SequenceExpressionSplitter {
     fn split_statements<'a>(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
         if !stmts.iter().any(is_sequence_stmt) {
             return;
         }
-
-        let mut new_stmts = OxcVec::new_in(ctx);
-        for stmt in stmts.iter() {
-            if let Statement::ExpressionStatement(expr_stmt) = stmt
-                && let Expression::SequenceExpression(seq) = &expr_stmt.expression
-            {
-                for expr in &seq.expressions {
-                    new_stmts.push(Statement::new_expression_statement(
-                        SPAN,
-                        expr.clone_in_with_semantic_ids(ctx.allocator()),
-                        &ctx.ast,
-                    ));
+        for stmt in stmts.take_in(ctx) {
+            match split_sequence_stmt(stmt, &ctx.ast) {
+                Ok(parts) => {
+                    stmts.extend(parts);
+                    self.split_count += 1;
                 }
-                self.split_count += 1;
-                continue;
+                Err(stmt) => stmts.push(stmt),
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
-        *stmts = new_stmts;
     }
 }
 

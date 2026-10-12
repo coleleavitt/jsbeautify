@@ -43,7 +43,6 @@ pub(crate) mod apply_call_simplifier;
 pub(crate) mod array_coerce_fold;
 #[allow(dead_code)]
 pub(crate) mod array_unpack;
-pub(crate) mod body_block_wrap;
 #[allow(dead_code)]
 pub(crate) mod boolean_literals;
 pub(crate) mod bun;
@@ -115,6 +114,7 @@ pub(crate) mod sequence_expression_split;
 pub(crate) mod short_circuit_to_if;
 pub mod sourcemap_rename;
 pub(crate) mod state;
+pub(crate) mod statement_split;
 #[allow(dead_code)]
 pub(crate) mod string_array_inline;
 pub(crate) mod string_array_rotation;
@@ -143,7 +143,6 @@ pub(crate) use algebraic_simplify::AlgebraicSimplifier;
 pub(crate) use apply_call_simplifier::ApplyCallSimplifier;
 pub(crate) use array_coerce_fold::ArrayCoerceFold;
 pub(crate) use array_unpack::ArrayUnpacker;
-pub(crate) use body_block_wrap::BodyBlockWrapper;
 pub(crate) use boolean_literals::BooleanLiteralConverter;
 pub(crate) use bun::{
     BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector, BunRuntimeRenamer,
@@ -192,8 +191,8 @@ pub(crate) use post_annotations::{annotate_namespace_modules, annotate_ts_enums,
 pub(crate) use return_sequence_split::ReturnSequenceSplitter;
 pub(crate) use self_init_accessor::SelfInitAccessorFlattener;
 pub(crate) use sequence_expression_split::SequenceExpressionSplitter;
-pub(crate) use short_circuit_to_if::ShortCircuitToIf;
 pub(crate) use state::DeobfuscateState;
+pub(crate) use statement_split::StatementSplitNormalizer;
 pub(crate) use string_array_inline::StringArrayInliner;
 pub(crate) use string_array_rotation::StringArrayRotation;
 pub(crate) use string_array_self_defending::SelfDefendingStringArray;

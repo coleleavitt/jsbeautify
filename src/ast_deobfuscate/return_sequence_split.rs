@@ -24,8 +24,9 @@
 //! Only fires when the `return` is inside a block (function body / if / else / etc.)
 //! where we can insert preceding statements.
 
-use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_allocator::{ArenaVec, TakeIn};
 use oxc_ast::ast::{Expression, FunctionBody, Statement, SwitchCase};
+use oxc_ast::builder::AstBuilder;
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -62,38 +63,47 @@ pub fn is_return_sequence(stmt: &Statement<'_>) -> bool {
     )
 }
 
+/// Splits `return a, b;` into `a; return b;`, or gives `stmt` back when it
+/// is not a return of a sequence.
+pub fn split_return_sequence<'a>(
+    stmt: Statement<'a>,
+    ast: &AstBuilder<'a>,
+) -> Result<ArenaVec<'a, Statement<'a>>, Statement<'a>> {
+    if !is_return_sequence(&stmt) {
+        return Err(stmt);
+    }
+    let Statement::ReturnStatement(ret) = stmt else {
+        unreachable!("is_return_sequence matched")
+    };
+    let Some(Expression::SequenceExpression(seq)) = ret.unbox().argument else {
+        unreachable!("is_return_sequence matched")
+    };
+    let mut expressions = seq.unbox().expressions;
+    let last = expressions.pop().expect("is_return_sequence checked two expressions");
+    let mut stmts = ArenaVec::from_iter_in(
+        expressions
+            .into_iter()
+            .map(|expr| Statement::new_expression_statement(SPAN, expr, ast)),
+        ast,
+    );
+    stmts.push(Statement::new_return_statement(SPAN, Some(last), ast));
+    Ok(stmts)
+}
+
 impl ReturnSequenceSplitter {
-    fn split_in_stmts<'a>(&mut self, stmts: &mut oxc_allocator::Vec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
+    fn split_in_stmts<'a>(&mut self, stmts: &mut ArenaVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
         if !stmts.iter().any(is_return_sequence) {
             return;
         }
-
-        let mut new_stmts = ArenaVec::new_in(&ctx.ast);
-        for stmt in stmts.iter() {
-            if let Statement::ReturnStatement(ret) = stmt
-                && let Some(Expression::SequenceExpression(seq)) = &ret.argument
-                && seq.expressions.len() >= 2
-            {
-                // Emit all but the last expression as expression-statements.
-                let len = seq.expressions.len();
-                for expr in &seq.expressions[..len - 1] {
-                    new_stmts.push(Statement::new_expression_statement(
-                        SPAN,
-                        expr.clone_in_with_semantic_ids(ctx.allocator()),
-                        ctx,
-                    ));
+        for stmt in stmts.take_in(ctx) {
+            match split_return_sequence(stmt, &ctx.ast) {
+                Ok(parts) => {
+                    stmts.extend(parts);
+                    self.split_count += 1;
                 }
-                // Emit `return <last>;`
-                let last = &seq.expressions[len - 1];
-                let ret_stmt =
-                    Statement::new_return_statement(SPAN, Some(last.clone_in_with_semantic_ids(ctx.allocator())), ctx);
-                new_stmts.push(ret_stmt);
-                self.split_count += 1;
-                continue;
+                Err(stmt) => stmts.push(stmt),
             }
-            new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
         }
-        *stmts = new_stmts;
     }
 }
 
