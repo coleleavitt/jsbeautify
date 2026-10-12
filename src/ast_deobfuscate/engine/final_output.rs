@@ -1,7 +1,7 @@
 use super::{
-    AstDeobfuscator, BunHelperMap, Bundler, Codegen, Program, Result, SemanticBaseline, SourceType,
+    Allocator, AstDeobfuscator, BunHelperMap, Bundler, Codegen, Parser, Program, Result, SemanticBaseline, SourceType,
     annotate_namespace_modules, annotate_runtime, annotate_ts_enums, annotate_webpack_modules, expand_arrow_sequences,
-    log_output_validity, mem_ck,
+    log_output_validity, log_parsed_validity, mem_ck,
 };
 
 impl AstDeobfuscator {
@@ -55,14 +55,30 @@ impl AstDeobfuscator {
         // The Phase 20/21 post-codegen transforms (module annotations, arrow
         // expansion) rewrite the output string, so the final result is held to
         // the same parse-validity bar as the AST checkpoints: invalid JS is a
-        // real defect and is surfaced rather than returned as success.
-        if !log_output_validity("Phase 21.5", &output, source_type, baseline) {
-            return Err(crate::BeautifyError::BeautificationFailed(
-                "Phase 21.5 post-annotation output is invalid JavaScript".to_string(),
-            ));
-        }
-
-        self.lay_out(output, source_type)
+        // real defect and is surfaced rather than returned as success. The
+        // layout reuses this parse.
+        let laid_out = crate::stack::run_on_sized_stack(output.len(), || {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, &output, source_type).parse();
+            if !log_parsed_validity("Phase 21.5", &parsed, baseline) {
+                return Err(crate::BeautifyError::BeautificationFailed(
+                    "Phase 21.5 post-annotation output is invalid JavaScript".to_string(),
+                ));
+            }
+            self.layout
+                .as_ref()
+                .map(|layout| {
+                    layout.apply_parsed(
+                        &output,
+                        &parsed.program,
+                        parsed.diagnostics.is_empty(),
+                        source_type,
+                        &[],
+                    )
+                })
+                .transpose()
+        })?;
+        Ok(laid_out.unwrap_or(output))
     }
 
     fn lay_out(&self, output: String, source_type: SourceType) -> Result<String> {

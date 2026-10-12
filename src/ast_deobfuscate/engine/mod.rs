@@ -44,7 +44,9 @@ use super::{
     rename_guards, resolve_compound_transitions,
 };
 use annotations::annotate_webpack_modules;
-use checkpoint::{SemanticBaseline, checkpoint_error_context, log_output_validity, semantic_baseline};
+use checkpoint::{
+    SemanticBaseline, checkpoint_error_context, log_output_validity, log_parsed_validity, semantic_baseline,
+};
 use trace::{TraceSpan, mem_ck};
 
 pub use trace::{ast_trace_enabled, deob_trace_enabled};

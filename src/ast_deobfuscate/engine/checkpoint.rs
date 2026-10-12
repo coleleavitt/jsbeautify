@@ -1,6 +1,6 @@
 use oxc_allocator::Allocator;
 use oxc_diagnostics::OxcDiagnostic;
-use oxc_parser::Parser;
+use oxc_parser::{Parser, ParserReturn};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 
@@ -76,6 +76,11 @@ pub(super) fn log_output_validity(
 ) -> bool {
     let allocator = Allocator::default();
     let parse_result = Parser::new(&allocator, code, source_type).parse();
+    log_parsed_validity(label, &parse_result, baseline)
+}
+
+/// [`log_output_validity`] for output already parsed into `parse_result`.
+pub(super) fn log_parsed_validity(label: &str, parse_result: &ParserReturn<'_>, baseline: SemanticBaseline) -> bool {
     if !parse_result.diagnostics.is_empty() {
         eprintln!(
             "[DEOBFUSCATE] {label}: GENERATED OUTPUT IS INVALID JAVASCRIPT ({} parse error(s))",

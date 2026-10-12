@@ -57,18 +57,18 @@ pub fn plan_local_renames_with_stats(
     };
 
     // Original binding names per scope (from every symbol's declaring scope).
-    let mut scope_names: FxHashMap<ScopeId, Vec<(String, SymbolId)>> = FxHashMap::default();
-    let mut scope_name_sets: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
-    let mut subtree_names: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    let mut scope_names: FxHashMap<ScopeId, Vec<(&str, SymbolId)>> = FxHashMap::default();
+    let mut scope_name_sets: FxHashMap<ScopeId, FxHashSet<&str>> = FxHashMap::default();
+    let mut subtree_names: FxHashMap<ScopeId, FxHashSet<&str>> = FxHashMap::default();
     for sym in scoping.symbol_ids() {
         let scope = scoping.symbol_scope_id(sym);
-        let name = scoping.symbol_name(sym).to_string();
-        scope_names.entry(scope).or_default().push((name.clone(), sym));
-        scope_name_sets.entry(scope).or_default().insert(name.clone());
+        let name = scoping.symbol_name(sym);
+        scope_names.entry(scope).or_default().push((name, sym));
+        scope_name_sets.entry(scope).or_default().insert(name);
         stats.scope_name_entries += 1;
         for visible in scoping.scope_ancestors(scope) {
             stats.subtree_ancestor_visits += 1;
-            if subtree_names.entry(visible).or_default().insert(name.clone()) {
+            if subtree_names.entry(visible).or_default().insert(name) {
                 stats.subtree_name_entries += 1;
             }
         }
@@ -88,14 +88,14 @@ pub fn plan_local_renames_with_stats(
     // Free (unresolved) reference names per scope SUBTREE: propagate each free
     // name up to all ancestor scopes (a binding is visible to its descendants,
     // so a rename in scope S can capture a free reference anywhere under S).
-    let mut free_subtree: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    let mut free_subtree: FxHashMap<ScopeId, FxHashSet<&str>> = FxHashMap::default();
     for (&scope, names) in free_names {
         stats.free_name_entries += names.len();
         for anc in scoping.scope_ancestors(scope) {
             let bucket = free_subtree.entry(anc).or_default();
             for n in names {
                 stats.free_ancestor_visits += 1;
-                if bucket.insert(n.clone()) {
+                if bucket.insert(n.as_str()) {
                     stats.free_subtree_entries += 1;
                 }
             }
@@ -184,12 +184,12 @@ pub fn plan_local_renames_with_stats(
         );
 
         // Candidates in this scope, deterministic order for stable output.
-        let mut cands: Vec<(String, SymbolId)> = scope_names
+        let mut cands: Vec<(&str, SymbolId)> = scope_names
             .get(&scope)
-            .map_or_default(|names| names.iter().filter(|(n, s)| is_candidate(n, *s)).cloned().collect());
+            .map_or_default(|names| names.iter().filter(|(n, s)| is_candidate(n, *s)).copied().collect());
         stats.candidate_symbols += cands.len();
         stats.max_candidates_in_scope = stats.max_candidates_in_scope.max(cands.len());
-        cands.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.index().cmp(&b.1.index())));
+        cands.sort_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.index().cmp(&b.1.index())));
 
         let mut local: FxHashSet<String> = FxHashSet::default();
         let mut counter = 0usize;
@@ -206,7 +206,7 @@ pub fn plan_local_renames_with_stats(
                     pick_readable(base, |candidate| {
                         is_blocked_name(
                             candidate,
-                            &cur_name,
+                            cur_name,
                             &local,
                             subtree_blocked,
                             free_blocked,
@@ -224,7 +224,7 @@ pub fn plan_local_renames_with_stats(
                     counter += 1;
                     if !is_blocked_name(
                         &c,
-                        &cur_name,
+                        cur_name,
                         &local,
                         subtree_blocked,
                         free_blocked,

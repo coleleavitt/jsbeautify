@@ -23,6 +23,11 @@ static ENUM_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Annotates TypeScript enum IIFEs with a summary comment.
 #[must_use]
 pub fn annotate_ts_enums(code: &str) -> (String, usize) {
+    // Every match ends in ` = {}))`; most outputs have none and skip
+    // compiling the regex.
+    if !code.contains(" = {}))") {
+        return (code.to_string(), 0);
+    }
     let mut result = String::with_capacity(code.len() + 4096);
     let mut count = 0usize;
     let mut last_end = 0;
