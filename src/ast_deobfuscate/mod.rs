@@ -109,6 +109,7 @@ pub(crate) mod rename_guards;
 pub(crate) mod rename_planner;
 pub(crate) mod return_sequence_split;
 pub(crate) mod self_init_accessor;
+pub(crate) mod semantic;
 pub(crate) mod sequence_expression_split;
 pub(crate) mod short_circuit_to_if;
 pub mod sourcemap_rename;

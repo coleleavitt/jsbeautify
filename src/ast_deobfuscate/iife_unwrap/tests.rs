@@ -1,10 +1,9 @@
-#[cfg(test)]
 use super::*;
-use crate::ast_deobfuscate::DeobfuscateState;
+use crate::ast_deobfuscate::{DeobfuscateState, semantic};
+#[cfg(test)]
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -16,7 +15,7 @@ fn run_unwrap(code: &str) -> (String, usize) {
 
     let mut unwrapper = IifeUnwrap::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
     traverse_mut_with_ctx(&mut unwrapper, &mut program, &mut ctx);
@@ -94,7 +93,7 @@ fn test_preserve_non_iife_arrow() {
 fn has_semantic_errors(code: &str) -> bool {
     let allocator = Allocator::default();
     let program = Parser::new(&allocator, code, SourceType::mjs()).parse().program;
-    !SemanticBuilder::new().build(&program).diagnostics.is_empty()
+    !semantic::build(&program).diagnostics.is_empty()
 }
 
 #[test]

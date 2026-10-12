@@ -21,7 +21,6 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::BindingIdentifier;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
@@ -31,6 +30,7 @@ use crate::Result;
 use crate::ast_deobfuscate::bun::local_renamer::{LocalRenameMap, LocalRenamer, RenameMode, plan_local_renames};
 use crate::ast_deobfuscate::heuristic_rename::HeuristicNameCollector;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::cross_version::SourcemapParser;
 
@@ -125,17 +125,17 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
     let mut prog = Parser::new(&alloc, code, source_type).parse().program;
 
     // Soundness guards (eval / native exports / script globals).
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let guarded = guard.into_guarded(&scoping);
 
     // Free/global reference names (capture safety) — reuse the heuristic
     // collector's free-name tracking; its proposals are discarded.
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut hc = HeuristicNameCollector::new();
     traverse_mut_with_ctx(&mut hc, &mut prog, &mut ctx);
@@ -144,7 +144,7 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
 
     // Resolve binding positions → original names.
     let line_starts = build_line_starts(code);
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut collector = SourcemapNameCollector {
         by_pos,
@@ -159,12 +159,12 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
         return code.to_string();
     }
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let plan = plan_local_renames(&scoping, &guarded, RenameMode::Sourcemap, &desired, &free_names);
     if plan.is_empty() {
         return code.to_string();
     }
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut renamer = LocalRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);

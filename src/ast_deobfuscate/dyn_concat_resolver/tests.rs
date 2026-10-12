@@ -1,8 +1,8 @@
 use super::*;
+use crate::ast_deobfuscate::semantic;
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -20,7 +20,7 @@ fn run_with(code: &str, source_type: SourceType) -> String {
     assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
     let mut program = ret.program;
     let mut pass = DynConcatResolver::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
     traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
     Codegen::new().build(&program).code
@@ -239,4 +239,20 @@ fn script_top_level_admits_only_const() {
         "global var can be reassigned via the global object: {out}"
     );
     assert!(out.contains("\"y!\""), "global const is immutable: {out}");
+}
+
+#[test]
+fn folding_adjacent_literals_counts_as_a_change_without_a_rewrite() {
+    let allocator = Allocator::default();
+    let mut program = Parser::new(&allocator, r#"f("a" + "b" + e);"#, SourceType::mjs())
+        .parse()
+        .program;
+    let mut pass = DynConcatResolver::new();
+    let scoping = semantic::scoping(&program);
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
+
+    assert_eq!(pass.rewrites(), 0);
+    assert!(pass.changed());
+    assert!(Codegen::new().build(&program).code.contains("\"ab\""));
 }

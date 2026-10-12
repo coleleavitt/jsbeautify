@@ -2,10 +2,10 @@ use super::*;
 use crate::ast_deobfuscate::dowhile_switch_detector::{
     DoWhileSwitchDetector, collect_constants, resolve_compound_transitions,
 };
+use crate::ast_deobfuscate::semantic;
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -22,7 +22,7 @@ fn run(code: &str) -> (String, usize) {
 
     let mut cleaner = DoWhileSwitchCleaner::new(dispatchers, &program);
 
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
     traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
 
@@ -211,7 +211,7 @@ fn run_with_compounds(code: &str) -> (String, usize) {
     }
 
     let mut cleaner = DoWhileSwitchCleaner::new(dispatchers, &program);
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
     traverse_mut_with_ctx(&mut cleaner, &mut program, &mut ctx);
 

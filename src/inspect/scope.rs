@@ -1,8 +1,9 @@
 use super::{InspectError, Inspection, Position, Positions, parse, render};
 use crate::ParseGoal;
+use crate::ast_deobfuscate::semantic;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
-use oxc_semantic::{AstNodes, Reference, ScopeId, Scoping, SemanticBuilder, SymbolFlags, SymbolId};
+use oxc_semantic::{AstNodes, Reference, ScopeId, Scoping, SymbolFlags, SymbolId};
 use oxc_span::GetSpan;
 use serde::Serialize;
 
@@ -68,10 +69,9 @@ fn symbol_table_on_current_stack(
 ) -> Result<Inspection<ScopeReport>, InspectError> {
     let allocator = Allocator::default();
     let (program, mut diagnostics) = parse(&allocator, source, goal, typescript)?;
-    let ret = SemanticBuilder::new()
-        .with_build_nodes(true)
-        .with_check_syntax_error(true)
-        .build(&program);
+    let ret = semantic::build_with(&program, |builder| {
+        builder.with_build_nodes(true).with_check_syntax_error(true)
+    });
     diagnostics.extend(render(source, ret.diagnostics.into_vec()));
     let scoping = ret.semantic.scoping();
     let nodes = ret.semantic.nodes();

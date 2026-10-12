@@ -41,8 +41,10 @@ impl AstDeobfuscator {
         let mut program = parse_result.program;
         eprintln!("[DEOBFUSCATE] Parsed as {:?}", program.source_type);
 
-        self.run_structural_preamble(&allocator, &mut program);
+        // A scoping the phases hand on while they leave the program unchanged.
+        let mut scoping = self.run_structural_preamble(&allocator, &mut program);
         if !self.project.is_empty() {
+            scoping = None;
             eprintln!("[DEOBFUSCATE] Phase 0.84: project naming seeds");
             crate::ast_deobfuscate::project::apply_project_seeds(
                 &allocator,
@@ -51,19 +53,29 @@ impl AstDeobfuscator {
                 self.keep_fn_names,
             );
         }
-        crate::ast_deobfuscate::webpack::rename_webpack_bindings(&allocator, &mut program, self.keep_fn_names);
-        crate::ast_deobfuscate::turbopack::rename_turbopack_bindings(
+        let scoping = crate::ast_deobfuscate::webpack::rename_webpack_bindings(
             &allocator,
             &mut program,
+            scoping,
+            self.keep_fn_names,
+        );
+        let scoping = crate::ast_deobfuscate::turbopack::rename_turbopack_bindings(
+            &allocator,
+            &mut program,
+            scoping,
             &self.project.turbopack_reexports,
             self.keep_fn_names,
         );
-        let runtime = self.run_bun_naming_phases(&allocator, &mut program);
-        let angular_renamed =
-            crate::ast_deobfuscate::angular::rename_angular_symbols(&allocator, &mut program, self.keep_fn_names);
+        let (runtime, scoping) = self.run_bun_naming_phases(&allocator, &mut program, scoping);
+        let (angular_renamed, scoping) = crate::ast_deobfuscate::angular::rename_angular_symbols(
+            &allocator,
+            &mut program,
+            scoping,
+            self.keep_fn_names,
+        );
         eprintln!("[DEOBFUSCATE] Phase 0.995: Angular class/action naming renamed {angular_renamed} identifiers");
-        self.run_structural_mid(&allocator, &mut program);
-        self.run_structural_late(&allocator, &mut program);
+        let scoping = self.run_structural_mid(&allocator, &mut program, scoping);
+        self.run_structural_late(&allocator, &mut program, scoping);
 
         // ── Phase 12.6: structural checkpoint. Codegen the program, then the
         // structural arena is freed at the closing brace below — discarding all

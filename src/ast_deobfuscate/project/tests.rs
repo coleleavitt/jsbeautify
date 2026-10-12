@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast_deobfuscate::semantic;
 use crate::{AstDeobfuscator, ParseGoal};
 
 fn deobfuscate(code: &str, seeds: ProjectSeeds) -> String {
@@ -81,7 +82,7 @@ fn seeded_helpers_cover_every_helper_variant() {
     let program = oxc_parser::Parser::new(&allocator, code, oxc_span::SourceType::mjs())
         .parse()
         .program;
-    SemanticBuilder::new().build(&program);
+    semantic::build(&program);
     let seeds = ProjectSeeds {
         imports: vec![
             import_seed("./rt.js", "k", None, Some("__restKey")),

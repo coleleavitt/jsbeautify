@@ -1,10 +1,10 @@
-#[cfg(test)]
 use super::*;
+use crate::ast_deobfuscate::semantic;
+#[cfg(test)]
 use crate::ast_deobfuscate::state::ReturnValue;
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 
 fn run_dispatcher_inliner(code: &str) -> (String, DispatcherInliner) {
@@ -15,7 +15,7 @@ fn run_dispatcher_inliner(code: &str) -> (String, DispatcherInliner) {
 
     let mut inliner = DispatcherInliner::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = oxc_traverse::ReusableTraverseCtx::new(state, scoping, &allocator);
 
     oxc_traverse::traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);

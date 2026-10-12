@@ -1,10 +1,9 @@
-#[cfg(test)]
 use super::*;
-use crate::ast_deobfuscate::DeobfuscateState;
+use crate::ast_deobfuscate::{DeobfuscateState, semantic};
+#[cfg(test)]
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -16,7 +15,7 @@ fn run_unflatten(code: &str) -> String {
 
     let mut unflattener = ControlFlowUnflattener::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
     traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
@@ -34,7 +33,7 @@ fn test_detect_sequence() {
 
     let mut unflattener = ControlFlowUnflattener::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
     traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
@@ -109,4 +108,20 @@ for (;;) {
     // Should NOT contain for loop anymore
     assert!(!output.contains("for"));
     assert!(!output.contains("switch"));
+}
+
+#[test]
+fn dropping_a_sequence_declaration_counts_as_a_change_without_a_rewrite() {
+    let allocator = Allocator::default();
+    let mut program = Parser::new(&allocator, r#"var _flow = "2|0|1".split('|'); f();"#, SourceType::mjs())
+        .parse()
+        .program;
+    let mut unflattener = ControlFlowUnflattener::new();
+    let scoping = semantic::scoping(&program);
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
+
+    assert_eq!(unflattener.rewrites(), 0);
+    assert!(unflattener.changed());
+    assert!(!Codegen::new().build(&program).code.contains("_flow"));
 }

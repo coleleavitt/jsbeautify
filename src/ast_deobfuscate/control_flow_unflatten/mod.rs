@@ -38,6 +38,9 @@ pub struct ControlFlowUnflattener {
     detected_sequences: FxHashMap<String, Vec<String>>,
     detected_index_vars: FxHashMap<String, String>,
     rewrites: usize,
+    /// Whether the program body was rebuilt, which can drop statements even
+    /// when no loop was unflattened.
+    changed: bool,
 }
 
 impl ControlFlowUnflattener {
@@ -47,11 +50,17 @@ impl ControlFlowUnflattener {
             detected_sequences: FxHashMap::default(),
             detected_index_vars: FxHashMap::default(),
             rewrites: 0,
+            changed: false,
         }
     }
     #[must_use]
     pub const fn rewrites(&self) -> usize {
         self.rewrites
+    }
+
+    #[must_use]
+    pub const fn changed(&self) -> bool {
+        self.changed
     }
 }
 
@@ -159,6 +168,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
         }
 
         // Third pass: drain the body and build new_body by moving statements
+        self.changed = true;
         let old_body = std::mem::replace(&mut program.body, OxcVec::new_in(ctx));
         let mut new_body = OxcVec::new_in(ctx);
 

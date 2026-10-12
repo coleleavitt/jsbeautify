@@ -171,10 +171,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunModuleHandleRenamer {
 mod tests {
     use super::*;
     use crate::ast_deobfuscate::bun::BunRuntimeCollector;
+    use crate::ast_deobfuscate::semantic;
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -187,7 +187,7 @@ mod tests {
         let parsed = Parser::new(&allocator, &code, SourceType::mjs()).parse();
         let mut program = parsed.program;
 
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut helpers = BunRuntimeCollector::new();
         traverse_mut_with_ctx(&mut helpers, &mut program, &mut ctx);
@@ -201,7 +201,7 @@ mod tests {
             .collect();
         let map = collector.into_map(&reserved);
 
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut renamer = BunModuleHandleRenamer::new(map);
         traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);

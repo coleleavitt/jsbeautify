@@ -1,28 +1,34 @@
 use super::{
-    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, SemanticBuilder, TraceSpan, bun,
-    deob_trace_enabled, heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, TraceSpan, bun, deob_trace_enabled,
+    heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
+use crate::ast_deobfuscate::semantic;
+use oxc_semantic::Scoping;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
+
+/// The names Phase 12.5 would like, and the names free in each scope.
+type ReadableNameInputs = (FxHashMap<SymbolId, String>, FxHashMap<ScopeId, FxHashSet<String>>);
 
 impl AstDeobfuscator {
     pub(super) fn run_local_slot_rename<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
         mem_ck("enter Phase 12.5 (local slot rename)");
         eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
         let _trace = TraceSpan::new("Phase 12.5: Bun local slot renaming");
-        let guard = Self::collect_rename_guards(allocator, program, self.keep_fn_names);
+        // Every step before the renamer only reads, so they share one scoping.
+        let scoping = semantic::scoping(program);
+        let (guard, scoping) = Self::collect_rename_guards(allocator, program, scoping, self.keep_fn_names);
         let guarded = {
             let _trace = TraceSpan::new("Phase 12.5: resolve rename guards");
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut guarded = guard.into_guarded(&scoping);
             guarded.extend(crate::ast_deobfuscate::project::seeded_imports(program, &self.project));
             guarded
         };
-        let (desired, free_names) = if self.readable_names {
-            Self::collect_readable_name_inputs(allocator, program)
+        let ((desired, free_names), scoping) = if self.readable_names {
+            Self::collect_readable_name_inputs(allocator, program, scoping)
         } else {
-            Default::default()
+            (Default::default(), scoping)
         };
         let mode = if self.readable_names {
             bun::local_renamer::RenameMode::Readable
@@ -31,7 +37,6 @@ impl AstDeobfuscator {
         };
         let (plan, plan_stats) = {
             let _trace = TraceSpan::new("Phase 12.5: plan local renames");
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             bun::local_renamer::plan_local_renames_with_stats(&scoping, &guarded, mode, &desired, &free_names)
         };
         if deob_trace_enabled() {
@@ -40,45 +45,45 @@ impl AstDeobfuscator {
         if plan.is_empty() {
             eprintln!("[DEOBFUSCATE] Phase 12.5: No single-char locals to rename");
         } else {
-            self.apply_local_rename_plan(allocator, program, plan, guarded.len());
+            self.apply_local_rename_plan(allocator, program, scoping, plan, guarded.len());
         }
     }
 
     fn collect_rename_guards<'a>(
         allocator: &'a Allocator,
         program: &mut Program<'a>,
+        scoping: Scoping,
         keep_fn_names: bool,
-    ) -> rename_guards::RenameGuardCollector {
+    ) -> (rename_guards::RenameGuardCollector, Scoping) {
         let _trace = TraceSpan::new("Phase 12.5: collect rename guards");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut guard = rename_guards::RenameGuardCollector::new().keep_fn_names(keep_fn_names);
         traverse_mut_with_ctx(&mut guard, program, &mut ctx);
-        guard
+        (guard, ctx.into_scoping())
     }
 
     fn collect_readable_name_inputs<'a>(
         allocator: &'a Allocator,
         program: &mut Program<'a>,
-    ) -> (FxHashMap<SymbolId, String>, FxHashMap<ScopeId, FxHashSet<String>>) {
+        scoping: Scoping,
+    ) -> (ReadableNameInputs, Scoping) {
         let _trace = TraceSpan::new("Phase 12.5: collect readable-name heuristics");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut collector = heuristic_rename::HeuristicNameCollector::new();
         traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-        collector.into_parts()
+        (collector.into_parts(), ctx.into_scoping())
     }
 
     fn apply_local_rename_plan<'a>(
         &mut self,
         allocator: &'a Allocator,
         program: &mut Program<'a>,
+        scoping: Scoping,
         plan: bun::local_renamer::LocalRenameMap,
         guarded_len: usize,
     ) {
         let _trace = TraceSpan::new("Phase 12.5: apply local renames");
         let plan_len = plan.len();
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut renamer = bun::local_renamer::LocalRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);

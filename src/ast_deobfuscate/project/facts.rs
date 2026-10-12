@@ -13,7 +13,7 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
-use oxc_semantic::{Scoping, SemanticBuilder};
+use oxc_semantic::Scoping;
 use oxc_span::SourceType;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
@@ -24,6 +24,7 @@ use super::{TurbopackFacts, import_bindings, specifier_exports};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::{
     BunHelper, BunRuntimeCollector, ClassNameCollector, DisplayNameCollector, ExportNameCollector, rename_guards,
+    semantic,
 };
 
 /// What other files of the project need to know about one file.
@@ -155,7 +156,7 @@ fn collect_on_current_stack<S: BuildHasher>(
     };
     module_links(&program, &mut facts);
 
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let exported = exported_locals(&program, &scoping);
     facts.globals = scoping
         .root_unresolved_references()

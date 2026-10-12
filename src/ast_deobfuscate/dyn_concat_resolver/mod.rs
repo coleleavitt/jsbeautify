@@ -45,6 +45,8 @@ pub struct DynConcatResolver {
     idents: FxHashMap<SymbolId, String>,
     function_declaration_scopes: FxHashSet<ScopeId>,
     rewrites: usize,
+    /// Also set by folding adjacent literals, which `rewrites` does not count.
+    changed: bool,
 }
 
 impl DynConcatResolver {
@@ -56,6 +58,12 @@ impl DynConcatResolver {
     pub const fn rewrites(&self) -> usize {
         self.rewrites
     }
+
+    #[must_use]
+    pub const fn changed(&self) -> bool {
+        self.changed
+    }
+
     fn lookup_ident(&self, symbol_id: SymbolId, ctx: &Ctx<'_>) -> Option<&str> {
         let value = self.idents.get(&symbol_id)?;
         let scoping = ctx.scoping();
@@ -164,6 +172,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
                     deob_trace!("[AST/dyn-concat] inlined {total} ident(s) into '+' chain (folded={folded})");
                 }
                 self.rewrites = self.rewrites.saturating_add(total);
+                self.changed |= total > 0 || folded;
             }
             Expression::TemplateLiteral(tmpl) => {
                 let subs = substitute_in_template(tmpl, self, ctx);
@@ -171,6 +180,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
                     deob_trace!("[AST/dyn-concat] inlined {subs} ident(s) into template literal");
                 }
                 self.rewrites = self.rewrites.saturating_add(subs);
+                self.changed |= subs > 0;
             }
             _ => {}
         }

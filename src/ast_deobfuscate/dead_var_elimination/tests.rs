@@ -1,10 +1,9 @@
 use super::*;
-use crate::ast_deobfuscate::AstDeobfuscator;
+use crate::ast_deobfuscate::{AstDeobfuscator, semantic};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{BindingPattern, Statement};
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use rustc_hash::FxHashSet;
 
@@ -28,7 +27,8 @@ fn run_elimination_as(code: &str, source_type: SourceType) -> EliminationResult 
     );
     let mut program = ret.program;
 
-    let result = eliminate_dead_vars(&allocator, &mut program);
+    let scoping = semantic::scoping(&program);
+    let (result, _) = eliminate_dead_vars(&allocator, &mut program, scoping);
 
     EliminationResult {
         output: Codegen::new().build(&program).code,
@@ -126,7 +126,7 @@ fn rejects_candidate_that_would_make_live_reference_unresolved() {
     .parse();
     assert_eq!(parsed.diagnostics.len(), 0);
     let mut program = parsed.program;
-    let semantic = SemanticBuilder::new().build(&program);
+    let semantic = semantic::build(&program);
     assert_eq!(semantic.diagnostics.len(), 0);
 
     let Statement::VariableDeclaration(declaration) = &program.body[0] else {
@@ -161,7 +161,8 @@ fn known_globals_do_not_reject_valid_elimination() {
     .parse();
     assert_eq!(parsed.diagnostics.len(), 0);
     let mut program = parsed.program;
-    let result = eliminate_dead_vars(&allocator, &mut program);
+    let scoping = semantic::scoping(&program);
+    let (result, _) = eliminate_dead_vars(&allocator, &mut program, scoping);
     let output = Codegen::new().build(&program).code;
 
     assert!(!result.was_rejected());
@@ -282,6 +283,47 @@ fn preserves_side_effectful_initializer_and_reports_no_rewrite() {
     assert!(result.output.contains("effect()"), "got: {}", result.output);
     assert_eq!(result.candidate_symbols, 1);
     assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn for_head_declarator_is_a_candidate_but_not_removed() {
+    let result = run_elimination("for (var unused = 0; ; ) { break; }");
+    assert!(result.output.contains("unused = 0"), "got: {}", result.output);
+    assert_eq!(result.candidate_symbols, 1);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn removes_pure_declarator_nested_in_a_function_beside_an_unremovable_one() {
+    let result = run_elimination("let kept = effect(); export function f() { if (x) { let unused = 1; } }");
+    assert!(!result.output.contains("unused"), "got: {}", result.output);
+    assert!(result.output.contains("kept = effect()"), "got: {}", result.output);
+    assert_eq!(result.candidate_symbols, 2);
+    assert_eq!(result.removed_declarators, 1);
+}
+
+#[test]
+fn returns_the_scoping_only_when_the_program_is_unchanged() {
+    let allocator = Allocator::default();
+    let source = "let kept = effect(); let used = 1; consume(used);";
+    let mut program = Parser::new(&allocator, source, SourceType::mjs()).parse().program;
+    let scoping = semantic::scoping(&program);
+    let (result, scoping) = eliminate_dead_vars(&allocator, &mut program, scoping);
+    assert_eq!(result.removed_declarators(), 0);
+    let returned = scoping.expect("an unchanged program keeps its scoping");
+    let fresh = semantic::scoping(&program);
+    assert_eq!(
+        returned.symbol_names().collect::<Vec<_>>(),
+        fresh.symbol_names().collect::<Vec<_>>()
+    );
+
+    let mut program = Parser::new(&allocator, "let unused = 1;", SourceType::mjs())
+        .parse()
+        .program;
+    let scoping = semantic::scoping(&program);
+    let (result, scoping) = eliminate_dead_vars(&allocator, &mut program, scoping);
+    assert_eq!(result.removed_declarators(), 1);
+    assert!(scoping.is_none());
 }
 
 #[test]

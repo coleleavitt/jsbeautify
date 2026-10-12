@@ -232,17 +232,17 @@ impl<'a> Traverse<'a, DeobfuscateState> for StatementSplitNormalizer {
 /// Runs the normalizer alone; returns the code and the rewrite count.
 #[cfg(test)]
 pub fn normalize(code: &str, source_type: oxc_span::SourceType) -> (String, usize) {
+    use crate::ast_deobfuscate::semantic;
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, code, source_type).parse();
     assert!(ret.diagnostics.is_empty(), "test input must parse: {code}");
     let mut program = ret.program;
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
     let mut normalizer = StatementSplitNormalizer::new();
     traverse_mut_with_ctx(&mut normalizer, &mut program, &mut ctx);

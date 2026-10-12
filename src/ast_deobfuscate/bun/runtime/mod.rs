@@ -36,6 +36,7 @@
 
 use oxc_traverse::TraverseCtx;
 
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -73,10 +74,7 @@ pub fn with_bundle_runtime<T: Send>(
         let mut program = oxc_parser::Parser::new(&allocator, source, oxc_span::SourceType::unambiguous())
             .parse()
             .program;
-        let scoping = oxc_semantic::SemanticBuilder::new()
-            .build(&program)
-            .semantic
-            .into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = oxc_traverse::ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut collector = BunRuntimeCollector::new();
         oxc_traverse::traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
@@ -90,7 +88,6 @@ mod tests {
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -99,7 +96,7 @@ mod tests {
         let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
         let mut prog = parsed.program;
         let mut collector = BunRuntimeCollector::new();
-        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let scoping = semantic::scoping(&prog);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
         collector.into_map()
@@ -111,7 +108,7 @@ mod tests {
         let mut prog = parsed.program;
 
         let mut collector = BunRuntimeCollector::new();
-        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let scoping = semantic::scoping(&prog);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
         let plan = collector
@@ -122,7 +119,7 @@ mod tests {
         let map = collector.into_map();
 
         let mut renamer = BunRuntimeRenamer::new(plan);
-        let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+        let scoping = semantic::scoping(&prog);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
 
