@@ -514,3 +514,66 @@ fn node_chunks_and_entries_are_commonjs() {
     );
     assert!(entry.is_commonjs());
 }
+
+/// Context members whose meaning changed between Next.js versions are named by
+/// what is installed (16.0 `b = getWorkerBlobURL`, 16.2 `b = createWorker`,
+/// 16.4 `b = RUNTIME_CHUNK_BASE_PATH`; `w = loadWebAssembly` in a browser).
+#[test]
+fn names_versioned_members_by_what_is_installed() {
+    let old = run(
+        r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}function k(e){return new Blob([e])}function q(e){}c.l=a,c.b=k,c.w=q;",
+    );
+    for expected in [
+        "function getWorkerBlobURL(e)",
+        "function loadWebAssembly(e)",
+        "function loadChunk(e)",
+    ] {
+        assert!(old.contains(expected), "{expected}: {old}");
+    }
+    let worker = run(r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function k(e){return new Worker(e)}c.b=k;");
+    assert!(worker.contains("function createWorker(e)"), "{worker}");
+    let new = run(r#"function g(e,t){this.m=e,this.e=t}var c=g.prototype;let p="/_next/",x="?v=1";c.b=p,c.X=x;"#);
+    assert!(new.contains("let RUNTIME_CHUNK_BASE_PATH = \"/_next/\""), "{new}");
+    assert!(new.contains("ASSET_SUFFIX = \"?v=1\""), "{new}");
+}
+
+/// Calls the runtime source makes the same way in every version name their
+/// callee, also from a member function the minifier inlined; the call graph
+/// outranks the message anchors.
+#[test]
+fn names_runtime_functions_by_their_callers() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;
+function I(e,t,r){return {id:e}}
+let B=(e,t)=>I(e,1,t.id);
+function w(e){let t=B(e,this.m);return t.exports}
+function M(e,t,r){return fetch(r).catch(n=>{throw Error(`Failed to load chunk ${r} ${e}${t}`)})}
+c.i=w;c.L=function(e){return M(1,this.m.id,e)};";
+    let out = run(code);
+    for expected in [
+        "function esmImport(e)",
+        "let getOrInstantiateModuleFromParent = (e, t) => instantiateModule(e, 1, t.id)",
+        "function instantiateModule(e, t, r)",
+        "function loadChunkByUrlInternal(e, t, r)",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    assert!(!out.contains("loadChunkByUrlWhole"), "{out}");
+}
+
+/// Next.js 16.0 throws the "factory is not available" message inline in
+/// `instantiateModule`; only a function returning it is `factoryNotAvailableMessage`.
+#[test]
+fn message_builders_return_their_message() {
+    let runtime = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;";
+    let thrown = run(&format!(
+        "{runtime}function A(e,t,r){{if(!r)throw Error(`Module ${{e}} was instantiated ${{t}}, but the module factory is not available.`)}}"
+    ));
+    assert!(thrown.contains("function A(e, t, r)"), "{thrown}");
+    let returned = run(&format!(
+        "{runtime}function A(e,t,r){{let n=t;return`Module ${{e}} was instantiated ${{n}}, but the module factory is not available.`}}"
+    ));
+    assert!(
+        returned.contains("function factoryNotAvailableMessage(e, t, r)"),
+        "{returned}"
+    );
+}

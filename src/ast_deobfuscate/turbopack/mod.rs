@@ -35,9 +35,11 @@
 //!   (`devModuleCache`, `loadChunkAsyncOnDemand`), `DevContext` and its
 //!   `refresh`, `registerChunk` / `registerChunkList` and their lists,
 //!   `BACKEND`, `DEV_BACKEND`, `CHUNK_UPDATE_LISTENERS`, the React Refresh
-//!   hooks, error classes, functions found by a message only they contain
-//!   (`RUNTIME_FUNCTION_ANCHORS` in `collector.rs`), and the Node.js runtime's
-//!   `module.exports = (sourcePath) => ({ m, c })`;
+//!   hooks, error classes, the functions those call in the one way every
+//!   runtime version does (`RUNTIME_CALLS`), members whose meaning changed
+//!   between versions by what is installed (`b`, `w`, …), functions found by a
+//!   message only they contain (`RUNTIME_FUNCTION_ANCHORS` in `collector.rs`),
+//!   and the Node.js runtime's `module.exports = (sourcePath) => ({ m, c })`;
 //! - in the worker entrypoint (`turbopack-worker-<hash>.js`), `abort`, `params`,
 //!   `param` and `chunkUrls`;
 //! - in the Next.js edge wrapper, `self._ENTRIES[name] = new Proxy(modProm, …)`,
