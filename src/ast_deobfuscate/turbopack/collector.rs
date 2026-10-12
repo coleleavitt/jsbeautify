@@ -228,6 +228,14 @@ impl NameCollector {
         !self.constructors.is_empty()
     }
 
+    /// Plan a runtime name for `symbol` unless it already carries an
+    /// authored (unminified) name, such as `devContextPrototype`.
+    fn plan_runtime(&mut self, symbol: SymbolId, name: &str, ctx: &Ctx<'_>) {
+        if is_minified(ctx.scoping().symbol_name(symbol)) {
+            self.plan(symbol, name);
+        }
+    }
+
     fn plan(&mut self, symbol: SymbolId, name: &str) {
         if self.planned.insert(symbol) {
             self.plan.push((symbol, name.to_string()));
@@ -534,7 +542,7 @@ impl NameCollector {
         if !push.key.is_specific_static_name("push") {
             return;
         }
-        let Some(symbol) = resolve_expr(&push.value, ctx) else {
+        let Some(symbol) = resolve_expr(&push.value, ctx).filter(|&s| is_minified(ctx.scoping().symbol_name(s))) else {
             return;
         };
         let (name, list) = if global.ends_with("_CHUNK_LISTS") {
@@ -787,7 +795,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
         let symbol = func.id.as_ref().and_then(|id| id.symbol_id.get());
-        self.functions.push(symbol.filter(|_| func.is_declaration()));
+        let anchored = func.is_declaration() && func.id.as_ref().is_some_and(|id| is_minified(&id.name));
+        self.functions.push(symbol.filter(|_| anchored));
         let Some(symbol) = symbol else { return };
         if is_context_constructor(func, ctx) {
             self.constructors.insert(symbol);
@@ -796,8 +805,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             && let Some(refresh) = self.dev_context_refresh(func, ctx)
         {
             self.dev_runtime = true;
-            self.plan(symbol, "DevContext");
-            self.plan(refresh, "refresh");
+            self.plan_runtime(symbol, "DevContext", ctx);
+            self.plan_runtime(refresh, "refresh", ctx);
         }
     }
 
@@ -806,7 +815,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
     }
 
     fn enter_class(&mut self, class: &mut Class<'a>, _ctx: &mut Ctx<'a>) {
-        if let Some(symbol) = class.id.as_ref().and_then(|id| id.symbol_id.get())
+        if let Some(id) = &class.id
+            && is_minified(&id.name)
+            && let Some(symbol) = id.symbol_id.get()
             && let Some(name) = error_class_name(class)
         {
             self.runtime_error_classes.push((symbol, name.to_string()));
@@ -887,7 +898,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             && let Some(list) = resolve(each, ctx).and_then(|symbol| self.register_fns.get(&symbol).copied())
             && let Some(symbol) = resolve_expr(&callee.object, ctx)
         {
-            self.plan(symbol, list);
+            self.plan_runtime(symbol, list, ctx);
         }
         // `_s(Component, "hash", …)` names a React Refresh signature handle.
         if let Some(handle) = resolve_expr(&call.callee, ctx)
@@ -958,10 +969,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             self.plan(symbol, "param");
             self.plan(params, "params");
         } else if let Some(name) = Self::singleton_name(init) {
-            self.runtime_candidates.push((symbol, name));
+            if is_minified(&id.name) {
+                self.runtime_candidates.push((symbol, name));
+            }
         } else if !self.constructors.is_empty() && self.is_prototype(init, ctx) {
             self.prototypes.insert(symbol);
-            self.plan(symbol, "contextPrototype");
+            self.plan_runtime(symbol, "contextPrototype", ctx);
         }
     }
 
@@ -976,7 +989,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             && let Some(name) = Self::singleton_name(&assign.right)
             && let Some(symbol) = resolve(target, ctx)
         {
-            self.runtime_candidates.push((symbol, name));
+            if is_minified(ctx.scoping().symbol_name(symbol)) {
+                self.runtime_candidates.push((symbol, name));
+            }
             return;
         }
         if self.constructors.is_empty() {
@@ -998,6 +1013,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         let Some(symbol) = resolve_expr(&assign.right, ctx) else {
             return;
         };
+        if !is_minified(ctx.scoping().symbol_name(symbol)) {
+            return;
+        }
         if let Some((_, name)) = RUNTIME_MEMBERS.iter().find(|(m, _)| *m == member_name) {
             self.plan(symbol, name);
         } else if let Some(member) = RUNTIME_SPECIFIC_MEMBERS.iter().find(|m| **m == member_name) {

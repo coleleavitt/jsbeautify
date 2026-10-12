@@ -451,3 +451,15 @@ fn runtime_anchors_need_the_runtime() {
     assert!(out.contains("function F(e)"), "{out}");
     assert!(out.contains("class E extends Error"), "{out}");
 }
+
+#[test]
+fn keeps_authored_runtime_names() {
+    let code = r"function Context(module, exports) { this.m = module; this.e = exports; } const browserContextPrototype = Context.prototype; let devModuleCache = new Map(); browserContextPrototype.c = devModuleCache; function loadChunkInternal(e) {} browserContextPrototype.l = loadChunkInternal;";
+    let out = run(code);
+    assert!(
+        out.contains("const browserContextPrototype = Context.prototype"),
+        "{out}"
+    );
+    assert!(out.contains("let devModuleCache = new Map()"), "{out}");
+    assert!(out.contains("function loadChunkInternal(e)"), "{out}");
+}
