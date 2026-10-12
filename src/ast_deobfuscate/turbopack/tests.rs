@@ -123,3 +123,124 @@ fn ignores_lookalike_pushes() {
         assert!(!out.contains("__turbopack_context__"), "{code} → {out}");
     }
 }
+
+#[test]
+fn names_node_chunk_factories() {
+    let code = r#"module.exports=["[project]/index.js [test] (ecmascript)",(t,e,o)=>{let s=t.r(5);e.exports=s}];"#;
+    let out = run(code);
+    assert!(out.contains("(__turbopack_context__, module, exports) =>"), "{out}");
+    assert!(out.contains("module.exports = module_5"), "{out}");
+}
+
+#[test]
+fn names_strict_wrapped_node_chunk_without_mangled_exports() {
+    let code = r#"(()=>{"use strict";module.exports=["[project]/index.js [test] (ecmascript)",t=>{console.log((0,t.i("[project]/lone.js [test] (ecmascript)").f)()),t.s([])},"[project]/lone.js [test] (ecmascript)",t=>{function n(){return"lone"}t.s(["f",0,n])}]})();"#;
+    let out = run(code);
+    assert_eq!(out.matches("(__turbopack_context__) =>").count(), 2, "{out}");
+    assert!(out.contains("function n()"), "mangled key `f` is not a name: {out}");
+}
+
+#[test]
+fn ignores_node_lookalikes() {
+    for code in [
+        r"module.exports = [1, function(a, b, c, d) {}];",
+        r"function f() { module.exports = [1, (e) => {}]; }",
+        r"exports.list = [1, (e) => {}];",
+    ] {
+        let out = run(code);
+        assert!(!out.contains("__turbopack_context__"), "{code} → {out}");
+    }
+}
+
+#[test]
+fn names_development_imports_by_module_path() {
+    let code = r#"(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push(["static/chunks/a.js",
+"[project]/src/app/page.tsx [app-client] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$foo$2e$ts__$5b$app$2d$client$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/foo.ts [app-client] (ecmascript)");
+var react = __turbopack_context__.r("[project]/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js [app-client] (ecmascript)");
+(0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$foo$2e$ts__$5b$app$2d$client$5d$__$28$ecmascript$29$__.foo)(react);
+}),
+"[externals]/react [external] (react, cjs)", ((__turbopack_context__, module, exports) => {
+const mod = __turbopack_context__.x("react", () => require("react"));
+module.exports = mod;
+}),
+]);"#;
+    let out = run(code);
+    assert!(
+        out.contains(
+            r#"var module_src_foo_ts = __turbopack_context__.i("[project]/src/foo.ts [app-client] (ecmascript)")"#
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("(0, module_src_foo_ts.foo)(module_react_index_js)"),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"const external_react = __turbopack_context__.x("react""#),
+        "{out}"
+    );
+}
+
+#[test]
+fn reads_a_custom_chunk_loading_global() {
+    let code = r#"(globalThis["myApp"] || (globalThis["myApp"] = [])).push(["a.js", 1, (e, t) => {}]);"#;
+    let out = run(code);
+    assert!(out.contains("(__turbopack_context__, module) =>"), "{out}");
+    let bare = r"globalThis.myApp.push([1, 1, (e) => {}]);";
+    assert!(
+        !run(bare).contains("__turbopack_context__"),
+        "a bare global must be named TURBOPACK…"
+    );
+}
+
+#[test]
+fn names_node_runtime_functions() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}function b(e){}function p(e){}function q(e,t){}function r(e,t){}c.l=a,c.L=b,c.w=p;module.exports=e=>({m:t=>q(e,t),c:t=>r(e,t)});";
+    let out = run(code);
+    assert!(out.contains("function loadChunkAsync(e)"), "{out}");
+    assert!(out.contains("function loadChunkAsyncByUrl(e)"), "{out}");
+    assert!(out.contains("function getOrInstantiateRuntimeModule(e, t)"), "{out}");
+    assert!(out.contains("(sourcePath) => ({"), "{out}");
+    assert!(out.contains("c: (t) => loadRuntimeChunk(sourcePath, t)"), "{out}");
+
+    let browser = run(r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}c.l=a;");
+    assert!(browser.contains("function loadChunk(e)"), "{browser}");
+}
+
+#[test]
+fn names_minified_worker_entrypoint() {
+    let code = r#"(function(){function i(o){throw console.error(o),Error(o)}if(typeof self.WorkerGlobalScope>"u")i("Worker entrypoint must be loaded in a worker context");var a=new URL(location.href).searchParams.get("params");var e=JSON.parse(a),f=o=>"string"==typeof e[o]?e[o]:"",r=Array.isArray(e[0])?e[0]:[];Object.assign(self,{TURBOPACK_NEXT_CHUNK_URLS:r,TURBOPACK_ASSET_SUFFIX:f(1),TURBOPACK_CHUNK_BASE_PATH:f(2)}),r.reverse(),importScripts.apply(self,r)})();"#;
+    let out = run(code);
+    for name in [
+        "function abort(o)",
+        "var params = JSON.parse(a)",
+        "param = (o) =>",
+        "chunkUrls = Array.isArray(params[0])",
+    ] {
+        assert!(out.contains(name), "{name}: {out}");
+    }
+}
+
+#[test]
+fn module_ident_drops_root_layer_and_package_prefix() {
+    use super::shapes::module_ident;
+    assert_eq!(module_ident("983"), "983");
+    assert_eq!(
+        module_ident("[project]/src/foo.ts [app-client] (ecmascript)"),
+        "src_foo_ts"
+    );
+    assert_eq!(
+        module_ident(
+            "[project]/node_modules/.pnpm/next@16.0.0/node_modules/next/dist/client/index.js [app-client] (ecmascript) <locals>"
+        ),
+        "next_dist_client_index_js"
+    );
+    assert_eq!(module_ident("[externals]/react [external] (react, cjs)"), "react");
+    assert_eq!(
+        module_ident("[project]/app/[slug]/page.tsx [app-rsc] (ecmascript)"),
+        "app_slug_page_tsx"
+    );
+    assert_eq!(module_ident("[turbopack]/"), "anonymous");
+}
