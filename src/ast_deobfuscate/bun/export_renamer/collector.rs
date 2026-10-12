@@ -29,6 +29,8 @@ pub struct ExportNameCollector {
     /// `__export` calls with a `default` key so far, which number the modules
     /// that have no module comment.
     default_modules: usize,
+    /// Let one or two character export names name their locals.
+    short_export_names: bool,
 }
 
 impl ExportNameCollector {
@@ -41,7 +43,17 @@ impl ExportNameCollector {
             defaults: Vec::new(),
             module_comments: Vec::new(),
             default_modules: 0,
+            short_export_names: false,
         }
+    }
+
+    /// Let a one or two character export name (`export { r as ab }`) name its
+    /// minified local, for a single file whose short export names are its own
+    /// rather than names code-split chunks share.
+    #[must_use]
+    pub const fn short_export_names(mut self, allow: bool) -> Self {
+        self.short_export_names = allow;
+        self
     }
 
     /// The path of the last esbuild module comment before `offset`.
@@ -155,11 +167,11 @@ impl ExportNameCollector {
 }
 
 /// Whether an export name can become its minified local's name: an identifier
-/// that is not a reserved word and longer than the one or two characters
-/// rollup and esbuild give the exports code-split chunks share
-/// (`export { r as a }` says nothing about `r`).
-fn is_informative_local_name(name: &str) -> bool {
-    is_valid_identifier(name) && !is_reserved_word(name) && name.chars().count() > 2
+/// that is not a reserved word and, unless `allow_short`, longer than the one
+/// or two characters rollup and esbuild give the exports code-split chunks
+/// share (`export { r as a }` says nothing about `r`).
+fn is_informative_local_name(name: &str, allow_short: bool) -> bool {
+    is_valid_identifier(name) && !is_reserved_word(name) && (allow_short || name.chars().count() > 2)
 }
 
 /// `src/components/Button.tsx`: the text of an esbuild module comment.
@@ -210,7 +222,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameCollector {
             let exported = spec.exported.name();
             if exported == "default" {
                 self.push_default(symbol, None);
-            } else if is_minified(&local.name) && is_informative_local_name(&exported) {
+            } else if is_minified(&local.name) && is_informative_local_name(&exported, self.short_export_names) {
                 self.specifier_names
                     .entry(symbol)
                     .or_insert_with(|| exported.to_string());

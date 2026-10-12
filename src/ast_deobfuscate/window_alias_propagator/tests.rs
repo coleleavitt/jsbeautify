@@ -8,6 +8,10 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 fn run(code: &str) -> String {
+    run_with(code, false)
+}
+
+fn run_with(code: &str, es5_only: bool) -> String {
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
     let mut program = ret.program;
@@ -22,7 +26,7 @@ fn run(code: &str) -> String {
         return Codegen::new().build(&program).code;
     }
 
-    let mut propagator = WindowAliasPropagator::new(aliases);
+    let mut propagator = WindowAliasPropagator::new(aliases).es5_only(es5_only);
     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
     traverse_mut_with_ctx(&mut propagator, &mut program, &mut ctx);
@@ -326,4 +330,46 @@ fn rewrites_names_every_aliased_global_defines() {
 fn an_alias_of_window_and_self_gets_the_names_both_define() {
     let out = run("var w = window; w = self; var a = w.document, b = w.navigator;");
     assert!(out.contains("w.document") && out.contains("b = navigator"), "{out}");
+}
+
+#[test]
+fn es5_mode_rewrites_only_names_es5_era_browsers_define() {
+    let props = [
+        "document",
+        "location",
+        "JSON",
+        "Math",
+        "XMLHttpRequest",
+        "localStorage",
+        "Promise",
+        "Symbol",
+        "Map",
+        "Uint8Array",
+        "crypto",
+        "console",
+        "atob",
+        "requestAnimationFrame",
+        "Blob",
+    ];
+    let code = props
+        .iter()
+        .enumerate()
+        .map(|(i, prop)| format!("var r{i} = Q.{prop};"))
+        .collect::<Vec<_>>()
+        .concat();
+    let out = run_with(&format!("var Q = window;{code}"), true);
+    for (i, prop) in props.iter().enumerate() {
+        let rewritten = i < 6;
+        assert_eq!(
+            out.contains(&format!("var r{i} = {prop};")),
+            rewritten,
+            "{prop} rewritten: {rewritten}: {out}"
+        );
+    }
+    let out = run_with(
+        "var s = self; var a = s.navigator, b = s.performance; var g = global; var p = g.Promise;",
+        true,
+    );
+    assert!(out.contains("a = navigator") && out.contains("s.performance"), "{out}");
+    assert!(out.contains("var p = Promise"), "Node keeps its ES2015 globals: {out}");
 }

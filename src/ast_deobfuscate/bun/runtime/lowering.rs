@@ -1,10 +1,13 @@
 //! esbuild's syntax-lowering helpers: class fields and private members,
-//! object spread/rest, `async` functions, tagged templates, and the `require`
-//! / glob-import shims (`internal/runtime/runtime.go`). Each is recognized by
-//! its parameter shape plus a call or message only that helper makes.
+//! `super` in lowered methods, object spread/rest, `async` functions and
+//! generators, `for await`, `using`, TypeScript and JavaScript decorators,
+//! tagged templates, the binary loader, and the `require` / glob-import shims
+//! (`internal/runtime/runtime.go`). Each is recognized by its parameter shape
+//! plus a call or message only that helper makes.
 
 use oxc_ast::ast::{
-    Argument, ArrowFunctionExpression, BinaryOperator, CallExpression, Expression, Statement, VariableDeclarator,
+    Argument, ArrayExpressionElement, ArrowFunctionExpression, AssignmentTarget, BinaryOperator, CallExpression,
+    Expression, Statement, UnaryOperator, VariableDeclarator,
 };
 
 use super::ast_utils::{
@@ -39,8 +42,40 @@ pub(super) fn lowering_helper(arrow: &ArrowFunctionExpression<'_>, helpers: &Bun
             |expr| matches!(expr, Expression::CallExpression(call) if call_callee_is_helper(call, helpers, helper) && args(call)),
         )
     };
+    let has = |value: &str| arrow_contains_string(arrow, value);
+    let calls_with = |helper: BunHelper, names: &[&str]| calls(helper, &|call| args_are(call, names));
     let helper = match params.as_slice() {
         [msg] if is_type_error_thrower(arrow, msg) => BunHelper::TypeError,
+        [_] if has("Function expected") => BunHelper::ExpectFn,
+        [_] if has("metadata") && calls_create(arrow, helpers) => BunHelper::DecoratorStart,
+        [_] if has("asyncIterator") && has("throw") => BunHelper::YieldStar,
+        [key] if is_rest_key(arrow, key) => BunHelper::RestKey,
+        [_] if has("base64") && arrow_contains(arrow, |expr| is_new_of(expr, "Uint8Array")) => BunHelper::ToBinaryNode,
+        [index, decorator] if is_decorate_param(arrow, index, decorator) => BunHelper::DecorateParam,
+        [_, _] if has("metadata") && calls(BunHelper::DefNormalProp, &|_| true) => BunHelper::DecoratorMetadata,
+        [promise, is_yield_star]
+            if assigns_this_index(arrow, 0.0, promise) && assigns_this_index(arrow, 1.0, is_yield_star) =>
+        {
+            BunHelper::Await
+        }
+        [this, args, generator] if has("asyncIterator") && is_async(arrow, this, args, generator) => {
+            BunHelper::AsyncGenerator
+        }
+        [_, _, _] if has("asyncIterator") && has("iterator") => BunHelper::ForAwait,
+        [_, _, _] if has("Object not disposable") => BunHelper::Using,
+        [_, _, _] if has("An error was suppressed during disposal") => BunHelper::CallDispose,
+        [cls, obj, key] if is_super_get(arrow, helpers, cls, obj, key) => BunHelper::SuperGet,
+        [cls, _, _, val] if is_super_set(arrow, helpers, cls, val) => BunHelper::SuperSet,
+        [cls, obj, key] if calls_with(BunHelper::SuperGet, &[cls, obj, key]) => BunHelper::SuperWrapper,
+        [obj, member, _, getter] if calls_with(BunHelper::PrivateGet, &[obj, member, getter]) => {
+            BunHelper::PrivateWrapper
+        }
+        [decorators, target, key, _] if is_decorate_class(arrow, helpers, decorators, target, key) => {
+            BunHelper::DecorateClass
+        }
+        [_, _, _, _, _] if has("Already initialized") => BunHelper::DecoratorContext,
+        [_, flags, _, _] if arrow_contains(arrow, |expr| is_shift_right_one(expr, flags)) => BunHelper::RunInitializers,
+        [_, _, _, _, _, _] if has("Object expected") => BunHelper::DecorateElement,
         [map] if arrow_contains_string(arrow, "Module not found in bundle: ") && is_glob(arrow, map) => BunHelper::Glob,
         [a, b] if is_spread_props(arrow, helpers, a, b) => BunHelper::SpreadProps,
         [a, _]
@@ -189,4 +224,149 @@ fn is_method_call_on(expr: &Expression<'_>, object: &str, method: &str) -> bool 
 
 fn first_arg_is(call: &CallExpression<'_>, name: &str) -> bool {
     call.arguments.first().is_some_and(|arg| argument_is_ident(arg, name))
+}
+
+/// `__toBinary`: `(() => { var table = new Uint8Array(128); …; return base64 => { … base64.charCodeAt(i++) … } })()`.
+pub(super) fn is_to_binary(expr: &Expression<'_>) -> bool {
+    let Expression::CallExpression(call) = expr.without_parentheses() else {
+        return false;
+    };
+    call.arguments.is_empty()
+        && matches!(call.callee.without_parentheses(), Expression::ArrowFunctionExpression(arrow) if arrow.params.is_empty())
+        && expression_contains(expr, |expr| is_new_of(expr, "Uint8Array"))
+        && expression_contains(expr, |expr| {
+            matches!(expr, Expression::CallExpression(call)
+            if matches!(&call.callee, Expression::StaticMemberExpression(member) if member.property.name == "charCodeAt"))
+        })
+}
+
+/// `__decoratorStrings`: `["class", "method", "getter", "setter", "accessor", "field", "value", "get", "set"]`.
+pub(super) fn is_decorator_strings(expr: &Expression<'_>) -> bool {
+    const STRINGS: [&str; 9] = [
+        "class", "method", "getter", "setter", "accessor", "field", "value", "get", "set",
+    ];
+    matches!(expr.without_parentheses(), Expression::ArrayExpression(array)
+        if array.elements.len() == STRINGS.len()
+            && array.elements.iter().zip(STRINGS).all(|(element, value)|
+                matches!(element, ArrayExpressionElement::StringLiteral(lit) if lit.value == value)))
+}
+
+/// `__restKey`: `key => typeof key === "symbol" ? key : key + ""`.
+fn is_rest_key(arrow: &ArrowFunctionExpression<'_>, key: &str) -> bool {
+    let Some(Expression::ConditionalExpression(cond)) = expression_body(arrow) else {
+        return false;
+    };
+    matches!(cond.test.without_parentheses(), Expression::BinaryExpression(test)
+        if matches!(test.operator, BinaryOperator::Equality | BinaryOperator::StrictEquality)
+            && matches!(&test.left, Expression::UnaryExpression(unary)
+                if unary.operator == UnaryOperator::Typeof && is_ident(&unary.argument, key))
+            && is_string(&test.right, "symbol"))
+        && is_ident(&cond.consequent, key)
+        && matches!(cond.alternate.without_parentheses(), Expression::BinaryExpression(concat)
+            if concat.operator == BinaryOperator::Addition && is_ident(&concat.left, key) && is_string(&concat.right, ""))
+}
+
+/// `__decorateParam`: `(index, decorator) => (target, key) => decorator(target, key, index)`.
+fn is_decorate_param(arrow: &ArrowFunctionExpression<'_>, index: &str, decorator: &str) -> bool {
+    let Some(Expression::ArrowFunctionExpression(inner)) = expression_body(arrow) else {
+        return false;
+    };
+    let Some(&[target, key]) = param_names(inner).as_deref() else {
+        return false;
+    };
+    matches!(expression_body(inner), Some(Expression::CallExpression(call))
+        if is_ident(&call.callee, decorator) && args_are(call, &[target, key, index]))
+}
+
+/// `__decorateClass`: `(decorators, target, key, kind) => { var result = … __getOwnPropDesc(target, key) …;
+/// for (var i = decorators.length - 1, decorator; i >= 0; i--) … }`.
+fn is_decorate_class(
+    arrow: &ArrowFunctionExpression<'_>,
+    helpers: &BunHelperMap,
+    decorators: &str,
+    target: &str,
+    key: &str,
+) -> bool {
+    arrow_contains(arrow, |expr| {
+        matches!(expr, Expression::StaticMemberExpression(member)
+            if is_ident(&member.object, decorators) && member.property.name == "length")
+    }) && arrow_contains(arrow, |expr| {
+        matches!(expr, Expression::CallExpression(call)
+            if call_callee_is_helper_or_object_property(call, helpers, BunHelper::GetOwnPropDesc, "getOwnPropertyDescriptor")
+                && args_are(call, &[target, key]))
+    })
+}
+
+/// `__superGet`: `(cls, obj, key) => __reflectGet(__getProtoOf(cls), key, obj)`.
+fn is_super_get(arrow: &ArrowFunctionExpression<'_>, helpers: &BunHelperMap, cls: &str, obj: &str, key: &str) -> bool {
+    matches!(expression_body(arrow), Some(Expression::CallExpression(call))
+        if is_reflect_call(call, helpers, BunHelper::ReflectGet, "get")
+            && matches!(call.arguments.as_slice(), [Argument::CallExpression(proto), k, o]
+                if is_get_proto_of(proto, helpers, cls) && argument_is_ident(k, key) && argument_is_ident(o, obj)))
+}
+
+/// `__superSet`: `(cls, obj, key, val) => (__reflectSet(__getProtoOf(cls), key, val, obj), val)`.
+fn is_super_set(arrow: &ArrowFunctionExpression<'_>, helpers: &BunHelperMap, cls: &str, val: &str) -> bool {
+    let Some(Expression::SequenceExpression(seq)) = expression_body(arrow) else {
+        return false;
+    };
+    matches!(seq.expressions.as_slice(), [Expression::CallExpression(call), result]
+        if is_ident(result, val)
+            && is_reflect_call(call, helpers, BunHelper::ReflectSet, "set")
+            && matches!(call.arguments.first(), Some(Argument::CallExpression(proto)) if is_get_proto_of(proto, helpers, cls)))
+}
+
+/// A call of the `Reflect.<method>` alias `helper`, or of `Reflect.<method>` itself.
+fn is_reflect_call(call: &CallExpression<'_>, helpers: &BunHelperMap, helper: BunHelper, method: &str) -> bool {
+    call_callee_is_helper(call, helpers, helper)
+        || matches!(&call.callee, Expression::StaticMemberExpression(member)
+            if is_ident(&member.object, "Reflect") && member.property.name == method)
+}
+
+/// `__getProtoOf(cls)`.
+fn is_get_proto_of(call: &CallExpression<'_>, helpers: &BunHelperMap, cls: &str) -> bool {
+    call_callee_is_helper_or_object_property(call, helpers, BunHelper::GetProtoOf, "getPrototypeOf")
+        && args_are(call, &[cls])
+}
+
+/// `__decoratorStart` creates the metadata object with `__create(…)`.
+fn calls_create(arrow: &ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    arrow_contains(arrow, |expr| {
+        matches!(expr, Expression::CallExpression(call)
+            if call_callee_is_helper_or_object_property(call, helpers, BunHelper::Create, "create"))
+    })
+}
+
+/// `this[index] = value`, as `__await` stores its promise and `yield*` flag.
+fn assigns_this_index(arrow: &ArrowFunctionExpression<'_>, index: f64, value: &str) -> bool {
+    arrow_contains(arrow, |expr| {
+        matches!(expr, Expression::AssignmentExpression(assign)
+            if is_ident(&assign.right, value)
+                && matches!(&assign.left, AssignmentTarget::ComputedMemberExpression(member)
+                    if matches!(member.object, Expression::ThisExpression(_))
+                        && matches!(&member.expression, Expression::NumericLiteral(n) if n.value == index)))
+    })
+}
+
+/// `flags >> 1`, the initializer slot `__runInitializers` reads.
+fn is_shift_right_one(expr: &Expression<'_>, flags: &str) -> bool {
+    matches!(expr, Expression::BinaryExpression(shift)
+        if shift.operator == BinaryOperator::ShiftRight
+            && is_ident(&shift.left, flags)
+            && matches!(&shift.right, Expression::NumericLiteral(n) if n.value == 1.0))
+}
+
+/// `new Callee(…)`.
+fn is_new_of(expr: &Expression<'_>, callee: &str) -> bool {
+    matches!(expr, Expression::NewExpression(new) if is_ident(&new.callee, callee))
+}
+
+/// Whether the call's arguments are exactly the identifiers `names`.
+fn args_are(call: &CallExpression<'_>, names: &[&str]) -> bool {
+    call.arguments.len() == names.len()
+        && call
+            .arguments
+            .iter()
+            .zip(names)
+            .all(|(arg, name)| argument_is_ident(arg, name))
 }

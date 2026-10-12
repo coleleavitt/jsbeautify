@@ -14,6 +14,8 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 /// skipped, so a new name never captures or shadows an existing one.
 pub struct VariableRenamer {
     rename_map: FxHashMap<SymbolId, String>,
+    /// Bindings that keep their name (`--keep-fn-names`).
+    kept: FxHashSet<SymbolId>,
     /// Every binding and unresolved name in the program, read on first use.
     taken: Option<FxHashSet<String>>,
     var_counter: usize,
@@ -26,11 +28,18 @@ impl VariableRenamer {
     pub fn new() -> Self {
         Self {
             rename_map: FxHashMap::default(),
+            kept: FxHashSet::default(),
             taken: None,
             var_counter: 0,
             func_counter: 0,
             changed: false,
         }
+    }
+
+    /// Never rename `symbols`, which must be ids of the program the next
+    /// traversal visits.
+    pub fn keep(&mut self, symbols: FxHashSet<SymbolId>) {
+        self.kept = symbols;
     }
 
     #[must_use]
@@ -56,7 +65,10 @@ impl VariableRenamer {
         if let Some(new_name) = self.rename_map.get(&symbol) {
             return Some(new_name.clone());
         }
-        if !Self::should_rename(ctx.scoping().symbol_name(symbol)) || is_global_symbol(ctx, symbol) {
+        if !Self::should_rename(ctx.scoping().symbol_name(symbol))
+            || is_global_symbol(ctx, symbol)
+            || self.kept.contains(&symbol)
+        {
             return None;
         }
         let scoping = ctx.scoping();

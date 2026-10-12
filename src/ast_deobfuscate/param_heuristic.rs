@@ -11,7 +11,7 @@
 //! Only renames params that match Bun's slot pattern (H, $, q, K, _, A, z, Y, f, O, M, w).
 
 use oxc_allocator::GetAllocator;
-use oxc_ast::ast::{BindingPattern, Function, FunctionBody, IdentifierReference};
+use oxc_ast::ast::{BindingPattern, Expression, Function, FunctionBody, IdentifierReference};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -28,6 +28,9 @@ const BUN_PARAM_NAMES: &[&str] = &[
 pub struct ParamHeuristicRenamer {
     renamed: usize,
     renames: FxHashMap<SymbolId, String>,
+    /// Keep parameters whose default is an anonymous function or class,
+    /// which takes the parameter's name as its `.name`.
+    keep_fn_names: bool,
 }
 
 impl ParamHeuristicRenamer {
@@ -36,7 +39,14 @@ impl ParamHeuristicRenamer {
         Self {
             renamed: 0,
             renames: FxHashMap::default(),
+            keep_fn_names: false,
         }
+    }
+
+    #[must_use]
+    pub const fn keep_fn_names(mut self, keep: bool) -> Self {
+        self.keep_fn_names = keep;
+        self
     }
 
     #[must_use]
@@ -74,6 +84,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
             .items
             .iter()
             .enumerate()
+            .filter(|(_, p)| {
+                !(self.keep_fn_names
+                    && p.initializer
+                        .as_deref()
+                        .is_some_and(Expression::is_anonymous_function_definition))
+            })
             .filter_map(|(i, p)| {
                 if let BindingPattern::BindingIdentifier(b) = &p.pattern {
                     let name = b.name.as_str();

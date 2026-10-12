@@ -99,14 +99,16 @@ impl<'a, S: BuildHasher> Traverse<'a, DeobfuscateState> for SourcemapNameCollect
 ///
 /// The map is keyed by the binding's `(1-based line, 0-based UTF-16 col)`. Bindings
 /// with no mapping are left untouched so the heuristic pass can name them later.
+/// `keep_fn_names` as [`RenameGuardCollector::keep_fn_names`].
 #[must_use]
 pub fn apply_names_by_position<S: BuildHasher + Sync>(
     code: &str,
     source_type: SourceType,
     by_pos: &std::collections::HashMap<(u32, u32), String, S>,
+    keep_fn_names: bool,
 ) -> String {
     crate::stack::run_on_sized_stack(code.len(), || {
-        apply_names_by_position_on_current_stack(code, source_type, by_pos)
+        apply_names_by_position_on_current_stack(code, source_type, by_pos, keep_fn_names)
     })
 }
 
@@ -114,6 +116,7 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
     code: &str,
     source_type: SourceType,
     by_pos: &std::collections::HashMap<(u32, u32), String, S>,
+    keep_fn_names: bool,
 ) -> String {
     if by_pos.is_empty() {
         return code.to_string();
@@ -124,7 +127,7 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
     // Soundness guards (eval / native exports / script globals).
     let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    let mut guard = RenameGuardCollector::new();
+    let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
     let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
@@ -174,13 +177,18 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
 ///
 /// # Errors
 /// Returns an error only if the sourcemap JSON is malformed.
-pub fn apply_sourcemap_names(code: &str, source_type: SourceType, sourcemap_json: &str) -> Result<String> {
+pub fn apply_sourcemap_names(
+    code: &str,
+    source_type: SourceType,
+    sourcemap_json: &str,
+    keep_fn_names: bool,
+) -> Result<String> {
     let mappings = SourcemapParser::new().extract_names(sourcemap_json, code)?;
     let by_pos: FxHashMap<(u32, u32), String> = mappings
         .into_iter()
         .map(|m| ((m.minified_line, m.minified_column), m.original_name))
         .collect();
-    Ok(apply_names_by_position(code, source_type, &by_pos))
+    Ok(apply_names_by_position(code, source_type, &by_pos, keep_fn_names))
 }
 
 #[cfg(test)]
@@ -194,7 +202,7 @@ mod tests {
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 11), "left".to_string());
         by_pos.insert((1, 14), "right".to_string());
-        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos);
+        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos, false);
         assert!(out.contains("function f(left, right)"), "params: {out}");
         assert!(out.contains("return left + right"), "refs follow: {out}");
     }
@@ -207,7 +215,7 @@ mod tests {
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 11), "userId".to_string()); // f's a
         by_pos.insert((2, 11), "count".to_string()); // g's a
-        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos);
+        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos, false);
         assert!(
             out.contains("function f(userId)") && out.contains("return userId"),
             "{out}"
@@ -223,7 +231,7 @@ mod tests {
         let code = "function f(a, b){ return a }";
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 11), "value".to_string()); // only `a`
-        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos);
+        let out = apply_names_by_position(code, SourceType::mjs(), &by_pos, false);
         assert!(out.contains("value"), "mapped binding renamed: {out}");
         assert!(
             out.contains(", b)") || out.contains(",b)"),
@@ -237,7 +245,7 @@ mod tests {
         let mut by_pos = FxHashMap::default();
         by_pos.insert((1, 4), "total".to_string());
         by_pos.insert((2, 11), "step".to_string());
-        let out = apply_names_by_position(code, SourceType::script(), &by_pos);
+        let out = apply_names_by_position(code, SourceType::script(), &by_pos, false);
         assert!(out.contains("var a = 1"), "global renamed: {out}");
         assert!(out.contains("function f(step)"), "local not renamed: {out}");
     }

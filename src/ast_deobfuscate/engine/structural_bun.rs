@@ -15,7 +15,7 @@ impl AstDeobfuscator {
         allocator: &'a Allocator,
         program: &mut Program<'a>,
     ) -> BundleRuntime {
-        let runtime = rename_runtime_helpers(allocator, program);
+        let runtime = rename_runtime_helpers(allocator, program, self.keep_fn_names);
 
         eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
         let flattened_statements = flatten_top_level_cjs_wrapper(program, allocator);
@@ -37,7 +37,13 @@ impl AstDeobfuscator {
             collector.helper_symbols().clone()
         };
 
-        rename_exports(allocator, program, &helper_symbols);
+        rename_exports(
+            allocator,
+            program,
+            &helper_symbols,
+            self.keep_fn_names,
+            self.short_export_names,
+        );
 
         eprintln!("[DEOBFUSCATE] Phase 0.97: Class name detection (this.name / displayName)");
         {
@@ -58,7 +64,7 @@ impl AstDeobfuscator {
             let eval_names = if class_map.is_empty() {
                 FxHashSet::default()
             } else {
-                let guards = rename_guards::guards(allocator, program);
+                let guards = rename_guards::guards(allocator, program, self.keep_fn_names);
                 class_map.retain(|sym, _| !guards.symbols.contains(sym));
                 guards.eval_names
             };
@@ -86,7 +92,7 @@ impl AstDeobfuscator {
         {
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            let mut param_renamer = ParamHeuristicRenamer::new();
+            let mut param_renamer = ParamHeuristicRenamer::new().keep_fn_names(self.keep_fn_names);
             traverse_mut_with_ctx(&mut param_renamer, program, &mut ctx);
             eprintln!(
                 "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",
@@ -94,7 +100,7 @@ impl AstDeobfuscator {
             );
         }
 
-        rename_module_handles(allocator, program, helper_symbols);
+        rename_module_handles(allocator, program, helper_symbols, self.keep_fn_names);
 
         runtime
     }
@@ -111,7 +117,11 @@ fn runtime_check_result(runtime: &BundleRuntime) -> String {
 }
 
 /// Phase 0.9: detects the esbuild / Bun runtime helpers and renames them to their canonical names.
-fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> BundleRuntime {
+fn rename_runtime_helpers<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    keep_fn_names: bool,
+) -> BundleRuntime {
     mem_ck("enter Phase 0.9 (helpers)");
     eprintln!("[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
@@ -131,7 +141,7 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
         for (name, helper) in helpers {
             eprintln!("[DEOBFUSCATE] Phase 0.9: {name} = {}", helper.canonical());
         }
-        let guards = rename_guards::guards(allocator, program);
+        let guards = rename_guards::guards(allocator, program, keep_fn_names);
         // A helper a code-split chunk exports (`export { __esm as a }`) keeps its export name.
         let desired = helper_symbols
             .iter()
@@ -175,6 +185,8 @@ fn rename_exports<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     helper_symbols: &FxHashMap<SymbolId, BunHelper>,
+    keep_fn_names: bool,
+    short_export_names: bool,
 ) {
     eprintln!("[DEOBFUSCATE] Phase 0.95: __export() name extraction & rename");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
@@ -184,7 +196,7 @@ fn rename_exports<'a>(
         .filter(|(_, helper)| **helper == BunHelper::Export)
         .map(|(symbol, _)| *symbol)
         .collect();
-    let mut collector = ExportNameCollector::new(export_helpers);
+    let mut collector = ExportNameCollector::new(export_helpers).short_export_names(short_export_names);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     drop(ctx);
     let (mut export_map, specifier_names) = collector.into_maps();
@@ -196,7 +208,7 @@ fn rename_exports<'a>(
     let eval_names = if export_map.is_empty() && specifier_names.is_empty() {
         FxHashSet::default()
     } else {
-        let guards = rename_guards::guards(allocator, program);
+        let guards = rename_guards::guards(allocator, program, keep_fn_names);
         export_map.retain(|sym, _| !guards.symbols.contains(sym));
         export_map.extend(
             specifier_names
@@ -239,6 +251,7 @@ fn rename_module_handles<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     helper_symbols: FxHashMap<SymbolId, BunHelper>,
+    keep_fn_names: bool,
 ) {
     mem_ck("enter Phase 0.99 (module handles)");
     eprintln!("[DEOBFUSCATE] Phase 0.99: module-handle renaming");
@@ -254,7 +267,7 @@ fn rename_module_handles<'a>(
             .keys()
             .map(Ident::to_string)
             .collect();
-        let guards = rename_guards::guards(allocator, program);
+        let guards = rename_guards::guards(allocator, program, keep_fn_names);
         reserved.extend(guards.eval_names);
         module_handles = collector.into_map(&reserved);
         module_handles.retain(|sym, _| !guards.symbols.contains(sym));

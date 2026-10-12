@@ -11,7 +11,7 @@ impl AstDeobfuscator {
         mem_ck("enter Phase 12.5 (local slot rename)");
         eprintln!("[DEOBFUSCATE] Phase 12.5: Bun local slot renaming (single-char locals -> v0,v1,...)");
         let _trace = TraceSpan::new("Phase 12.5: Bun local slot renaming");
-        let guard = Self::collect_rename_guards(allocator, program);
+        let guard = Self::collect_rename_guards(allocator, program, self.keep_fn_names);
         let guarded = {
             let _trace = TraceSpan::new("Phase 12.5: resolve rename guards");
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
@@ -45,11 +45,12 @@ impl AstDeobfuscator {
     fn collect_rename_guards<'a>(
         allocator: &'a Allocator,
         program: &mut Program<'a>,
+        keep_fn_names: bool,
     ) -> rename_guards::RenameGuardCollector {
         let _trace = TraceSpan::new("Phase 12.5: collect rename guards");
         let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut guard = rename_guards::RenameGuardCollector::new();
+        let mut guard = rename_guards::RenameGuardCollector::new().keep_fn_names(keep_fn_names);
         traverse_mut_with_ctx(&mut guard, program, &mut ctx);
         guard
     }

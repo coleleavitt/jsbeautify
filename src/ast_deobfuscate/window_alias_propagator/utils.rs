@@ -124,37 +124,69 @@ pub(super) fn is_reserved_word(name: &str) -> bool {
 /// stay qualified. Host names count only for the hosts `global` can be: a
 /// worker has no `document`, Node has no `navigator`, and some windows lack
 /// `caches`, `Notification` or `fetch`.
-pub(super) fn is_always_defined_global(name: &str, global: GlobalObject) -> bool {
-    let ecmascript = matches!(
+///
+/// With `es5_only`, browser names are limited to those Internet Explorer 9,
+/// the first ES5 browser, defines: no ES2015 globals (`Symbol`, `Promise`,
+/// `Map`, typed arrays, …), no `console` (IE9 defines it only while its
+/// developer tools are open), and no later host APIs (`crypto`, `atob`,
+/// `Blob`, `requestAnimationFrame`, …), for output that is transpiled back to
+/// ES5 or for bundles that feature-detect those names through the alias.
+pub(super) fn is_always_defined_global(name: &str, global: GlobalObject, es5_only: bool) -> bool {
+    let es5 = matches!(
         name,
-        "Object" | "Function" | "Array" | "String" | "Boolean" | "Number" | "Symbol" | "Math" | "Date"
-            | "RegExp" | "JSON" | "Error" | "EvalError" | "RangeError" | "ReferenceError" | "SyntaxError"
-            | "TypeError" | "URIError" | "Promise" | "Proxy" | "Reflect" | "Map" | "Set" | "WeakMap"
-            | "WeakSet" | "ArrayBuffer" | "DataView" | "Int8Array" | "Uint8Array" | "Uint8ClampedArray"
-            | "Int16Array" | "Uint16Array" | "Int32Array" | "Uint32Array" | "Float32Array" | "Float64Array"
-            | "parseInt" | "parseFloat" | "isNaN" | "isFinite" | "encodeURI" | "encodeURIComponent"
-            | "decodeURI" | "decodeURIComponent" | "NaN" | "Infinity" | "undefined"
-            // Timers and console exist in every browser context and in Node.
-            | "console" | "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval"
+        "Object"
+            | "Function"
+            | "Array"
+            | "String"
+            | "Boolean"
+            | "Number"
+            | "Math"
+            | "Date"
+            | "RegExp"
+            | "JSON"
+            | "Error"
+            | "EvalError"
+            | "RangeError"
+            | "ReferenceError"
+            | "SyntaxError"
+            | "TypeError"
+            | "URIError"
+            | "parseInt"
+            | "parseFloat"
+            | "isNaN"
+            | "isFinite"
+            | "encodeURI"
+            | "encodeURIComponent"
+            | "decodeURI"
+            | "decodeURIComponent"
+            | "NaN"
+            | "Infinity"
+            | "undefined"
+            | "setTimeout"
+            | "setInterval"
+            | "clearTimeout"
+            | "clearInterval"
     );
-    // Exposed to windows and to every kind of worker.
-    let window_or_worker = || {
+    let es2015 = || {
         matches!(
             name,
-            "self"
-                | "location"
-                | "navigator"
-                | "addEventListener"
-                | "removeEventListener"
-                | "dispatchEvent"
-                | "atob"
-                | "btoa"
-                | "performance"
-                | "crypto"
+            "Symbol" | "Promise" | "Proxy" | "Reflect" | "Map" | "Set" | "WeakMap" | "WeakSet" | "ArrayBuffer"
+                | "DataView" | "Int8Array" | "Uint8Array" | "Uint8ClampedArray" | "Int16Array" | "Uint16Array"
+                | "Int32Array" | "Uint32Array" | "Float32Array" | "Float64Array"
+                // Console exists in every browser context and in Node.
+                | "console"
         )
     };
-    let window = || {
-        window_or_worker()
+    // Exposed to windows and to every kind of worker, by IE9 too.
+    let window_or_worker_es5 = || {
+        matches!(
+            name,
+            "self" | "location" | "navigator" | "addEventListener" | "removeEventListener" | "dispatchEvent"
+        )
+    };
+    let window_or_worker = || window_or_worker_es5() || matches!(name, "atob" | "btoa" | "performance" | "crypto");
+    let window_es5 = || {
+        window_or_worker_es5()
             || matches!(
                 name,
                 "window"
@@ -163,33 +195,47 @@ pub(super) fn is_always_defined_global(name: &str, global: GlobalObject) -> bool
                     | "screen"
                     | "localStorage"
                     | "sessionStorage"
-                    | "indexedDB"
                     | "getComputedStyle"
+                    | "postMessage"
+                    | "XMLHttpRequest"
+                    | "Event"
+                    | "CustomEvent"
+                    | "DOMParser"
+                    | "performance"
+            )
+    };
+    let window = || {
+        window_es5()
+            || window_or_worker()
+            || matches!(
+                name,
+                "indexedDB"
                     | "matchMedia"
                     | "requestAnimationFrame"
                     | "cancelAnimationFrame"
-                    | "postMessage"
-                    | "XMLHttpRequest"
                     | "WebSocket"
                     | "Blob"
                     | "File"
                     | "FileReader"
                     | "FormData"
                     | "URL"
-                    | "Event"
-                    | "CustomEvent"
                     | "Worker"
-                    | "DOMParser"
             )
     };
     let node = || matches!(name, "process" | "Buffer" | "setImmediate" | "clearImmediate");
-    ecmascript
-        || match global {
-            GlobalObject::Window => window(),
-            GlobalObject::WindowOrWorker => window_or_worker(),
-            GlobalObject::Node => node(),
-            GlobalObject::Any => false,
+    match global {
+        GlobalObject::Node => es5 || es2015() || node(),
+        _ if es5_only => {
+            es5 || match global {
+                GlobalObject::Window => window_es5(),
+                GlobalObject::WindowOrWorker => window_or_worker_es5(),
+                GlobalObject::Node | GlobalObject::Any => false,
+            }
         }
+        GlobalObject::Window => es5 || es2015() || window(),
+        GlobalObject::WindowOrWorker => es5 || es2015() || window_or_worker(),
+        GlobalObject::Any => es5 || es2015(),
+    }
 }
 
 /// Whether the member expression currently being visited is the operand of a

@@ -12,12 +12,25 @@ use super::utils::{GlobalObject, is_always_defined_global, is_delete_operand, is
 pub struct WindowAliasPropagator {
     aliases: FxHashMap<SymbolId, GlobalObject>,
     rewrites: usize,
+    es5_only: bool,
 }
 
 impl WindowAliasPropagator {
     #[must_use]
     pub const fn new(aliases: FxHashMap<SymbolId, GlobalObject>) -> Self {
-        Self { aliases, rewrites: 0 }
+        Self {
+            aliases,
+            rewrites: 0,
+            es5_only: false,
+        }
+    }
+
+    /// Rewrite only the names ES5-era browsers define (see
+    /// [`crate::Options::window_alias_es5`]).
+    #[must_use]
+    pub const fn es5_only(mut self, es5_only: bool) -> Self {
+        self.es5_only = es5_only;
+        self
     }
 
     #[must_use]
@@ -60,7 +73,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasPropagator {
         // of the global object the alias holds. For an arbitrary `alias.foo`,
         // `window.foo` reads `undefined` when `foo` is absent, but bare `foo`
         // THROWS a ReferenceError — not behavior-preserving.
-        if !is_always_defined_global(prop_name, global) {
+        if !is_always_defined_global(prop_name, global, self.es5_only) {
             return;
         }
         // `delete alias.foo` → `delete foo` is a SyntaxError in strict mode (MJS

@@ -106,6 +106,9 @@ fn beautify_on_current_stack(code: &str, options: &Options) -> Result<String> {
             .with_readable_names(options.readable_names)
             .with_parse_goal(options.parse_goal)
             .with_isolated(options.isolated)
+            .with_keep_fn_names(options.keep_fn_names)
+            .with_short_export_names(options.short_export_names)
+            .with_window_alias_es5(options.window_alias_es5)
             .with_layout(Layout::new(options, code));
         return deobfuscator.deobfuscate(code);
     }

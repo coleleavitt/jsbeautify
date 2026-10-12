@@ -254,3 +254,43 @@ fn deobfuscate_honors_layout_flags() {
     assert!(out.contains("\n  if (a) {\n    return 1;\n  }"), "{out}");
     assert!(out.ends_with("}\n") || out.ends_with(";\n"), "{out:?}");
 }
+
+#[test]
+fn deobfuscation_trade_offs_are_opt_in_flags_and_config_keys() {
+    let names = "var a=function(){};export{a as useThing};";
+    let alias = "var w=window;export const p=w.Promise,d=w.document;";
+    let short = "var r=1;export{r as ab};";
+    let sandbox = Sandbox::new("deob-flags");
+    let default = sandbox.stdout(&["-d", "--source-type", "module"], &format!("{names}{alias}{short}"));
+    assert!(default.contains("var useThing = function"), "{default}");
+    assert!(default.contains("p = Promise"), "{default}");
+    assert!(default.contains("r as ab"), "{default}");
+
+    let flagged = sandbox.stdout(
+        &[
+            "-d",
+            "--source-type",
+            "module",
+            "--keep-fn-names",
+            "--window-alias-es5",
+            "--short-export-names",
+        ],
+        &format!("{names}{alias}{short}"),
+    );
+    assert!(flagged.contains("var a = function"), "{flagged}");
+    assert!(
+        flagged.contains(".Promise,") && flagged.contains("d = document"),
+        "{flagged}"
+    );
+    assert!(flagged.contains("var ab = 1"), "{flagged}");
+
+    let configured = Sandbox::new("deob-config");
+    configured.write(
+        ".jsbeautifyrc",
+        r#"{"keep_fn_names": true, "window-alias-es5": true, "js": {"short_export_names": true}}"#,
+    );
+    assert_eq!(
+        configured.stdout(&["-d", "--source-type", "module"], &format!("{names}{alias}{short}")),
+        flagged
+    );
+}

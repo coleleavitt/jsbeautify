@@ -9,7 +9,7 @@ use super::{annotate_angular_templates, rename_angular_symbols};
 fn rename(code: &str) -> String {
     let allocator = Allocator::default();
     let mut program = Parser::new(&allocator, code, SourceType::mjs()).parse().program;
-    rename_angular_symbols(&allocator, &mut program);
+    rename_angular_symbols(&allocator, &mut program, false);
     let out = Codegen::new().build(&program).code;
     let reparsed = Parser::new(&allocator, &out, SourceType::mjs()).parse();
     assert!(reparsed.diagnostics.is_empty(), "renamed output must parse:\n{out}");
@@ -135,7 +135,7 @@ fn rename_is_inert_without_angular_definitions() {
     let code = "var a = class e { static x = f({ type: e, selectors: [[\"app-a\"]] }); }; use(a);";
     let allocator = Allocator::default();
     let mut program = Parser::new(&allocator, code, SourceType::mjs()).parse().program;
-    assert_eq!(rename_angular_symbols(&allocator, &mut program), 0);
+    assert_eq!(rename_angular_symbols(&allocator, &mut program, false), 0);
 }
 
 #[test]

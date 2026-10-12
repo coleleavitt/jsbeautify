@@ -161,23 +161,35 @@ fn context_window(source: &str, offset: u32) -> String {
     source[lo..hi].to_string()
 }
 
-/// Rename residual minified bindings using `suggester`, scope-safely. Bindings
-/// the suggester declines or that the soundness guards exclude are left alone.
+/// Rename residual minified bindings using `suggester`, scope-safely.
+///
+/// Bindings the suggester declines or that the soundness guards exclude are
+/// left alone; `keep_fn_names` as [`RenameGuardCollector::keep_fn_names`].
 #[must_use]
-pub fn apply_llm_names(code: &str, source_type: SourceType, suggester: &(dyn NameSuggester + Sync)) -> String {
+pub fn apply_llm_names(
+    code: &str,
+    source_type: SourceType,
+    suggester: &(dyn NameSuggester + Sync),
+    keep_fn_names: bool,
+) -> String {
     crate::stack::run_on_sized_stack(code.len(), || {
-        apply_llm_names_on_current_stack(code, source_type, suggester)
+        apply_llm_names_on_current_stack(code, source_type, suggester, keep_fn_names)
     })
 }
 
-fn apply_llm_names_on_current_stack(code: &str, source_type: SourceType, suggester: &dyn NameSuggester) -> String {
+fn apply_llm_names_on_current_stack(
+    code: &str,
+    source_type: SourceType,
+    suggester: &dyn NameSuggester,
+    keep_fn_names: bool,
+) -> String {
     let alloc = Allocator::default();
     let mut prog = Parser::new(&alloc, code, source_type).parse().program;
 
     // Guards (eval / native exports / script globals) — never rename these.
     let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    let mut guard = RenameGuardCollector::new();
+    let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
     let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
@@ -260,7 +272,12 @@ mod tests {
         map.insert("v1".to_string(), "payload".to_string());
         let suggester = MockSuggester(map);
 
-        let out = apply_llm_names("function v0(v1){ return process(v1) }", SourceType::mjs(), &suggester);
+        let out = apply_llm_names(
+            "function v0(v1){ return process(v1) }",
+            SourceType::mjs(),
+            &suggester,
+            false,
+        );
         assert!(out.contains("function handler(payload)"), "decls: {out}");
         assert!(out.contains("return process(payload)"), "refs follow: {out}");
     }
@@ -271,7 +288,12 @@ mod tests {
         map.insert("a".to_string(), "secret".to_string());
         let suggester = MockSuggester(map);
         // `a` is visible to a direct eval → must NOT be renamed.
-        let out = apply_llm_names("function f(a){ return eval('a') }", SourceType::mjs(), &suggester);
+        let out = apply_llm_names(
+            "function f(a){ return eval('a') }",
+            SourceType::mjs(),
+            &suggester,
+            false,
+        );
         assert!(out.contains("(a)"), "eval-visible binding renamed: {out}");
     }
 
