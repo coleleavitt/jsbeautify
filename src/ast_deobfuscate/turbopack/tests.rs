@@ -268,3 +268,29 @@ fn module_ident_drops_root_layer_and_package_prefix() {
     );
     assert_eq!(module_ident("[turbopack]/"), "anonymous");
 }
+
+#[test]
+fn reads_a_leading_plain_factory_list() {
+    // Next.js 16.4 puts its first factories in a nested array literal.
+    let browser = run(
+        r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["chunks/a.js",[1,(e,t,r)=>{t.exports=e.r(2)},3,e=>{e.v(1)}],4,e=>{let n=e.i(1)}]);"#,
+    );
+    assert!(
+        browser.contains("(__turbopack_context__, module, exports) =>"),
+        "{browser}"
+    );
+    assert_eq!(browser.matches("(__turbopack_context__) =>").count(), 2, "{browser}");
+    assert!(
+        browser.contains("let module_1 = __turbopack_context__.i(1)"),
+        "{browser}"
+    );
+    let node = run(
+        r"module.exports=[[71029,(a,b,c)=>{c._=1},25556,(a,b,c)=>{a.r(71029)}],79835,function(a){a.n(a.i(25556))}];",
+    );
+    assert_eq!(
+        node.matches("(__turbopack_context__, module, exports) =>").count(),
+        2,
+        "{node}"
+    );
+    assert!(node.contains("function(__turbopack_context__)"), "{node}");
+}

@@ -13,10 +13,12 @@
 //! ```
 //!
 //! The runtime's `installCompressedModuleFactories` reads the list after
-//! `script` as runs of module ids, each run closed by its factory. A chunk may
-//! put its strict factories first, inside `(() => { "use strict"; return [ … ] })()`,
-//! or wrap the whole chunk in `(() => { "use strict"; … })()` when every factory
-//! is strict (`turbopack-ecmascript/src/chunk/factory_group.rs`).
+//! `script` as runs of module ids, each run closed by its factory. A leading
+//! array element is a nested list it installs first: a chunk may put its
+//! strict factories there, inside `(() => { "use strict"; return [ … ] })()`
+//! (Next.js 16.4 emits a plain `[ … ]`), or wrap the whole chunk in
+//! `(() => { "use strict"; … })()` when every factory is strict
+//! (`turbopack-ecmascript/src/chunk/factory_group.rs`).
 //! The runtime chunk instead registers `[script, { otherChunks, runtimeModuleIds }]`.
 //!
 //! A Node.js chunk (`turbopack-nodejs/src/ecmascript/node/content.rs`) exports the
@@ -264,10 +266,18 @@ fn factory_groups<'b, 'a>(elements: &'b [ArrayExpressionElement<'a>]) -> Option<
     let mut groups = Vec::new();
     let mut rest = elements;
     if let Some((first, tail)) = rest.split_first()
-        && let Some(strict) = first.as_expression().and_then(strict_factory_list)
+        && let Some(expr) = first.as_expression()
     {
-        push_groups(&strict.elements, true, &mut groups)?;
-        rest = tail;
+        // The runtime installs a leading array as a nested factory list
+        // (`installCompressedModuleFactories`); Next.js 16.4 emits it as a
+        // plain array literal, later versions as the strict IIFE.
+        if let Some(strict) = strict_factory_list(expr) {
+            push_groups(&strict.elements, true, &mut groups)?;
+            rest = tail;
+        } else if let Expression::ArrayExpression(nested) = expr.without_parentheses() {
+            push_groups(&nested.elements, false, &mut groups)?;
+            rest = tail;
+        }
     }
     push_groups(rest, false, &mut groups)?;
     (!groups.is_empty()).then_some(groups)
