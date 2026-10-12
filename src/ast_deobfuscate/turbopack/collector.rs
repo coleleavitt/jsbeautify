@@ -13,6 +13,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names, is_minified};
+use crate::ast_deobfuscate::project::{TurbopackFacts, TurbopackKeyName, TurbopackMangledExport, TurbopackReexport};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::webpack::shapes::{getter_target, resolve, resolve_expr, simple_params};
 
@@ -222,6 +223,49 @@ impl NameCollector {
             }
         }
         (self.plan, self.with_scopes)
+    }
+
+    /// Export names other files' `esmReexport` lists give module keys (see
+    /// [`crate::ast_deobfuscate::project`]). The lists of this file still
+    /// apply, and a key named differently here is not named.
+    pub(super) fn seed_reexports(&mut self, reexports: &[TurbopackReexport]) {
+        for reexport in reexports {
+            self.reexport_names.insert(
+                (reexport.module.clone(), reexport.key.clone()),
+                Some(reexport.name.clone()),
+            );
+        }
+    }
+
+    /// What other files need to know about this one: the module ids of its
+    /// factories, its `esmReexport` names, and its mangled export keys.
+    pub(super) fn project_facts(&self) -> TurbopackFacts {
+        let mut module_ids: Vec<String> = self.contexts.values().flatten().cloned().collect();
+        module_ids.sort_unstable();
+        module_ids.dedup();
+        let mut reexports: Vec<_> = self
+            .reexport_names
+            .iter()
+            .map(|((module, key), name)| TurbopackKeyName {
+                module: module.clone(),
+                key: key.clone(),
+                name: name.clone(),
+            })
+            .collect();
+        reexports.sort_unstable_by(|a, b| (&a.module, &a.key).cmp(&(&b.module, &b.key)));
+        let mangled_exports = self
+            .mangled_exports
+            .iter()
+            .map(|(modules, key, _)| TurbopackMangledExport {
+                modules: modules.clone(),
+                key: key.clone(),
+            })
+            .collect();
+        TurbopackFacts {
+            module_ids,
+            reexports,
+            mangled_exports,
+        }
     }
 
     pub(super) fn has_runtime(&self) -> bool {

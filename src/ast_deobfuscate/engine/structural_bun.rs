@@ -5,6 +5,7 @@ use super::{
     SemanticBuilder, bun, flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 
+use crate::ast_deobfuscate::project;
 use oxc_ast::ast::Ident;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -15,7 +16,7 @@ impl AstDeobfuscator {
         allocator: &'a Allocator,
         program: &mut Program<'a>,
     ) -> BundleRuntime {
-        let runtime = rename_runtime_helpers(allocator, program);
+        let runtime = rename_runtime_helpers(allocator, program, &self.project);
 
         eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
         let flattened_statements = flatten_top_level_cjs_wrapper(program, allocator);
@@ -34,7 +35,9 @@ impl AstDeobfuscator {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut collector = BunRuntimeCollector::new();
             traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-            collector.helper_symbols().clone()
+            let mut helper_symbols = collector.helper_symbols().clone();
+            helper_symbols.extend(project::seeded_helpers(program, &self.project));
+            helper_symbols
         };
 
         rename_exports(allocator, program, &helper_symbols);
@@ -110,15 +113,26 @@ fn runtime_check_result(runtime: &BundleRuntime) -> String {
     }
 }
 
-/// Phase 0.9: detects the esbuild / Bun runtime helpers and renames them to their canonical names.
-fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> BundleRuntime {
+/// Phase 0.9: detects the esbuild / Bun runtime helpers and renames them to
+/// their canonical names. Helpers imported from another chunk of the project
+/// (`seeds`) keep the names Phase 0.84 gave them.
+fn rename_runtime_helpers<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    seeds: &project::ProjectSeeds,
+) -> BundleRuntime {
     mem_ck("enter Phase 0.9 (helpers)");
     eprintln!("[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = BunRuntimeCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    drop(ctx);
+    let scoping = ctx.into_scoping();
+    let imported: Vec<(String, BunHelper)> = project::seeded_helpers(program, seeds)
+        .into_iter()
+        .map(|(symbol, helper)| (scoping.symbol_name(symbol).to_string(), helper))
+        .collect();
+    drop(scoping);
     let helper_symbols = collector.helper_symbols().clone();
     let mut runtime = collector.into_runtime();
     eprintln!(
@@ -162,6 +176,13 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
             renamer.renamed_decls(),
             renamer.renamed_refs()
         );
+    }
+    if !imported.is_empty() {
+        eprintln!(
+            "[DEOBFUSCATE] Phase 0.9: {} runtime helpers imported from other chunks",
+            imported.len()
+        );
+        runtime.helpers.extend(imported);
     }
 
     runtime

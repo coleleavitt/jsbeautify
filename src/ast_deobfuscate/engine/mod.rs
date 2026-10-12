@@ -87,4 +87,7 @@ pub struct AstDeobfuscator {
     layout: Option<Layout>,
     parse_goal: crate::ParseGoal,
     isolated: bool,
+    /// This file's part of a project naming plan (`--project`); empty for a
+    /// single file.
+    project: super::project::ProjectSeeds,
 }

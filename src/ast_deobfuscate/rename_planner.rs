@@ -46,8 +46,20 @@ pub fn apply_rename_plan<'a>(
     let scoping = ctx.into_scoping();
     let mut guarded = guard.into_guarded(&scoping);
     guarded.extend(symbols_visible_from(with_scopes, &scoping));
+    rename_unguarded(allocator, program, scoping, plan, &guarded)
+}
 
-    let names = assign_names(plan, &guarded, &scoping);
+/// Rename the symbols of `plan` (in priority order) to collision-free forms of
+/// their desired names, except the `guarded` ones. `scoping` must describe
+/// `program`.
+pub fn rename_unguarded<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: Scoping,
+    plan: Vec<(SymbolId, String)>,
+    guarded: &FxHashSet<SymbolId>,
+) -> RenameCounts {
+    let names = assign_names(plan, guarded, &scoping);
     let planned = names.len();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut renamer = ExportNameRenamer::new(names);

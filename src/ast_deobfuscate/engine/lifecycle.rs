@@ -57,7 +57,16 @@ impl AstDeobfuscator {
             layout: None,
             parse_goal: ParseGoal::Auto,
             isolated: false,
+            project: crate::ast_deobfuscate::project::ProjectSeeds::default(),
         }
+    }
+
+    /// Name bindings by a cross-file naming plan (see
+    /// [`crate::ast_deobfuscate::project`]).
+    #[must_use]
+    pub fn with_project_seeds(mut self, seeds: crate::ast_deobfuscate::project::ProjectSeeds) -> Self {
+        self.project = seeds;
+        self
     }
 
     /// Lay out the final output (indentation, `eol`, brace style, …);

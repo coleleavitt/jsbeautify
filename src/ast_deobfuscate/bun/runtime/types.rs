@@ -48,6 +48,56 @@ pub enum BunHelper {
 }
 
 impl BunHelper {
+    pub const ALL: [Self; 41] = [
+        Self::Create,
+        Self::GetProtoOf,
+        Self::DefProp,
+        Self::GetOwnPropNames,
+        Self::GetOwnPropDesc,
+        Self::HasOwnProp,
+        Self::AccessProp,
+        Self::CopyProps,
+        Self::ReExport,
+        Self::CommonJs,
+        Self::Esm,
+        Self::ToEsm,
+        Self::ToCommonJs,
+        Self::Export,
+        Self::Name,
+        Self::Freeze,
+        Self::DefProps,
+        Self::GetOwnPropDescs,
+        Self::GetOwnPropSymbols,
+        Self::PropIsEnum,
+        Self::ReflectGet,
+        Self::ReflectSet,
+        Self::Pow,
+        Self::DefNormalProp,
+        Self::SpreadValues,
+        Self::SpreadProps,
+        Self::ObjRest,
+        Self::PublicField,
+        Self::TypeError,
+        Self::AccessCheck,
+        Self::PrivateIn,
+        Self::PrivateGet,
+        Self::PrivateAdd,
+        Self::PrivateSet,
+        Self::PrivateMethod,
+        Self::EarlyAccess,
+        Self::KnownSymbol,
+        Self::Template,
+        Self::Async,
+        Self::Require,
+        Self::Glob,
+    ];
+
+    /// The helper whose [`Self::canonical`] name is `name`.
+    #[must_use]
+    pub fn from_canonical(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|helper| helper.canonical() == name)
+    }
+
     #[must_use]
     pub const fn canonical(&self) -> &'static str {
         match self {

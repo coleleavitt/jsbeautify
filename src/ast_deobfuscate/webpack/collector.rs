@@ -33,6 +33,8 @@ pub(super) struct NameCollector {
     with_scopes: Vec<ScopeId>,
     /// Module factories seen in runtime module maps and chunk payloads.
     module_count: usize,
+    /// Their module ids.
+    factory_ids: Vec<String>,
 }
 
 impl NameCollector {
@@ -47,6 +49,7 @@ impl NameCollector {
             defaults: Vec::new(),
             with_scopes: Vec::new(),
             module_count: 0,
+            factory_ids: Vec::new(),
         };
         for runtime in runtimes {
             collector.plan(runtime.require, "__webpack_require__");
@@ -63,6 +66,10 @@ impl NameCollector {
         self.module_count
     }
 
+    pub(super) fn into_factory_ids(self) -> Vec<String> {
+        self.factory_ids
+    }
+
     /// The rename plan, plus the scopes containing a `with` statement.
     pub(super) fn into_plan(self) -> (Vec<(SymbolId, String)>, Vec<ScopeId>) {
         (self.plan, self.with_scopes)
@@ -77,6 +84,7 @@ impl NameCollector {
     fn name_factories(&mut self, modules: &Expression<'_>) {
         let factories = module_factories(modules).unwrap_or_default();
         self.module_count += factories.len();
+        self.factory_ids.extend(factories.iter().map(|(id, _)| id.clone()));
         for (id, params) in factories {
             let Some(symbols) = simple_params(params) else { continue };
             if symbols.len() > FACTORY_PARAMS.len() {

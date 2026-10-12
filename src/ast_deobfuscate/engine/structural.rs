@@ -42,8 +42,16 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Parsed as {:?}", program.source_type);
 
         self.run_structural_preamble(&allocator, &mut program);
+        if !self.project.is_empty() {
+            eprintln!("[DEOBFUSCATE] Phase 0.84: project naming seeds");
+            crate::ast_deobfuscate::project::apply_project_seeds(&allocator, &mut program, &self.project);
+        }
         crate::ast_deobfuscate::webpack::rename_webpack_bindings(&allocator, &mut program);
-        crate::ast_deobfuscate::turbopack::rename_turbopack_bindings(&allocator, &mut program);
+        crate::ast_deobfuscate::turbopack::rename_turbopack_bindings(
+            &allocator,
+            &mut program,
+            &self.project.turbopack_reexports,
+        );
         let runtime = self.run_bun_naming_phases(&allocator, &mut program);
         let angular_renamed = crate::ast_deobfuscate::angular::rename_angular_symbols(&allocator, &mut program);
         eprintln!("[DEOBFUSCATE] Phase 0.995: Angular class/action naming renamed {angular_renamed} identifiers");

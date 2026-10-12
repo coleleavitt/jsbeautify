@@ -105,6 +105,7 @@ pub(crate) mod optional_chaining_normalizer;
 pub(crate) mod param_heuristic;
 pub(crate) mod pass;
 pub(crate) mod post_annotations;
+pub mod project;
 pub(crate) mod rename_guards;
 pub(crate) mod rename_planner;
 pub(crate) mod return_sequence_split;

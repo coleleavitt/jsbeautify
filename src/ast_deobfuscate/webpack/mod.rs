@@ -81,6 +81,26 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
     );
 }
 
+/// The ids of the webpack module factories `program` defines, for a project
+/// index (see [`crate::ast_deobfuscate::project`]).
+pub fn project_module_ids<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> Vec<String> {
+    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+    let mut runtime = RuntimeCollector::default();
+    traverse_mut_with_ctx(&mut runtime, program, &mut ctx);
+    let has_chunk = runtime.has_chunk();
+    let runtimes = runtime.into_runtimes();
+    if !has_chunk && runtimes.is_empty() {
+        return Vec::new();
+    }
+    let mut names = NameCollector::new(&runtimes);
+    traverse_mut_with_ctx(&mut names, program, &mut ctx);
+    let mut ids = names.into_factory_ids();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// One detected webpack bootstrap.
 struct Runtime {
     require: SymbolId,
