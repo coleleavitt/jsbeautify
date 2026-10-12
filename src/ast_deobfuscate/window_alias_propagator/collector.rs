@@ -4,15 +4,15 @@ use oxc_ast::ast::{
 };
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::utils::is_global_like;
+use super::utils::{GlobalObject, global_object};
 
 pub struct WindowAliasCollector {
-    candidates: FxHashSet<SymbolId>,
+    candidates: FxHashMap<SymbolId, GlobalObject>,
     poisoned: FxHashSet<SymbolId>,
 }
 
@@ -20,14 +20,23 @@ impl WindowAliasCollector {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            candidates: FxHashSet::default(),
+            candidates: FxHashMap::default(),
             poisoned: FxHashSet::default(),
         }
     }
 
+    /// Each alias with the global object it holds.
     #[must_use]
-    pub fn aliases(self) -> FxHashSet<SymbolId> {
-        &self.candidates - &self.poisoned
+    pub fn aliases(mut self) -> FxHashMap<SymbolId, GlobalObject> {
+        self.candidates.retain(|symbol, _| !self.poisoned.contains(symbol));
+        self.candidates
+    }
+
+    fn add_candidate(&mut self, symbol: SymbolId, global: GlobalObject) {
+        self.candidates
+            .entry(symbol)
+            .and_modify(|held| *held = held.merge(global))
+            .or_insert(global);
     }
 }
 
@@ -49,11 +58,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         // `var X`) poisons it: under `var` hoisting both declarations share ONE
         // SymbolId, so a later non-global redeclaration must cancel the alias.
         // A different binding named X in another scope is a distinct SymbolId.
-        match decl.init.as_ref() {
-            Some(init) if is_global_like(init, ctx.scoping()) => {
-                self.candidates.insert(symbol_id);
-            }
-            _ => {
+        match decl.init.as_ref().and_then(|init| global_object(init, ctx.scoping())) {
+            Some(global) => self.add_candidate(symbol_id, global),
+            None => {
                 self.poisoned.insert(symbol_id);
             }
         }
@@ -72,10 +79,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         // Only a *simple* `X = window` promotes X. A compound assignment
         // (`X += window` computes `X + window`, a number) or any non-global RHS
         // means X no longer holds a pure global object and must be poisoned.
-        if assign.operator.is_assign() && is_global_like(&assign.right, ctx.scoping()) {
-            self.candidates.insert(symbol_id);
-        } else {
-            self.poisoned.insert(symbol_id);
+        match global_object(&assign.right, ctx.scoping()) {
+            Some(global) if assign.operator.is_assign() => self.add_candidate(symbol_id, global),
+            _ => {
+                self.poisoned.insert(symbol_id);
+            }
         }
     }
 
