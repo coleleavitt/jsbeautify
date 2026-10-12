@@ -1,4 +1,8 @@
-use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, Function, Program, Statement, VariableDeclarator};
+use oxc_allocator::{CloneIn, GetAllocator};
+use oxc_ast::ast::{
+    ArrowFunctionBody, ArrowFunctionExpression, BindingIdentifier, BindingPattern, Expression, Function, FunctionBody,
+    LogicalOperator, Program, Statement, VariableDeclarator,
+};
 use oxc_span::GetSpan;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
@@ -8,7 +12,7 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
 use super::ast_utils::{decl_binding, unwrap_cjs_iife, unwrap_iife};
-use super::lowering::{is_require_shim, lowering_helper};
+use super::lowering::{is_decorator_strings, is_require_shim, is_to_binary, lowering_helper};
 use super::matchers::{
     constructs_weak_map, export_descriptor_keys, is_commonjs_helper, is_esm_helper, is_export_helper,
     is_name_helper_arrow, is_tocommonjs_helper, is_toesm_helper,
@@ -94,7 +98,7 @@ impl BunRuntimeCollector {
     /// program body, the body of a Bun CJS-wrapper IIFE, and the body of an
     /// esbuild `--format=iife` bundle (`(() => { … })()`, or
     /// `var name = (() => { … })()` with `--global-name`).
-    fn scan_statements(&mut self, stmts: &[Statement<'_>]) {
+    fn scan_statements<'a>(&mut self, stmts: &[Statement<'a>], ctx: &Ctx<'a>) {
         for stmt in stmts {
             match stmt {
                 Statement::VariableDeclaration(var_decl) => {
@@ -102,7 +106,7 @@ impl BunRuntimeCollector {
                         self.try_object_alias(decl);
                         self.try_object_proto_alias(decl);
                         self.try_destructured_object_alias(decl);
-                        self.try_arrow_helper(decl);
+                        self.try_arrow_helper(decl, ctx);
                         if is_require_shim(decl)
                             && let Some(binding) = decl_binding(decl)
                         {
@@ -112,7 +116,7 @@ impl BunRuntimeCollector {
                     if let [decl] = var_decl.declarations.as_slice()
                         && let Some(body_stmts) = decl.init.as_ref().and_then(unwrap_iife)
                     {
-                        self.scan_statements(body_stmts);
+                        self.scan_statements(body_stmts, ctx);
                     }
                 }
                 Statement::FunctionDeclaration(func) => {
@@ -121,7 +125,7 @@ impl BunRuntimeCollector {
                 Statement::ExpressionStatement(es) => {
                     // Look inside (function(...) { ... })(...) — Bun's CJS wrapper.
                     if let Some(body_stmts) = unwrap_cjs_iife(&es.expression).or_else(|| unwrap_iife(&es.expression)) {
-                        self.scan_statements(body_stmts);
+                        self.scan_statements(body_stmts, ctx);
                     }
                 }
                 _ => {}
@@ -196,12 +200,34 @@ impl BunRuntimeCollector {
     }
 
     /// Match arrow-function helpers: `__esm`, `__commonJS`, `__toESM`, `__toCommonJS`, `__export`,
-    /// `__reExport`, `__copyProps`, `__name`, and the [`lowering_helper`]s.
-    fn try_arrow_helper(&mut self, decl: &VariableDeclarator<'_>) {
+    /// `__reExport`, `__copyProps`, `__name`, and the [`lowering_helper`]s. A
+    /// `function` expression helper (esbuild lowers its runtime's arrows when
+    /// the target lacks them) is matched as the equivalent arrow. Also the
+    /// non-function helpers `__toBinary` (`Uint8Array.fromBase64 || (() => {…})()`)
+    /// and `__decoratorStrings`.
+    fn try_arrow_helper<'a>(&mut self, decl: &VariableDeclarator<'a>, ctx: &Ctx<'a>) {
         let Some(binding) = decl_binding(decl) else { return };
-        let Some(init) = &decl.init else { return };
-        let Expression::ArrowFunctionExpression(arrow) = init else {
+        let Some(init) = decl.init.as_ref().map(without_from_base64) else {
             return;
+        };
+        let converted;
+        let arrow = match init {
+            Expression::ArrowFunctionExpression(arrow) => arrow,
+            Expression::FunctionExpression(func) => match function_as_arrow(func, ctx) {
+                Some(arrow) => {
+                    converted = arrow;
+                    &converted
+                }
+                None => return,
+            },
+            _ => {
+                if is_to_binary(init) {
+                    self.record(binding, BunHelper::ToBinary);
+                } else if is_decorator_strings(init) {
+                    self.record(binding, BunHelper::DecoratorStrings);
+                }
+                return;
+            }
         };
 
         if is_esm_helper(arrow) {
@@ -287,7 +313,7 @@ impl Default for BunRuntimeCollector {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeCollector {
-    fn enter_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         let body_start = program.body.first().map_or(u32::MAX, |stmt| stmt.span().start);
         self.bun_evidence |= program
             .comments
@@ -300,6 +326,58 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeCollector {
                     .trim_start()
                     .starts_with("@bun")
             });
-        self.scan_statements(&program.body);
+        self.scan_statements(&program.body, ctx);
     }
+}
+
+/// `Uint8Array.fromBase64 || fallback` → `fallback`: esbuild 0.25+ prefers the
+/// native decoder in `__toBinary` / `__toBinaryNode`.
+fn without_from_base64<'b, 'a>(init: &'b Expression<'a>) -> &'b Expression<'a> {
+    match init.without_parentheses() {
+        Expression::LogicalExpression(logical)
+            if logical.operator == LogicalOperator::Or
+                && matches!(logical.left.without_parentheses(), Expression::StaticMemberExpression(member)
+                    if member.property.name == "fromBase64"
+                        && matches!(&member.object, Expression::Identifier(id) if id.name == "Uint8Array")) =>
+        {
+            logical.right.without_parentheses()
+        }
+        init => init,
+    }
+}
+
+/// Helper bodies are small; larger `function` expressions are not cloned.
+const MAX_FUNCTION_HELPER_LEN: u32 = 4096;
+
+/// A copy of a plain `function (…) { … }` as an arrow, with a single
+/// `return value` body as the expression body, so the arrow matchers apply.
+fn function_as_arrow<'a>(
+    func: &Function<'a>,
+    ctx: &Ctx<'a>,
+) -> Option<oxc_allocator::Box<'a, ArrowFunctionExpression<'a>>> {
+    if func.generator || func.r#async || func.span.size() > MAX_FUNCTION_HELPER_LEN {
+        return None;
+    }
+    let body = func.body.as_ref()?;
+    let allocator = ctx.allocator();
+    let arrow_body = match body.statements.as_slice() {
+        [Statement::ReturnStatement(ret)] if body.directives.is_empty() => {
+            ArrowFunctionBody::from(ret.argument.as_ref()?.clone_in(allocator))
+        }
+        _ => ArrowFunctionBody::FunctionBody(FunctionBody::boxed(
+            body.span,
+            body.directives.clone_in(allocator),
+            body.statements.clone_in(allocator),
+            ctx,
+        )),
+    };
+    Some(ArrowFunctionExpression::boxed(
+        func.span,
+        false,
+        None,
+        func.params.clone_in(allocator),
+        None,
+        arrow_body,
+        ctx,
+    ))
 }
