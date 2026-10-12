@@ -1,15 +1,15 @@
 use oxc_ast::ast::{
-    Argument, ArrayExpression, AssignmentExpression, AssignmentOperator, AssignmentTarget, BindingPattern,
-    CallExpression, Class, ClassElement, ConditionalExpression, Expression, Function, ObjectExpression,
-    ObjectPropertyKind, Program, PropertyKey, SimpleAssignmentTarget, Statement, StaticMemberExpression, StringLiteral,
-    TemplateLiteral, VariableDeclarator, WithStatement,
+    Argument, ArrayExpression, ArrowFunctionExpression, AssignmentExpression, AssignmentOperator, AssignmentTarget,
+    BindingPattern, CallExpression, Class, ClassElement, ConditionalExpression, Expression, Function, NewExpression,
+    ObjectExpression, ObjectPropertyKind, Program, PropertyKey, SimpleAssignmentTarget, Statement,
+    StaticMemberExpression, StringLiteral, TemplateLiteral, VariableDeclarator, WithStatement,
 };
 use oxc_syntax::identifier::is_identifier_name;
 use oxc_syntax::keyword::is_reserved_keyword_or_global_object;
 use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names, is_minified};
@@ -18,9 +18,9 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::webpack::shapes::{getter_target, resolve, resolve_expr, simple_params};
 
 use super::shapes::{
-    EsmBinding, Payload, ReexportSource, Registration, chunk_list, edge_entry, esm_bindings, factory_params,
-    global_name, global_target_name, module_id, module_ident, node_entry_runtime, program_node_chunk, reexport_groups,
-    registration,
+    EsmBinding, Payload, ReexportSource, Registration, asset_path, async_loader, chunk_list, edge_entry, esm_bindings,
+    factory_params, global_name, global_target_name, module_id, module_ident, node_entry_runtime, program_node_chunk,
+    reexport_groups, registration,
 };
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -30,7 +30,7 @@ const ASYNC_BODY_PARAMS: [&str; 2] = ["__turbopack_handle_async_dependencies__",
 
 /// Runtime function names by context member, from
 /// `turbopack-ecmascript-runtime` (`contextPrototype.<member> = <name>`).
-const RUNTIME_MEMBERS: [(&str, &str); 24] = [
+const RUNTIME_MEMBERS: [(&str, &str); 19] = [
     ("A", "asyncLoader"),
     ("C", "clearChunkCache"),
     ("M", "moduleFactories"),
@@ -38,11 +38,7 @@ const RUNTIME_MEMBERS: [(&str, &str); 24] = [
     ("R", "resolvePathFromModule"),
     ("S", "esmReexport"),
     ("U", "relativeURL"),
-    ("X", "ASSET_SUFFIX"),
-    ("a", "asyncModule"),
-    ("b", "RUNTIME_CHUNK_BASE_PATH"),
     ("f", "moduleContext"),
-    ("h", "getChunkRelativeUrl"),
     ("i", "esmImport"),
     ("j", "dynamicExport"),
     ("n", "exportNamespace"),
@@ -51,7 +47,6 @@ const RUNTIME_MEMBERS: [(&str, &str); 24] = [
     ("s", "esmExport"),
     ("t", "runtimeRequire"),
     ("v", "exportValue"),
-    ("w", "RUNTIME_ROOT"),
     ("x", "externalRequire"),
     ("y", "externalImport"),
     ("z", "requireStub"),
@@ -60,8 +55,109 @@ const RUNTIME_MEMBERS: [(&str, &str); 24] = [
 /// Members whose function depends on the runtime, named once it is known.
 const RUNTIME_SPECIFIC_MEMBERS: [&str; 4] = ["F", "L", "c", "l"];
 
-/// Members only the Node.js runtime installs (`RUNTIME_ROOT`, externals).
-const NODE_RUNTIME_MEMBERS: [&str; 3] = ["w", "x", "y"];
+const NODE_RUNTIME_CONSTANTS: [&str; 3] = ["RUNTIME_PUBLIC_PATH", "RELATIVE_ROOT_PATH", "ASSET_PREFIX"];
+
+/// Members only the Node.js runtime installs (externals).
+const NODE_RUNTIME_MEMBERS: [&str; 2] = ["x", "y"];
+
+const VERSIONED_MEMBERS: [&str; 6] = ["X", "a", "b", "h", "u", "w"];
+
+/// Members whose meaning changed between runtime versions, named by what is
+/// installed: a function (and what it constructs) or a value. Next.js 16.0
+/// installs `b = getWorkerBlobURL`, 16.2 `b = createWorker`, 16.4
+/// `b = RUNTIME_CHUNK_BASE_PATH`; `w` was `loadWebAssembly` before it became
+/// the Node.js `RUNTIME_ROOT`.
+fn versioned_member_name(member: &str, function: Option<&FunctionFacts>) -> Option<&'static str> {
+    Some(match (member, function) {
+        ("X", None) => "ASSET_SUFFIX",
+        ("a", Some(_)) => "asyncModule",
+        ("b", None) => "RUNTIME_CHUNK_BASE_PATH",
+        ("b", Some(f)) if f.constructs.contains("Blob") => "getWorkerBlobURL",
+        ("b", Some(f)) if f.constructs.contains("Worker") || f.constructs.contains("SharedWorker") => "createWorker",
+        ("h", Some(_)) => "getChunkRelativeUrl",
+        ("u", Some(_)) => "loadWebAssemblyModule",
+        ("w", None) => "RUNTIME_ROOT",
+        ("w", Some(_)) => "loadWebAssembly",
+        _ => return None,
+    })
+}
+
+/// How a runtime function passes an argument, for [`RUNTIME_CALLS`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arg {
+    /// The caller's parameter at this index.
+    Param(usize),
+    /// `this.m`, the calling module.
+    ThisModule,
+    /// `this.m.id`.
+    ThisModuleId,
+    Any,
+}
+
+/// `(caller, arguments, callee)`: calls between runtime functions that are
+/// the same in Next.js 16.0 to 16.5 (`shared/runtime/runtime-utils.ts`,
+/// `browser/runtime/base/runtime-base.ts`, `nodejs/runtime/*.ts`). A named
+/// caller names the function it calls this way, unless the minifier inlined
+/// it (then the arguments differ).
+const RUNTIME_CALLS: [(&str, &[Arg], &str); 9] = [
+    (
+        "esmImport",
+        &[Arg::Param(0), Arg::ThisModule],
+        "getOrInstantiateModuleFromParent",
+    ),
+    (
+        "commonJsRequire",
+        &[Arg::Param(0), Arg::ThisModule],
+        "getOrInstantiateModuleFromParent",
+    ),
+    (
+        "getOrInstantiateModuleFromParent",
+        &[Arg::Param(0), Arg::Any, Arg::Any],
+        "instantiateModule",
+    ),
+    (
+        "getOrInstantiateRuntimeModule",
+        &[Arg::Param(0), Arg::Param(1)],
+        "instantiateRuntimeModule",
+    ),
+    (
+        "instantiateRuntimeModule",
+        &[Arg::Param(1), Arg::Any, Arg::Param(0)],
+        "instantiateModule",
+    ),
+    (
+        "loadChunk",
+        &[Arg::Any, Arg::ThisModuleId, Arg::Param(0)],
+        "loadChunkInternal",
+    ),
+    (
+        "loadChunkByUrl",
+        &[Arg::Any, Arg::ThisModuleId, Arg::Param(0)],
+        "loadChunkByUrlInternal",
+    ),
+    // Next.js 16.4 splits merged chunks first; before, `loadChunkByUrlInternal`
+    // loaded the whole chunk itself.
+    (
+        "loadChunkByUrlInternal",
+        &[Arg::Param(0), Arg::Param(1), Arg::Any],
+        "loadChunkByUrlWhole",
+    ),
+    ("loadRuntimeChunk", &[Arg::Param(0), Arg::Any], "loadRuntimeChunkPath"),
+];
+
+/// Anchored functions that build their message: they return it. Next.js 16.0
+/// also throws the message inline in `instantiateModule`.
+const MESSAGE_BUILDERS: [&str; 1] = ["factoryNotAvailableMessage"];
+
+/// What [`NameCollector`] saw inside a minified runtime function declaration.
+#[derive(Default)]
+struct FunctionFacts {
+    params: Vec<SymbolId>,
+    /// Calls of other functions, with the shape of their arguments.
+    calls: Vec<(SymbolId, Vec<Arg>)>,
+    /// Global constructors it calls with `new`.
+    constructs: FxHashSet<&'static str>,
+}
 
 /// The runtime-specific name of the function installed as `member`, from
 /// `browser/runtime/base/*.ts`, `nodejs/runtime/*.ts` and their `dev-base.ts`.
@@ -86,7 +182,10 @@ fn runtime_member_name(member: &str, node: bool, dev: bool, override_: bool) -> 
 /// (template literals as their quasis joined by `${}`), from
 /// `turbopack-ecmascript-runtime/js/src/**` (Next.js 16.4 output). They name
 /// the minified functions of a production runtime and of the development
-/// runtime's HMR code.
+/// runtime's HMR code. A message names a function only after the runtime's
+/// structure (members, [`RUNTIME_CALLS`]) had its say: a message moved into
+/// another function in another version (16.0/16.2 wrote "Failed to load
+/// chunk" in what is `loadChunkByUrlInternal` there) then loses.
 const RUNTIME_FUNCTION_ANCHORS: [(&str, &str); 19] = [
     ("Unknown chunk update type: ${}", "applyChunkListUpdate"),
     ("Unknown merged chunk update type", "computeChangedModules"),
@@ -149,7 +248,21 @@ pub(super) struct NameCollector {
     /// Runtime-only candidates (`(symbol, name)`), kept when the runtime is
     /// found: [`RUNTIME_FUNCTION_ANCHORS`] and error classes.
     runtime_candidates: Vec<(SymbolId, &'static str)>,
+    /// Functions [`RUNTIME_FUNCTION_ANCHORS`] names, weaker than the runtime's
+    /// structure ([`RUNTIME_CALLS`], members).
+    anchor_candidates: Vec<(SymbolId, &'static str, bool)>,
     runtime_error_classes: Vec<(SymbolId, String)>,
+    /// Values installed under a member [`versioned_member_name`] names.
+    versioned_members: Vec<(SymbolId, &'static str, bool)>,
+    /// Minified function declarations and functions assigned to a context
+    /// member, by start offset, for [`RUNTIME_CALLS`] and [`versioned_member_name`].
+    facts: FxHashMap<u32, FunctionFacts>,
+    /// The [`Self::facts`] key of each minified function declaration.
+    declared_functions: FxHashMap<SymbolId, u32>,
+    /// `contextPrototype.<member> = function (…) {…}`: member and facts key.
+    member_functions: Vec<(&'static str, u32)>,
+    /// The [`Self::facts`] key of each enclosing function, if it has facts.
+    fact_keys: Vec<Option<u32>>,
     /// Enclosing function declarations; `None` for other `function`s.
     functions: Vec<Option<SymbolId>>,
     /// `registerChunk` / `registerChunkList` and the name of the list each
@@ -162,6 +275,15 @@ pub(super) struct NameCollector {
     reexport_names: FxHashMap<(String, String), Option<String>>,
     /// Locals exported under a mangled key: `(module ids, key, local)`.
     mangled_exports: Vec<(Vec<String>, String, SymbolId)>,
+    /// `__turbopack_handle_async_dependencies__` parameters of async module bodies.
+    async_handles: FxHashSet<SymbolId>,
+    /// Asset modules (`ctx.q("/_next/static/media/a.png")`) by module id: the
+    /// name for a local importing them.
+    asset_modules: FxHashMap<String, String>,
+    /// Minified functions calling `WebAssembly.instantiate*` / `compile*`, and
+    /// locals a factory exports: the bundled `loadWasm.ts` helper's exports.
+    wasm_functions: FxHashMap<SymbolId, &'static str>,
+    exported_locals: FxHashSet<SymbolId>,
     /// `var _s = __turbopack_context__.k.signature()` handles not yet named.
     refresh_signatures: FxHashSet<SymbolId>,
     pub(super) found: Found,
@@ -176,11 +298,20 @@ pub(super) struct Found {
     pub node_chunks: usize,
     pub chunk_lists: usize,
     pub node_entries: usize,
+    /// The Node.js runtime's `module.exports = (sourcePath) => ({ m, c })`.
+    pub node_runtime_export: bool,
     pub edge_entries: usize,
     pub worker_entrypoint: bool,
 }
 
 impl Found {
+    /// The file is a Node.js chunk, entry or runtime: Node.js `require`s it as
+    /// a `CommonJS` module (`nodejs/runtime/runtime-base.ts`, the Node.js
+    /// entry's `require("…[turbopack]_runtime.js")`, and Next.js's server).
+    pub(super) const fn is_commonjs(&self) -> bool {
+        self.node_chunks > 0 || self.node_entries > 0 || self.node_runtime_export
+    }
+
     pub(super) const fn is_empty(&self) -> bool {
         self.registrations == 0
             && self.chunk_lists == 0
@@ -201,17 +332,44 @@ impl NameCollector {
             }
         }
         if self.has_runtime() {
-            let candidates = std::mem::take(&mut self.runtime_candidates);
-            for &(symbol, name) in &candidates {
-                let unique = candidates
-                    .iter()
-                    .all(|&(s, n)| (s == symbol) == (n == name) || (s != symbol && n != name));
-                if unique {
+            let unknown = FunctionFacts::default();
+            for (symbol, member, function) in std::mem::take(&mut self.versioned_members) {
+                let facts = function.then(|| {
+                    self.declared_functions
+                        .get(&symbol)
+                        .and_then(|key| self.facts.get(key))
+                        .unwrap_or(&unknown)
+                });
+                if let Some(name) = versioned_member_name(member, facts) {
                     self.plan(symbol, name);
                 }
             }
+            let candidates = std::mem::take(&mut self.runtime_candidates);
+            self.plan_unique(&candidates);
+            self.plan_runtime_calls();
+            let anchors: Vec<(SymbolId, &'static str)> = std::mem::take(&mut self.anchor_candidates)
+                .into_iter()
+                .filter(|(_, name, returned)| *returned || !MESSAGE_BUILDERS.contains(name))
+                .map(|(symbol, name, _)| (symbol, name))
+                .collect();
+            self.plan_unique(&anchors);
+            self.plan_runtime_calls();
             for (symbol, name) in std::mem::take(&mut self.runtime_error_classes) {
                 self.plan(symbol, &name);
+            }
+        }
+        for (symbol, name) in std::mem::take(&mut self.wasm_functions) {
+            if self.exported_locals.contains(&symbol) {
+                self.plan(symbol, name);
+            }
+        }
+        for (symbol, name) in &mut self.plan {
+            if let Some(asset) = self
+                .import_modules
+                .get(symbol)
+                .and_then(|id| self.asset_modules.get(id))
+            {
+                name.clone_from(asset);
             }
         }
         for (ids, key, symbol) in std::mem::take(&mut self.mangled_exports) {
@@ -268,6 +426,77 @@ impl NameCollector {
         }
     }
 
+    /// Plan each candidate whose symbol and name no other candidate claims,
+    /// and whose name the plan does not give another symbol yet.
+    fn plan_unique(&mut self, candidates: &[(SymbolId, &'static str)]) {
+        for &(symbol, name) in candidates {
+            let unique = candidates
+                .iter()
+                .all(|&(s, n)| (s == symbol) == (n == name) || (s != symbol && n != name));
+            if unique && !self.plan.iter().any(|(s, n)| *s != symbol && n == name) {
+                self.plan(symbol, name);
+            }
+        }
+    }
+
+    /// The runtime function name of a context member.
+    fn member_role(&self, member: &str) -> Option<&'static str> {
+        RUNTIME_MEMBERS
+            .iter()
+            .find(|(m, _)| *m == member)
+            .map(|(_, name)| *name)
+            .or_else(|| runtime_member_name(member, self.node_runtime, self.dev_runtime, false))
+    }
+
+    /// Name the functions that named runtime functions call in the one way
+    /// [`RUNTIME_CALLS`] describes, until nothing changes.
+    fn plan_runtime_calls(&mut self) {
+        loop {
+            let mut found = Vec::new();
+            for &(caller_name, args, callee_name) in &RUNTIME_CALLS {
+                if self.plan.iter().any(|(_, n)| n == callee_name) {
+                    continue;
+                }
+                let declared = self
+                    .plan
+                    .iter()
+                    .find(|(_, n)| n == caller_name)
+                    .and_then(|(caller, _)| self.declared_functions.get(caller));
+                let inline = || {
+                    self.member_functions
+                        .iter()
+                        .find(|(member, _)| self.member_role(member) == Some(caller_name))
+                        .map(|(_, key)| key)
+                };
+                let Some(facts) = declared.or_else(inline).and_then(|key| self.facts.get(key)) else {
+                    continue;
+                };
+                let mut callees = facts.calls.iter().filter(|(_, shape)| {
+                    shape.len() == args.len()
+                        && shape
+                            .iter()
+                            .zip(args)
+                            .all(|(have, want)| *want == Arg::Any || have == want)
+                });
+                if let Some(&(callee, _)) = callees.next()
+                    && callees.all(|(other, _)| *other == callee)
+                    && !self.planned.contains(&callee)
+                {
+                    found.push((callee, callee_name));
+                }
+            }
+            let before = self.plan.len();
+            for (symbol, name) in found {
+                if !self.plan.iter().any(|(_, n)| n == name) {
+                    self.plan(symbol, name);
+                }
+            }
+            if self.plan.len() == before {
+                return;
+            }
+        }
+    }
+
     pub(super) fn has_runtime(&self) -> bool {
         !self.constructors.is_empty()
     }
@@ -306,6 +535,19 @@ impl NameCollector {
             .then_some(member.property.name.as_str())
     }
 
+    /// The factory of `call`, `ctx.q(path)` / `ctx.v(path)`, is an asset module.
+    fn record_asset(&mut self, call: &CallExpression<'_>, path: Option<&str>, ctx: &Ctx<'_>) {
+        let Some(path) = path else { return };
+        let file = path.rsplit('/').next().unwrap_or(path);
+        if !file.contains('.') {
+            return;
+        }
+        let name = format!("asset_{}", module_ident(file));
+        for id in self.export_modules(call, ctx) {
+            self.asset_modules.insert(id, name.clone());
+        }
+    }
+
     /// `register` / `signature` in `__turbopack_context__.k.<method>(…)`: React
     /// Refresh, which `turbopack-ecmascript/src/transform/mod.rs` configures
     /// as SWC's `refresh_reg` / `refresh_sig` in development.
@@ -334,6 +576,7 @@ impl NameCollector {
                 EsmBinding::Getter(getter) => getter_target(getter).and_then(|id| resolve(id, ctx)),
             };
             let Some(symbol) = local else { continue };
+            self.exported_locals.insert(symbol);
             if name == "default" {
                 self.defaults.push(DefaultExport {
                     local: symbol,
@@ -512,6 +755,7 @@ impl NameCollector {
         }
         if found {
             self.node_runtime = true;
+            self.found.node_runtime_export = true;
             self.plan(source_path, "sourcePath");
         }
         found
@@ -677,11 +921,65 @@ impl NameCollector {
         (calls_context && this_assignment(assignment, ctx) == Some(("k", *refresh))).then_some(*refresh)
     }
 
-    fn anchor(&mut self, text: &str) {
+    /// The member of `contextPrototype.<member> = function (…) {…}` when the
+    /// function being entered is that one (a minifier inlines runtime functions so).
+    fn member_function(&self, ctx: &Ctx<'_>) -> Option<&'static str> {
+        let Ancestor::AssignmentExpressionRight(assign) = ctx.parent() else {
+            return None;
+        };
+        let AssignmentTarget::StaticMemberExpression(target) = assign.left() else {
+            return None;
+        };
+        if !self.is_prototype(&target.object, ctx) {
+            return None;
+        }
+        let member = target.property.name.as_str();
+        RUNTIME_MEMBERS
+            .iter()
+            .map(|(m, _)| *m)
+            .chain(RUNTIME_SPECIFIC_MEMBERS)
+            .find(|m| *m == member)
+    }
+
+    /// `f(a, this.m, …)` inside a function with facts, for [`RUNTIME_CALLS`].
+    fn record_call(&mut self, call: &CallExpression<'_>, ctx: &Ctx<'_>) {
+        let Some(Some(function)) = self.fact_keys.last() else {
+            return;
+        };
+        let Some(facts) = self.facts.get(function) else { return };
+        let Some(callee) = resolve_expr(&call.callee, ctx).filter(|&s| is_minified(ctx.scoping().symbol_name(s)))
+        else {
+            return;
+        };
+        let is_this_module = |expr: &Expression<'_>| {
+            matches!(expr.without_parentheses(), Expression::StaticMemberExpression(m)
+                if m.property.name == "m" && matches!(m.object, Expression::ThisExpression(_)))
+        };
+        let shape = call
+            .arguments
+            .iter()
+            .map(|arg| match arg.as_expression().map(Expression::without_parentheses) {
+                Some(expr) if is_this_module(expr) => Arg::ThisModule,
+                Some(Expression::StaticMemberExpression(m)) if m.property.name == "id" && is_this_module(&m.object) => {
+                    Arg::ThisModuleId
+                }
+                Some(expr) => resolve_expr(expr, ctx)
+                    .and_then(|symbol| facts.params.iter().position(|&p| p == symbol))
+                    .map_or(Arg::Any, Arg::Param),
+                None => Arg::Any,
+            })
+            .collect();
+        if let Some(facts) = self.facts.get_mut(function) {
+            facts.calls.push((callee, shape));
+        }
+    }
+
+    /// `returned`: the message is the value of a `return` statement.
+    fn anchor(&mut self, text: &str, returned: bool) {
         if let Some(Some(symbol)) = self.functions.last()
             && let Some((_, name)) = RUNTIME_FUNCTION_ANCHORS.iter().find(|(anchor, _)| *anchor == text)
         {
-            self.runtime_candidates.push((*symbol, name));
+            self.anchor_candidates.push((*symbol, name, returned));
         }
     }
 }
@@ -753,6 +1051,21 @@ fn worker_param_source(init: &Expression<'_>, ctx: &Ctx<'_>) -> Option<SymbolId>
         && is_string(alternate, "")
         && checked == Some(source))
     .then_some(source)
+}
+
+/// The `CHUNK_BASE_PATH` fallback of
+/// `typeof TURBOPACK_CHUNK_BASE_PATH === "string" ? TURBOPACK_CHUNK_BASE_PATH : CHUNK_BASE_PATH`
+/// (`browser/runtime/base/runtime-base.ts`).
+fn chunk_base_path_fallback<'b, 'a>(init: &'b Expression<'a>) -> Option<&'b Expression<'a>> {
+    let Expression::ConditionalExpression(cond) = init.without_parentheses() else {
+        return None;
+    };
+    let reads_global = matches!(cond.consequent.without_parentheses(), Expression::Identifier(id) if id.name == "TURBOPACK_CHUNK_BASE_PATH");
+    let tests_global = matches!(cond.test.without_parentheses(), Expression::BinaryExpression(test)
+        if [&test.left, &test.right].iter().any(|side| matches!(side.without_parentheses(),
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::Typeof
+                && matches!(&u.argument, Expression::Identifier(id) if id.name == "TURBOPACK_CHUNK_BASE_PATH"))));
+    (reads_global && tests_global).then_some(&cond.alternate)
 }
 
 /// Production builds may replace export names with the shortest keys that fit
@@ -841,7 +1154,25 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         let symbol = func.id.as_ref().and_then(|id| id.symbol_id.get());
         let anchored = func.is_declaration() && func.id.as_ref().is_some_and(|id| is_minified(&id.name));
         self.functions.push(symbol.filter(|_| anchored));
+        let member = self.member_function(ctx);
+        let key = (anchored || member.is_some()).then_some(func.span.start);
+        self.fact_keys.push(key);
+        if let Some(key) = key {
+            self.facts.insert(
+                key,
+                FunctionFacts {
+                    params: simple_params(&func.params).unwrap_or_default(),
+                    ..FunctionFacts::default()
+                },
+            );
+            if let Some(member) = member {
+                self.member_functions.push((member, key));
+            }
+        }
         let Some(symbol) = symbol else { return };
+        if anchored {
+            self.declared_functions.insert(symbol, func.span.start);
+        }
         if is_context_constructor(func, ctx) {
             self.constructors.insert(symbol);
             self.plan(symbol, "Context");
@@ -856,6 +1187,35 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
 
     fn exit_function(&mut self, _func: &mut Function<'a>, _ctx: &mut Ctx<'a>) {
         self.functions.pop();
+        self.fact_keys.pop();
+    }
+
+    /// `let f = (…) => …` with a minified `f`: a runtime function a minifier
+    /// turned into an arrow.
+    fn enter_arrow_function_expression(&mut self, arrow: &mut ArrowFunctionExpression<'a>, ctx: &mut Ctx<'a>) {
+        let symbol = match ctx.parent() {
+            Ancestor::VariableDeclaratorInit(decl) => match decl.id() {
+                BindingPattern::BindingIdentifier(id) if is_minified(&id.name) => id.symbol_id.get(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let key = symbol.map(|_| arrow.span.start);
+        self.fact_keys.push(key);
+        if let (Some(symbol), Some(key)) = (symbol, key) {
+            self.declared_functions.insert(symbol, key);
+            self.facts.insert(
+                key,
+                FunctionFacts {
+                    params: simple_params(&arrow.params).unwrap_or_default(),
+                    ..FunctionFacts::default()
+                },
+            );
+        }
+    }
+
+    fn exit_arrow_function_expression(&mut self, _arrow: &mut ArrowFunctionExpression<'a>, _ctx: &mut Ctx<'a>) {
+        self.fact_keys.pop();
     }
 
     fn enter_class(&mut self, class: &mut Class<'a>, _ctx: &mut Ctx<'a>) {
@@ -868,18 +1228,24 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         }
     }
 
-    fn enter_string_literal(&mut self, lit: &mut StringLiteral<'a>, _ctx: &mut Ctx<'a>) {
-        self.anchor(lit.value.as_str());
+    fn enter_string_literal(&mut self, lit: &mut StringLiteral<'a>, ctx: &mut Ctx<'a>) {
+        self.anchor(
+            lit.value.as_str(),
+            matches!(ctx.parent(), Ancestor::ReturnStatementArgument(_)),
+        );
     }
 
-    fn enter_template_literal(&mut self, lit: &mut TemplateLiteral<'a>, _ctx: &mut Ctx<'a>) {
+    fn enter_template_literal(&mut self, lit: &mut TemplateLiteral<'a>, ctx: &mut Ctx<'a>) {
         if lit.quasis.iter().all(|q| q.value.cooked.is_some()) {
             let quasis: Vec<&str> = lit
                 .quasis
                 .iter()
                 .filter_map(|q| q.value.cooked.as_ref().map(oxc_ast::ast::Str::as_str))
                 .collect();
-            self.anchor(&quasis.join("${}"));
+            self.anchor(
+                &quasis.join("${}"),
+                matches!(ctx.parent(), Ancestor::ReturnStatementArgument(_)),
+            );
         }
     }
 
@@ -887,6 +1253,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
     /// and the React Refresh hooks; the latter name `runModuleExecutionHooks`.
     fn enter_static_member_expression(&mut self, member: &mut StaticMemberExpression<'a>, _ctx: &mut Ctx<'a>) {
         let property = member.property.name.as_str();
+        // `turbopack-wasm/js/src/*/loadWasm.ts`: `instantiate` and `compileModule`.
+        if matches!(&member.object, Expression::Identifier(id) if id.name == "WebAssembly")
+            && let Some(Some(function)) = self.functions.last()
+        {
+            match property {
+                "instantiate" | "instantiateStreaming" => {
+                    self.wasm_functions.insert(*function, "instantiate");
+                }
+                "compile" | "compileStreaming" => {
+                    self.wasm_functions.insert(*function, "compileModule");
+                }
+                _ => {}
+            }
+        }
         if !matches!(&member.object, Expression::Identifier(id) if matches!(id.name.as_str(), "globalThis" | "self")) {
             return;
         }
@@ -905,6 +1285,24 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             self.found.node_chunks += 1;
             self.plan_factories(registration);
         }
+        // `var RUNTIME_PUBLIC_PATH = "server/chunks/[turbopack]_runtime.js", RELATIVE_ROOT_PATH = "..", ASSET_PREFIX = "/";`
+        // opens the Node.js runtime (`turbopack-nodejs/src/ecmascript/node/entry/runtime.rs`).
+        if let Some(Statement::VariableDeclaration(decl)) = program.body.first()
+            && let [public, root, prefix, ..] = decl.declarations.as_slice()
+            && matches!(&public.init, Some(Expression::StringLiteral(path)) if path.value.ends_with("_runtime.js"))
+            && [root, prefix]
+                .iter()
+                .all(|d| matches!(d.init, Some(Expression::StringLiteral(_))))
+        {
+            for (declarator, name) in [public, root, prefix].into_iter().zip(NODE_RUNTIME_CONSTANTS) {
+                if let BindingPattern::BindingIdentifier(id) = &declarator.id
+                    && is_minified(&id.name)
+                    && let Some(symbol) = id.symbol_id.get()
+                {
+                    self.runtime_candidates.push((symbol, name));
+                }
+            }
+        }
     }
 
     fn enter_object_expression(&mut self, object: &mut ObjectExpression<'a>, ctx: &mut Ctx<'a>) {
@@ -919,7 +1317,21 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         }
     }
 
+    fn enter_new_expression(&mut self, new: &mut NewExpression<'a>, ctx: &mut Ctx<'a>) {
+        if let Some(Some(function)) = self.fact_keys.last()
+            && let Expression::Identifier(callee) = &new.callee
+            && resolve(callee, ctx).is_none()
+            && let Some(name) = ["Blob", "Worker", "SharedWorker"]
+                .into_iter()
+                .find(|n| callee.name == *n)
+            && let Some(facts) = self.facts.get_mut(function)
+        {
+            facts.constructs.insert(name);
+        }
+    }
+
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
+        self.record_call(call, ctx);
         if let Some(registration) = registration(call) {
             self.plan_factories(registration);
             return;
@@ -981,7 +1393,27 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
                     }
                     _ => None,
                 };
-                self.plan_params(params, &ASYNC_BODY_PARAMS);
+                if let Some(handle) = self.plan_params(params, &ASYNC_BODY_PARAMS) {
+                    self.async_handles.insert(handle);
+                }
+            }
+            Some("v") => {
+                if let Some(value) = call.arguments.first().and_then(Argument::as_expression) {
+                    if let Some(loader) = async_loader(value)
+                        && let Some(symbol) = loader.parent_import.symbol_id.get()
+                    {
+                        self.plan(symbol, "parentImport");
+                    } else {
+                        self.record_asset(call, asset_path(value), ctx);
+                    }
+                }
+            }
+            Some("q") => {
+                let path = match call.arguments.as_slice() {
+                    [Argument::StringLiteral(path)] => Some(path.value.as_str()),
+                    _ => None,
+                };
+                self.record_asset(call, path, ctx);
             }
             _ => {}
         }
@@ -1007,6 +1439,21 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             && self.refresh_method(&call.callee, ctx) == Some("signature")
         {
             self.refresh_signatures.insert(symbol);
+        } else if let Expression::CallExpression(call) = init.without_parentheses()
+            && let [Argument::ArrayExpression(_)] = call.arguments.as_slice()
+            && resolve_expr(&call.callee, ctx).is_some_and(|handle| self.async_handles.contains(&handle))
+        {
+            // `var D = handle([a, b]); [a, b] = D.then ? (await D)() : D;`
+            // (`turbopack-ecmascript/src/references/async_module.rs`).
+            self.plan(symbol, "__turbopack_async_dependencies__");
+        } else if let Some(fallback) = chunk_base_path_fallback(init) {
+            // `RUNTIME_CHUNK_BASE_PATH = typeof TURBOPACK_CHUNK_BASE_PATH === "string" ? TURBOPACK_CHUNK_BASE_PATH : CHUNK_BASE_PATH`
+            if is_minified(&id.name) {
+                self.runtime_candidates.push((symbol, "RUNTIME_CHUNK_BASE_PATH"));
+            }
+            if let Some(base) = resolve_expr(fallback, ctx).filter(|&s| is_minified(ctx.scoping().symbol_name(s))) {
+                self.runtime_candidates.push((base, "CHUNK_BASE_PATH"));
+            }
         } else if node_entry_runtime(init).is_some() {
             self.found.node_entries += 1;
         } else if let Some(params) = worker_param_source(init, ctx) {
@@ -1038,6 +1485,14 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             }
             return;
         }
+        // `script.crossOrigin = CROSS_ORIGIN` (`browser/runtime/dom/runtime-backend-dom.ts`).
+        if let AssignmentTarget::StaticMemberExpression(target) = &assign.left
+            && target.property.name == "crossOrigin"
+            && let Some(symbol) = resolve_expr(&assign.right, ctx)
+            && is_minified(ctx.scoping().symbol_name(symbol))
+        {
+            self.runtime_candidates.push((symbol, "CROSS_ORIGIN"));
+        }
         if self.constructors.is_empty() {
             return;
         }
@@ -1054,7 +1509,14 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         }
         let member_name = member.property.name.as_str();
         self.node_runtime |= NODE_RUNTIME_MEMBERS.contains(&member_name);
-        let Some(symbol) = resolve_expr(&assign.right, ctx) else {
+        let symbol = resolve_expr(&assign.right, ctx);
+        let function = assign.right.without_parentheses().is_function()
+            || symbol.is_some_and(|s| ctx.scoping().symbol_flags(s).is_function());
+        if member_name == "w" && !function {
+            // `RUNTIME_ROOT`; older browser runtimes install `loadWebAssembly` here.
+            self.node_runtime = true;
+        }
+        let Some(symbol) = symbol else {
             return;
         };
         if !is_minified(ctx.scoping().symbol_name(symbol)) {
@@ -1064,6 +1526,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             self.plan(symbol, name);
         } else if let Some(member) = RUNTIME_SPECIFIC_MEMBERS.iter().find(|m| **m == member_name) {
             self.runtime_specific.push((symbol, member));
+        } else if let Some(member) = VERSIONED_MEMBERS.iter().find(|m| **m == member_name) {
+            self.versioned_members.push((symbol, member, function));
         }
     }
 

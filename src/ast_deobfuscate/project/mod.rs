@@ -235,14 +235,14 @@ pub(crate) fn apply_project_seeds<'a>(
     let scoping = if blockers.is_empty() {
         scoping
     } else {
-        let moved = rename_unguarded(allocator, program, scoping, blockers, &guarded);
+        let moved = rename_unguarded(allocator, program, scoping, blockers, &guarded, &FxHashMap::default());
         eprintln!(
             "[DEOBFUSCATE] Phase 0.84: Moved {} local bindings off names the project plan gives linked bindings",
             moved.planned
         );
         SemanticBuilder::new().build(program).semantic.into_scoping()
     };
-    let counts = rename_unguarded(allocator, program, scoping, plan, &guarded);
+    let counts = rename_unguarded(allocator, program, scoping, plan, &guarded, &FxHashMap::default());
     eprintln!(
         "[DEOBFUSCATE] Phase 0.84: Renamed {} bindings from the project plan ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references

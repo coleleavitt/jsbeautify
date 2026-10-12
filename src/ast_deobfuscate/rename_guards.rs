@@ -34,7 +34,9 @@
 //!    `globalThis["x"]` all read them by name. See [`is_global_binding`].
 //! 4. **Annex B block functions** — a sloppy-mode `function f(){}` inside a
 //!    block also assigns the enclosing scope's `var f`. See
-//!    [`is_annex_b_function`].
+//!    [`is_annex_b_function`]. Where `oxc_semantic` binds both as one symbol,
+//!    a planner that keeps the new name free up to the var scope may rename
+//!    it ([`RenameGuardCollector::renaming_annex_b_functions`]).
 //! 5. **Function names, on request** — with
 //!    [`RenameGuardCollector::keep_fn_names`] (`--keep-fn-names`), every binding
 //!    a function or class takes its `.name` from: declaration and expression
@@ -61,7 +63,7 @@ use oxc_syntax::reference::ReferenceId;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Ancestor, ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::bun::export_renamer::names::{is_reserved_word, is_valid_identifier};
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -94,8 +96,9 @@ pub fn is_global_symbol<State>(ctx: &TraverseCtx<'_, State>, symbol: SymbolId) -
     program_source_type(ctx).is_some_and(|source_type| is_global_binding(source_type, ctx.scoping(), symbol))
 }
 
-/// Whether `func` is a sloppy-mode function declaration nested in a block or
-/// an `if`/`switch`/label body. Annex B also assigns it to a same-named `var`
+/// Whether `func` is a sloppy-mode plain function declaration nested in a
+/// block or an `if`/`switch`/label body (Annex B.3.3 leaves async functions
+/// and generators block-scoped). Annex B also assigns it to a same-named `var`
 /// of the enclosing function or global scope, so its name is observable
 /// outside the block even where `oxc_semantic` binds it block-scoped.
 ///
@@ -104,6 +107,8 @@ pub fn is_global_symbol<State>(ctx: &TraverseCtx<'_, State>, symbol: SymbolId) -
 #[must_use]
 pub fn is_annex_b_function<State>(ctx: &TraverseCtx<'_, State>, func: &Function<'_>) -> bool {
     func.is_declaration()
+        && !func.r#async
+        && !func.generator
         && !ctx.current_scope_flags().is_strict_mode()
         && !matches!(
             ctx.parent(),
@@ -199,6 +204,10 @@ pub struct RenameGuardCollector {
     preserved: FxHashSet<SymbolId>,
     /// Bindings exported by an `export { local as name }` specifier.
     specifier_exports: FxHashSet<SymbolId>,
+    /// Annex B block functions `oxc_semantic` bound once, in the var scope, with
+    /// the block that declares them. Guarded unless [`Self::renaming_annex_b_functions`].
+    annex_b_hoisted: FxHashMap<SymbolId, ScopeId>,
+    rename_annex_b: bool,
     source_type: SourceType,
     /// Guard every binding a function or class takes its `.name` from.
     keep_fn_names: bool,
@@ -242,6 +251,27 @@ impl RenameGuardCollector {
         }
     }
 
+    /// Leave Annex B block functions renamable when `oxc_semantic` bound the
+    /// block function and its hoisted `var` as one symbol: renaming that symbol
+    /// renames both. The caller must keep the new name free in the scopes from
+    /// the declaring block up to the var scope, as [`Self::annex_b_blocks`]
+    /// lists them, or Annex B would not create the `var`.
+    #[must_use]
+    pub const fn renaming_annex_b_functions(mut self) -> Self {
+        self.rename_annex_b = true;
+        self
+    }
+
+    /// The renamable Annex B block functions and the blocks declaring them.
+    #[must_use]
+    pub fn annex_b_blocks(&self) -> FxHashMap<SymbolId, ScopeId> {
+        self.annex_b_hoisted
+            .iter()
+            .filter(|(symbol, _)| !self.preserved.contains(symbol))
+            .map(|(&symbol, &block)| (symbol, block))
+            .collect()
+    }
+
     /// Resolve the collected signals into the set of [`SymbolId`]s that must
     /// never be renamed: every native-export binding, every classic-script
     /// global, every Annex B block function, plus every symbol visible to a direct `eval` (the eval's own
@@ -266,6 +296,9 @@ impl RenameGuardCollector {
     #[must_use]
     pub fn into_guards(self, scoping: &Scoping) -> RenameGuards {
         let mut symbols = self.preserved;
+        if !self.rename_annex_b {
+            symbols.extend(self.annex_b_hoisted.keys());
+        }
         if self.source_type.is_script() {
             symbols.extend(scoping.get_bindings(scoping.root_scope_id()).values().copied());
         }
@@ -331,10 +364,29 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
     }
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
-        if (self.keep_fn_names || is_annex_b_function(ctx, func))
+        if self.keep_fn_names
             && let Some(symbol_id) = func.id.as_ref().and_then(|id| id.symbol_id.get())
         {
             self.preserved.insert(symbol_id);
+        }
+        if !is_annex_b_function(ctx, func) {
+            return;
+        }
+        let Some(id) = &func.id else { return };
+        let Some(symbol_id) = id.symbol_id.get() else { return };
+        let block = ctx.current_scope_id();
+        if ctx.scoping().symbol_scope_id(symbol_id) == block {
+            // `oxc_semantic` left the block binding apart from the hoisted `var`
+            // because the var scope already binds the name: two symbols name one
+            // variable at runtime.
+            self.preserved.insert(symbol_id);
+            if let Some(parent) = ctx.scoping().scope_parent_id(block)
+                && let Some(outer) = ctx.scoping().find_binding(parent, id.name.as_str().into())
+            {
+                self.preserved.insert(outer);
+            }
+        } else {
+            self.annex_b_hoisted.insert(symbol_id, block);
         }
     }
 
@@ -637,14 +689,42 @@ mod tests {
 
     #[test]
     fn flags_sloppy_block_functions() {
-        let code = "function g() { { function f() {} } { function f() {} } if (g) function h() {} }";
+        let code = "function g() { { function f() {} } { function f() {} } if (g) function h() {} { async function a() {} function* b() {} } }";
         let names = guarded_names_as(code, SourceType::cjs());
         assert!(names.contains("f") && names.contains("h"), "{names:?}");
+        assert!(!names.contains("a") && !names.contains("b"), "block-scoped: {names:?}");
         assert!(!names.contains("g"), "{names:?}");
         let strict = guarded_names_as(code, SourceType::mjs());
         assert!(
             !strict.contains("f"),
             "strict block functions are block-scoped: {strict:?}"
         );
+    }
+
+    #[test]
+    fn annex_b_functions_bound_once_may_be_renamed_on_request() {
+        let code = "function g() { { function f() {} } return f; } function h() { var k; { function k() {} } }";
+        let allocator = Allocator::default();
+        let mut program = Parser::new(&allocator, code, SourceType::cjs()).parse().program;
+        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut collector = RenameGuardCollector::new().renaming_annex_b_functions();
+        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+        let scoping = ctx.into_scoping();
+        let blocks: Vec<&str> = collector
+            .annex_b_blocks()
+            .keys()
+            .map(|&s| scoping.symbol_name(s))
+            .collect();
+        assert_eq!(blocks, ["f"]);
+        let guarded = collector.into_guarded(&scoping);
+        let guarded_named = |name: &str| {
+            scoping
+                .symbol_ids()
+                .filter(|s| scoping.symbol_name(*s) == name && guarded.contains(s))
+                .count()
+        };
+        assert_eq!(guarded_named("f"), 0);
+        assert_eq!(guarded_named("k"), 2, "the block function and the `var` it assigns");
     }
 }
