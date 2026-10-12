@@ -35,8 +35,8 @@ use std::borrow::Cow;
 
 use oxc_ast::ast::{
     Argument, ArrayExpression, ArrayExpressionElement, ArrowFunctionBody, AssignmentExpression, AssignmentTarget,
-    CallExpression, Expression, FormalParameters, FunctionBody, ObjectExpression, ObjectPropertyKind, Program,
-    Statement,
+    CallExpression, Expression, FormalParameters, FunctionBody, NewExpression, ObjectExpression, ObjectPropertyKind,
+    Program, Statement,
 };
 use oxc_syntax::operator::{AssignmentOperator, LogicalOperator};
 
@@ -71,7 +71,8 @@ fn global_member_name<'b>(object: &Expression<'_>, name: Option<Cow<'b, str>>) -
         .flatten()
 }
 
-fn global_name<'b>(expr: &'b Expression<'_>) -> Option<Cow<'b, str>> {
+/// The name of a global read as `globalThis.G`, `self["G"]`, `window.G` or `global.G`.
+pub fn global_name<'b>(expr: &'b Expression<'_>) -> Option<Cow<'b, str>> {
     match expr.without_parentheses() {
         Expression::StaticMemberExpression(m) => {
             global_member_name(&m.object, Some(Cow::Borrowed(m.property.name.as_str())))
@@ -83,7 +84,8 @@ fn global_name<'b>(expr: &'b Expression<'_>) -> Option<Cow<'b, str>> {
     }
 }
 
-fn global_target_name<'b>(target: &'b AssignmentTarget<'_>) -> Option<Cow<'b, str>> {
+/// [`global_name`] of an assignment target.
+pub fn global_target_name<'b>(target: &'b AssignmentTarget<'_>) -> Option<Cow<'b, str>> {
     match target {
         AssignmentTarget::StaticMemberExpression(m) => {
             global_member_name(&m.object, Some(Cow::Borrowed(m.property.name.as_str())))
@@ -381,7 +383,8 @@ pub fn node_entry_runtime<'b>(init: &'b Expression<'_>) -> Option<(&'b str, &'b 
 /// A readable identifier fragment for a module id: the number of a production
 /// id, or the source path of a development id with its `[project]/`-style root,
 /// layer and modifiers dropped (and only the package path of a `node_modules`
-/// file), e.g. `"[project]/src/foo.ts [app-client] (ecmascript)"` → `src_foo_ts`.
+/// file), e.g. `"[project]/src/foo.ts [app-client] (ecmascript)"` → `src_foo_ts`,
+/// plus its module parts: `"… (ecmascript) <locals>"` → `src_foo_ts_locals`.
 pub fn module_ident(id: &str) -> String {
     let path = [" [", " (", " <", " {"]
         .iter()
@@ -393,8 +396,18 @@ pub fn module_ident(id: &str) -> String {
         .and_then(|rest| rest.split_once("]/"))
         .map_or(path, |(_, rest)| rest);
     let path = path.rsplit_once("node_modules/").map_or(path, |(_, package)| package);
+    // A module part (`<locals>`, `<export foo>`, `<internal part 3>`) tells
+    // the parts of one file apart.
+    let tail = id.rsplit_once('}').map_or(id, |(_, tail)| tail);
+    let parts = tail
+        .split(" <")
+        .skip(1)
+        .filter_map(|part| part.split_once('>').map(|(part, _)| part));
     let mut ident = String::with_capacity(path.len());
-    for c in path.chars() {
+    for c in path
+        .chars()
+        .chain(parts.flat_map(|part| std::iter::once(' ').chain(part.chars())))
+    {
         if c.is_ascii_alphanumeric() || c == '$' {
             ident.push(c);
         } else if !ident.is_empty() && !ident.ends_with('_') {
@@ -408,6 +421,114 @@ pub fn module_ident(id: &str) -> String {
         ident.push_str("anonymous");
     }
     ident
+}
+
+/// Where the bindings of one `esmReexport` group come from.
+pub enum ReexportSource<'b, 'a> {
+    /// A module id the runtime imports.
+    Module(String),
+    /// An already imported namespace value.
+    Namespace(&'b Expression<'a>),
+}
+
+/// One group of `__turbopack_context__.S([…])`: a source and its
+/// `(exported name, imported name)` pairs.
+pub struct ReexportGroup<'b, 'a> {
+    pub source: ReexportSource<'b, 'a>,
+    pub pairs: Vec<(String, String)>,
+}
+
+/// The groups of `__turbopack_context__.S(list, id?)`, read like the runtime's
+/// `esmReexport` (`shared/runtime/runtime-utils.ts`): each group is a head (a
+/// module id or a namespace value), then `exported, imported` name pairs (or
+/// one string joining them with commas), ended by `0` or the end of the list.
+/// `None` unless every group reads.
+pub fn reexport_groups<'b, 'a>(list: &'b ArrayExpression<'a>) -> Option<Vec<ReexportGroup<'b, 'a>>> {
+    let mut groups = Vec::new();
+    let mut elements = list.elements.iter();
+    while let Some(head) = elements.next() {
+        let head = head.as_expression()?;
+        let source = module_id(head).map_or(ReexportSource::Namespace(head), ReexportSource::Module);
+        let mut names = Vec::new();
+        for element in elements.by_ref() {
+            match element {
+                ArrayExpressionElement::NumericLiteral(end) if end.value == 0.0 => break,
+                ArrayExpressionElement::StringLiteral(name) => names.push(name.value.to_string()),
+                _ => return None,
+            }
+        }
+        if let [joined] = names.as_slice() {
+            names = joined.split(',').map(str::to_string).collect();
+        }
+        if names.len() % 2 != 0 {
+            return None;
+        }
+        let pairs = names
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[exported, imported]| (exported.clone(), imported.clone()))
+            .collect();
+        groups.push(ReexportGroup { source, pairs });
+    }
+    Some(groups)
+}
+
+/// The map of a `require.context` module, `{ "./a.js": { id: () => ID, module: () => … } }`
+/// (`turbopack-ecmascript/src/references/require_context.rs`), as
+/// `(key, module id)` pairs. `None` unless every property has that shape.
+pub fn context_map(obj: &ObjectExpression<'_>) -> Option<Vec<(String, String)>> {
+    let mut entries = Vec::with_capacity(obj.properties.len());
+    for prop in &obj.properties {
+        let ObjectPropertyKind::ObjectProperty(prop) = prop else {
+            return None;
+        };
+        let key = prop.key.static_name()?;
+        let Expression::ObjectExpression(entry) = prop.value.without_parentheses() else {
+            return None;
+        };
+        let id = entry.properties.iter().find_map(|p| match p {
+            ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("id") => {
+                match p.value.without_parentheses() {
+                    Expression::ArrowFunctionExpression(arrow) => arrow.get_expression().and_then(module_id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })?;
+        let has_module = entry
+            .properties
+            .iter()
+            .any(|p| matches!(p, ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("module")));
+        if !has_module {
+            return None;
+        }
+        entries.push((key.to_string(), id));
+    }
+    (!entries.is_empty()).then_some(entries)
+}
+
+/// The entry name of the Next.js edge wrapper's
+/// `self._ENTRIES["middleware_<page>"] = new Proxy(modProm, { get(innerModProm, name) {…} })`
+/// (`packages/next/src/build/templates/edge-wrapper.js`, emitted by
+/// `crates/next-core/src/next_edge/entry.rs`), with the proxy.
+pub fn edge_entry<'b, 'a>(assign: &'b AssignmentExpression<'a>) -> Option<(Cow<'b, str>, &'b NewExpression<'a>)> {
+    if assign.operator != AssignmentOperator::Assign {
+        return None;
+    }
+    let (object, name) = match &assign.left {
+        AssignmentTarget::StaticMemberExpression(m) => (&m.object, Cow::Borrowed(m.property.name.as_str())),
+        AssignmentTarget::ComputedMemberExpression(m) => (&m.object, Cow::from(m.static_property_name()?)),
+        _ => return None,
+    };
+    if global_name(object).as_deref() != Some("_ENTRIES") {
+        return None;
+    }
+    let Expression::NewExpression(proxy) = assign.right.without_parentheses() else {
+        return None;
+    };
+    let is_proxy = matches!(&proxy.callee, Expression::Identifier(id) if id.name == "Proxy");
+    (is_proxy && proxy.arguments.len() == 2).then_some((name, proxy))
 }
 
 /// One binding of an `esmExport` list.

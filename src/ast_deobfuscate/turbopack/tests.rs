@@ -259,7 +259,12 @@ fn module_ident_drops_root_layer_and_package_prefix() {
         module_ident(
             "[project]/node_modules/.pnpm/next@16.0.0/node_modules/next/dist/client/index.js [app-client] (ecmascript) <locals>"
         ),
-        "next_dist_client_index_js"
+        "next_dist_client_index_js_locals"
+    );
+    assert_eq!(
+        module_ident("[project]/a.js { X => \"[project]/b.js <locals>\" } [rsc] (ecmascript) <export foo>"),
+        "a_js_export_foo",
+        "parts inside a nested id do not count"
     );
     assert_eq!(module_ident("[externals]/react [external] (react, cjs)"), "react");
     assert_eq!(
