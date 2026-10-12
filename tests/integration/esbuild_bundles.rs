@@ -1,4 +1,5 @@
-//! esbuild / Bun runtime helpers: export-name recovery and bundler labels.
+//! esbuild / Bun runtime helpers and native ES module exports: export-name
+//! recovery and bundler labels.
 
 use js_beautify_rs::{AstDeobfuscator, ParseGoal};
 
@@ -132,4 +133,52 @@ fn names_the_lazy_modules_of_an_esbuild_0_28_bundle() {
     assert!(out.contains("var require_1 = __commonJS("), "{out}");
     assert!(out.contains("// esbuild ESM module: init_1"), "{out}");
     assert!(out.contains("// esbuild CommonJS module: require_1"), "{out}");
+}
+
+fn deobfuscate_module(code: &str) -> String {
+    AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
+        .deobfuscate(code)
+        .expect("deobfuscate")
+}
+
+#[test]
+fn names_minified_locals_after_their_native_export_names() {
+    // The export tail of a minified vite/rollup chunk.
+    let out = deobfuscate_module(
+        "function a(){return 1}var b=class{};const c=()=>a();let Button=0;\
+         export{a as useThing,b as Store,c as Button,Button as Old};",
+    );
+    assert!(out.contains("function useThing()"), "{out}");
+    assert!(out.contains("var Store = class"), "{out}");
+    assert!(out.contains("const Button$1 = () => useThing()"), "{out}");
+    assert!(
+        out.contains("useThing, Store, Button$1 as Button, Button as Old"),
+        "public names must not change: {out}"
+    );
+}
+
+#[test]
+fn keeps_locals_whose_export_name_says_nothing_or_cannot_be_bound() {
+    let out = deobfuscate_module(
+        "var r=1,s=2,t=3,u=4;export{r as a,s as \"foo-bar\",t as delete,u as default};export const v=5;",
+    );
+    assert!(out.contains("r as a"), "{out}");
+    assert!(out.contains("s as \"foo-bar\""), "{out}");
+    assert!(out.contains("t as delete"), "{out}");
+    assert!(out.contains("export const v = 5"), "{out}");
+}
+
+#[test]
+fn keeps_native_export_locals_an_eval_can_read() {
+    let out = deobfuscate_module("var a=1;function f(c){return eval(c)}export{a as Count,f as run};");
+    assert!(out.contains("a as Count"), "{out}");
+}
+
+#[test]
+fn names_the_runtime_helpers_a_split_chunk_exports() {
+    // `esbuild --splitting --format=esm --minify`: the shared chunk exports its helpers.
+    let out = deobfuscate_module("var s=(t,r)=>()=>(t&&(r=t(t=0)),r);export{s as a};");
+    assert!(out.contains("var __esm = "), "{out}");
+    assert!(out.contains("export { __esm as a }"), "{out}");
 }

@@ -15,13 +15,17 @@
 //!    bare `eval(...)` callee form (parenthesized or not) is a direct eval; indirect forms
 //!    (`(0,eval)(x)`, `window.eval(x)`, `new Function(...)`) run in global scope
 //!    and cannot see locals, so they are intentionally *not* flagged.
-//! 2. **Native ES `export <decl>` / `export { x }`** — `export function H(){}`,
-//!    `export const K = 2`, and `export { H }` expose the *binding name itself*
-//!    as the module's public surface (there is no separate alias to preserve
-//!    it). Renaming the binding changes what importers see. `export default …`
-//!    and `export { H as default }` are safe (the public name is always
+//! 2. **Native ES `export <decl>` / `export { x }`** — `export function H(){}`
+//!    and `export const K = 2` expose the *binding name itself* as the module's
+//!    public surface (there is no separate alias to preserve it). Renaming the
+//!    binding changes what importers see. `export default …` and
+//!    `export { H as default }` are safe (the public name is always
 //!    `default`), and `export … from "mod"` re-exports a foreign binding
-//!    (nothing local is exposed by name).
+//!    (nothing local is exposed by name). A specifier `export { H }` keeps its
+//!    exported name when `H` is renamed (codegen prints `export { G as H }`),
+//!    but other passes would make that public name drift away from the
+//!    local, so such bindings stay guarded and are reported in
+//!    [`RenameGuards::specifier_exports`] for the passes that name them.
 //!
 //! 3. **Classic-script globals** — in a script (not a module or `CommonJS`
 //!    body), every top-level binding is shared: `var` and `function` become
@@ -185,6 +189,8 @@ pub struct RenameGuardCollector {
     /// Bindings whose name is observable as a public ES module export, or
     /// through Annex B block-function hoisting.
     preserved: FxHashSet<SymbolId>,
+    /// Bindings exported by an `export { local as name }` specifier.
+    specifier_exports: FxHashSet<SymbolId>,
     source_type: SourceType,
 }
 
@@ -240,7 +246,18 @@ impl RenameGuardCollector {
             eval_names.insert(name);
         }
 
-        RenameGuards { symbols, eval_names }
+        let specifier_exports: FxHashSet<SymbolId> = self
+            .specifier_exports
+            .into_iter()
+            .filter(|symbol| !symbols.contains(symbol))
+            .collect();
+        symbols.extend(&specifier_exports);
+
+        RenameGuards {
+            symbols,
+            eval_names,
+            specifier_exports,
+        }
     }
 }
 
@@ -250,6 +267,10 @@ pub struct RenameGuards {
     pub symbols: FxHashSet<SymbolId>,
     /// Names read by `eval("name")`, which no binding may be renamed to.
     pub eval_names: FxHashSet<String>,
+    /// The bindings in [`Self::symbols`] guarded only because an
+    /// `export { local as name }` specifier exports them. A naming pass may
+    /// rename them anyway: the specifier keeps every public name.
+    pub specifier_exports: FxHashSet<SymbolId>,
 }
 
 /// Runs [`RenameGuardCollector`] over `program` and resolves its
@@ -316,7 +337,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
                 && spec.exported.name() != "default"
                 && let Some(symbol_id) = ctx.scoping().get_reference(local.reference_id()).symbol_id()
             {
-                self.preserved.insert(symbol_id);
+                self.specifier_exports.insert(symbol_id);
             }
         }
     }
@@ -431,6 +452,29 @@ mod tests {
         assert!(names.contains("H"), "exported function name must be guarded: {names:?}");
         assert!(names.contains("K"), "exported const name must be guarded: {names:?}");
         assert!(names.contains("q"), "bare-specifier export must be guarded: {names:?}");
+    }
+
+    #[test]
+    fn reports_bindings_only_a_specifier_exports() {
+        let specifier_exports = |code: &str| -> FxHashSet<String> {
+            let alloc = Allocator::default();
+            let mut prog = Parser::new(&alloc, code, SourceType::mjs()).parse().program;
+            let guards = super::guards(&alloc, &mut prog);
+            let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+            assert!(guards.specifier_exports.is_subset(&guards.symbols));
+            guards
+                .specifier_exports
+                .iter()
+                .map(|sym| scoping.symbol_name(*sym).to_string())
+                .collect()
+        };
+        let code = "export const K = 1; let q, r, s; export { q, r as R, K as K2 };";
+        assert_eq!(
+            specifier_exports(code),
+            FxHashSet::from_iter(["q".to_string(), "r".to_string()])
+        );
+        // A top-level eval can read every binding by name.
+        assert!(specifier_exports(&format!("{code} function f(c) {{ eval(c) }}")).is_empty());
     }
 
     #[test]

@@ -6,20 +6,23 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names};
+use crate::ast_deobfuscate::default_export::{DefaultExport, default_export_names, is_minified};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
-use super::names::is_generic_name;
+use super::names::{is_generic_name, is_reserved_word, is_valid_identifier};
 use super::{Ctx, ExportNameMap};
 
 /// Collects mangled→original mappings from calls to the `__export` runtime
-/// helper, whichever name it has, and names the locals behind `default`
-/// exports, of `__export` calls and of native `export default`.
+/// helper, whichever name it has, and from native `export { a as Button }`
+/// specifiers, and names the locals behind `default` exports, of `__export`
+/// calls and of native `export default`.
 pub struct ExportNameCollector {
     /// The bindings of the detected `__export` helpers.
     export_helpers: FxHashSet<SymbolId>,
     /// Map from the resolved exported symbol → original export name.
     name_map: ExportNameMap,
+    /// Minified locals of `export { local as name }` → their export name.
+    specifier_names: ExportNameMap,
     defaults: Vec<DefaultExport>,
     /// esbuild's `// src/file.ts` module comments: (start offset, path).
     module_comments: Vec<(u32, String)>,
@@ -34,6 +37,7 @@ impl ExportNameCollector {
         Self {
             export_helpers,
             name_map: FxHashMap::default(),
+            specifier_names: FxHashMap::default(),
             defaults: Vec::new(),
             module_comments: Vec::new(),
             default_modules: 0,
@@ -53,6 +57,18 @@ impl ExportNameCollector {
     #[must_use]
     pub fn into_map(self) -> ExportNameMap {
         self.name_map
+    }
+
+    /// The names from `__export` calls and default exports, and separately
+    /// the export names of minified `export { local as name }` specifier
+    /// locals. Renaming such a local to its export name keeps the public name
+    /// (`export { Button }`), but the rename guards protect it, so the caller
+    /// applies these only to [`RenameGuards::specifier_exports`].
+    ///
+    /// [`RenameGuards::specifier_exports`]: crate::ast_deobfuscate::rename_guards::RenameGuards::specifier_exports
+    #[must_use]
+    pub fn into_maps(self) -> (ExportNameMap, ExportNameMap) {
+        (self.name_map, self.specifier_names)
     }
 
     #[must_use]
@@ -138,6 +154,14 @@ impl ExportNameCollector {
     }
 }
 
+/// Whether an export name can become its minified local's name: an identifier
+/// that is not a reserved word and longer than the one or two characters
+/// rollup and esbuild give the exports code-split chunks share
+/// (`export { r as a }` says nothing about `r`).
+fn is_informative_local_name(name: &str) -> bool {
+    is_valid_identifier(name) && !is_reserved_word(name) && name.chars().count() > 2
+}
+
 /// `src/components/Button.tsx`: the text of an esbuild module comment.
 fn is_module_path(text: &str) -> bool {
     const EXTENSIONS: [&str; 12] = [
@@ -174,14 +198,22 @@ impl<'a> Traverse<'a, DeobfuscateState> for ExportNameCollector {
         self.try_extract_from_call(call, ctx);
     }
 
-    /// `export { local as default }`
+    /// `export { local as default }`, `export { local as name }`
     fn enter_export_named_declaration(&mut self, export: &mut ExportNamedDeclaration<'a>, ctx: &mut Ctx<'a>) {
         for spec in &export.specifiers {
-            if let ModuleExportName::IdentifierReference(local) = &spec.local
-                && spec.exported.name() == "default"
-                && let Some(symbol) = ctx.scoping().get_reference(local.reference_id()).symbol_id()
-            {
+            let ModuleExportName::IdentifierReference(local) = &spec.local else {
+                continue;
+            };
+            let Some(symbol) = ctx.scoping().get_reference(local.reference_id()).symbol_id() else {
+                continue;
+            };
+            let exported = spec.exported.name();
+            if exported == "default" {
                 self.push_default(symbol, None);
+            } else if is_minified(&local.name) && is_informative_local_name(&exported) {
+                self.specifier_names
+                    .entry(symbol)
+                    .or_insert_with(|| exported.to_string());
             }
         }
     }
