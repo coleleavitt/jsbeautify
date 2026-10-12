@@ -1,5 +1,6 @@
 //! Turbopack (Next.js 16) chunks through `extract-modules`, `split-chunks`,
-//! `split-sources` and `-d`.
+//! `split-sources` and `-d`; browser, Node.js and development formats
+//! (fixtures from Turbopack's snapshot tests, see `tests/fixtures/turbopack/`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -152,6 +153,111 @@ fn deobfuscate_names_turbopack_context_imports_and_exports() {
     assert!(
         stdout.contains("(__turbopack_context__, module, exports) =>"),
         "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/turbopack")
+        .join(name)
+}
+
+fn deobfuscate(name: &str) -> (String, String) {
+    let output = jsbeautify(&["-d".as_ref(), fixture(name).as_os_str()]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    for phase in ["19.6", "21.5"] {
+        assert!(
+            stderr.contains(&format!("Phase {phase}: Generated output re-parse succeeded")),
+            "{name}: {stderr}"
+        );
+    }
+    (String::from_utf8_lossy(&output.stdout).into_owned(), stderr)
+}
+
+#[test]
+fn deobfuscate_names_development_browser_chunk_imports_by_path() {
+    let (stdout, stderr) = deobfuscate("dev_browser_chunk.js");
+    assert!(
+        stderr.contains("Phase 0.86: Turbopack check: detected 1 registration(s), 2 module factories"),
+        "{stderr}"
+    );
+    assert!(
+        stdout.contains(r#"var module_foo_index_js = __turbopack_context__.i("[project]/turbopack/crates/turbopack-tests/tests/snapshot/basic/async_chunk/input/node_modules/foo/index.js [test] (ecmascript)");"#),
+        "{stdout}"
+    );
+    assert!(stdout.contains("(0, module_foo_index_js.foo)(true);"), "{stdout}");
+    assert!(!stdout.contains("__TURBOPACK__imported__module__"), "{stdout}");
+}
+
+#[test]
+fn deobfuscate_recognizes_node_chunks_entries_chunk_lists_and_workers() {
+    for (name, detected) in [
+        (
+            "dev_node_chunk.js",
+            "detected 1 registration(s), 1 module factories, Node.js chunk",
+        ),
+        (
+            "node_strict_minified.js",
+            "detected 1 registration(s), 2 module factories, Node.js chunk",
+        ),
+        ("node_entry.js", "detected Node.js entry"),
+        ("dev_chunk_list.js", "detected 1 chunk list(s)"),
+        ("worker_entrypoint.js", "detected worker entrypoint"),
+    ] {
+        let (stdout, stderr) = deobfuscate(name);
+        assert!(
+            stderr.contains(&format!("Phase 0.86: Turbopack check: {detected}")),
+            "{name}: {stderr}"
+        );
+        if name == "node_strict_minified.js" {
+            assert_eq!(stdout.matches("(__turbopack_context__) =>").count(), 2, "{stdout}");
+        }
+    }
+}
+
+#[test]
+fn extract_modules_reexports_node_chunk_factories() {
+    let dir = temp_dir("node-extract");
+    let modules = dir.join("modules");
+    let output = jsbeautify(&[
+        "extract-modules".as_ref(),
+        fixture("node_strict_minified.js").as_os_str(),
+        "-o".as_ref(),
+        modules.as_os_str(),
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Found 2 module factories"), "{stderr}");
+    let lone =
+        read(&modules.join(
+            "module_turbopack_crates_turbopack_tests_tests_snapshot_mangle_exports_single_export_input_lone_js.js",
+        ));
+    assert!(
+        lone.contains("// exports: f\n\"use strict\";\nmodule.exports = [\"[project]/"),
+        "{lone}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn split_chunks_maps_node_entry_chunks_and_modules() {
+    let dir = temp_dir("node-entry");
+    let map = dir.join("map.json");
+    jsbeautify(&[
+        "split-chunks".as_ref(),
+        fixture("node_entry.js").as_os_str(),
+        "-o".as_ref(),
+        dir.join("chunks").as_os_str(),
+        "--chunk-map".as_ref(),
+        map.as_os_str(),
+    ]);
+    let map: serde_json::Value = serde_json::from_str(&read(&map)).expect("chunk map is json");
+    let entry = &map["registrations"][0];
+    assert_eq!(entry["format"], "node-entry");
+    assert_eq!(entry["callee"], r#"require("./[turbopack]_runtime.js")"#);
+    assert_eq!(
+        entry["other_chunks"],
+        serde_json::json!(["output/1jsg_tests_snapshot_runtime_default_build_runtime_input_index_16lz1oyv57e07.js"])
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
