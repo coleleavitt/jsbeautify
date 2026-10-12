@@ -94,6 +94,7 @@ pub(crate) mod param_heuristic;
 pub(crate) mod pass;
 pub(crate) mod post_annotations;
 pub(crate) mod rename_guards;
+pub(crate) mod rename_planner;
 pub(crate) mod return_sequence_split;
 pub(crate) mod self_init_accessor;
 pub(crate) mod sequence_expression_split;

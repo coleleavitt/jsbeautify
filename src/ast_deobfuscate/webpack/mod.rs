@@ -17,14 +17,14 @@
 //!
 //! Runtime property names (`.d`, `.r`, `.n`, `.o`, …) are left untouched: other
 //! chunks reach them by name. Names that would collide with, shadow, or be
-//! captured by another binding get a `$N` suffix (see [`planner`]); bindings
+//! captured by another binding get a `$N` suffix (see
+//! [`crate::ast_deobfuscate::rename_planner`]); bindings
 //! visible to a direct `eval` or a `with` body, and native ES exports, are never
 //! renamed.
 
 mod collector;
-mod planner;
 mod runtime;
-mod shapes;
+pub(super) mod shapes;
 
 #[cfg(test)]
 mod tests;
@@ -35,8 +35,7 @@ use oxc_semantic::SemanticBuilder;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
-use crate::ast_deobfuscate::ExportNameRenamer;
-use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+use crate::ast_deobfuscate::rename_planner::apply_rename_plan;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use collector::NameCollector;
@@ -65,21 +64,10 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
         return;
     }
 
-    let mut guard = RenameGuardCollector::new();
-    traverse_mut_with_ctx(&mut guard, program, &mut ctx);
-    let scoping = ctx.into_scoping();
-    let mut guarded = guard.into_guarded(&scoping);
-    guarded.extend(planner::symbols_visible_from(&opaque_scopes, &scoping));
-
-    let names = planner::assign_names(plan, &guarded, &scoping);
-    let planned = names.len();
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut renamer = ExportNameRenamer::new(names);
-    traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
+    let counts = apply_rename_plan(allocator, program, ctx, plan, &opaque_scopes);
     eprintln!(
-        "[DEOBFUSCATE] Phase 0.85: Renamed {planned} webpack bindings ({} declarations, {} references)",
-        renamer.renamed_decls(),
-        renamer.renamed_refs()
+        "[DEOBFUSCATE] Phase 0.85: Renamed {} webpack bindings ({} declarations, {} references)",
+        counts.planned, counts.declarations, counts.references
     );
 }
 
