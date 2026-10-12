@@ -1,5 +1,5 @@
 use super::tree::{ReversedSource, write_reversed_sources};
-use crate::ast_deobfuscate::bun::{Bundler, detect_bundle_runtime};
+use crate::ast_deobfuscate::bun::Bundler;
 use crate::bun_extract::{ModuleType, split_bundle};
 use crate::turbopack_extract::detect_turbopack_chunk;
 use regex::Regex;
@@ -70,12 +70,11 @@ fn turbopack_sources(bundle_source: &str) -> Vec<ReversedSource> {
 /// Splits the lazy `__esm` / `__commonJS` module wrappers that esbuild and Bun
 /// emit, under a folder named for the bundler the runtime helpers identify.
 fn lazy_module_sources(bundle_source: &str) -> Vec<ReversedSource> {
-    let runtime = detect_bundle_runtime(bundle_source);
-    let split = split_bundle(bundle_source, &runtime.helpers);
+    let split = split_bundle(bundle_source);
     if split.modules.is_empty() {
         return Vec::new();
     }
-    let root = match runtime.bundler {
+    let root = match split.bundler {
         Some(Bundler::Bun) => "synthetic/bun",
         Some(Bundler::Esbuild) => "synthetic/esbuild",
         None => "synthetic/modules",

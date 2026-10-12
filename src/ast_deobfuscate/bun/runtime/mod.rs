@@ -57,6 +57,16 @@ pub use types::{BunHelper, BunHelperMap, BundleRuntime, Bundler};
 /// identify, as the deobfuscation pipeline does in Phase 0.9.
 #[must_use]
 pub fn detect_bundle_runtime(source: &str) -> BundleRuntime {
+    with_bundle_runtime(source, |_, _, collector| collector.into_runtime())
+}
+
+/// Parses `source`, detects its runtime helpers, and hands the program, its
+/// scoping, and the collector (whose helper symbols resolve in that scoping)
+/// to `inspect`.
+pub fn with_bundle_runtime<T: Send>(
+    source: &str,
+    inspect: impl FnOnce(&oxc_ast::ast::Program<'_>, &oxc_semantic::Scoping, BunRuntimeCollector) -> T + Send,
+) -> T {
     crate::stack::run_on_sized_stack(source.len(), || {
         let allocator = oxc_allocator::Allocator::default();
         let mut program = oxc_parser::Parser::new(&allocator, source, oxc_span::SourceType::unambiguous())
@@ -69,7 +79,7 @@ pub fn detect_bundle_runtime(source: &str) -> BundleRuntime {
         let mut ctx = oxc_traverse::ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut collector = BunRuntimeCollector::new();
         oxc_traverse::traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
-        collector.into_runtime()
+        inspect(&program, &ctx.into_scoping(), collector)
     })
 }
 
