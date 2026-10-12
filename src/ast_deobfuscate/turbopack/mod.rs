@@ -69,7 +69,8 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use collector::NameCollector;
 
 /// Rename Turbopack factory, export, import and runtime bindings in `program`.
-/// Inert on other input.
+/// A classic-script Node.js chunk, entry or runtime becomes `CommonJS`, which
+/// is how Node.js loads it. Inert on other input.
 pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
     eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
@@ -111,6 +112,12 @@ pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Pro
         "[DEOBFUSCATE] Phase 0.86: Turbopack check: detected {}",
         detected.join(", ")
     );
+    if found.is_commonjs() && program.source_type.is_script() {
+        // Its top-level bindings are module locals, not globals another
+        // script could read, so they may be renamed.
+        program.source_type = program.source_type.with_commonjs(true);
+        eprintln!("[DEOBFUSCATE] Phase 0.86: Node.js Turbopack file is CommonJS; parsing as commonjs");
+    }
     let (plan, with_scopes) = names.into_plan();
     if plan.is_empty() {
         return;

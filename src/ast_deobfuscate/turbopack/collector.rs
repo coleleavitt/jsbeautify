@@ -175,11 +175,20 @@ pub(super) struct Found {
     pub node_chunks: usize,
     pub chunk_lists: usize,
     pub node_entries: usize,
+    /// The Node.js runtime's `module.exports = (sourcePath) => ({ m, c })`.
+    pub node_runtime_export: bool,
     pub edge_entries: usize,
     pub worker_entrypoint: bool,
 }
 
 impl Found {
+    /// The file is a Node.js chunk, entry or runtime: Node.js `require`s it as
+    /// a `CommonJS` module (`nodejs/runtime/runtime-base.ts`, the Node.js
+    /// entry's `require("…[turbopack]_runtime.js")`, and Next.js's server).
+    pub(super) const fn is_commonjs(&self) -> bool {
+        self.node_chunks > 0 || self.node_entries > 0 || self.node_runtime_export
+    }
+
     pub(super) const fn is_empty(&self) -> bool {
         self.registrations == 0
             && self.chunk_lists == 0
@@ -468,6 +477,7 @@ impl NameCollector {
         }
         if found {
             self.node_runtime = true;
+            self.found.node_runtime_export = true;
             self.plan(source_path, "sourcePath");
         }
         found

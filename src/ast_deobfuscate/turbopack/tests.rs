@@ -463,3 +463,54 @@ fn keeps_authored_runtime_names() {
     assert!(out.contains("let devModuleCache = new Map()"), "{out}");
     assert!(out.contains("function loadChunkInternal(e)"), "{out}");
 }
+
+/// `-d`'s Phase 0.86 on a classic script, returning the output and the
+/// source type the program ends with.
+fn run_script(code: &str) -> (String, SourceType) {
+    let allocator = Allocator::default();
+    let mut program = Parser::new(&allocator, code, SourceType::script()).parse().program;
+    rename_turbopack_bindings(&allocator, &mut program);
+    let out = Codegen::new().build(&program).code;
+    let reparsed = Parser::new(&allocator, &out, program.source_type).parse();
+    assert!(reparsed.diagnostics.is_empty(), "output must parse: {out}");
+    (out, program.source_type)
+}
+
+/// `[turbopack]_runtime.js` (minified Node.js development runtime): Node.js
+/// loads it with `require`, so its top-level names are module locals, and the
+/// on-demand loader declared inside `if (…) {}` is renamed with its Annex B `var`.
+#[test]
+fn node_runtime_script_is_commonjs() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}c.l=a,c.w=1;let h=globalThis.__turbopack_server_hmr_handlers__;if(void 0!==globalThis.__turbopack_ensure_chunk__){function o(e){return a.call(this,e)}c.l=o}function m(p,i){}function r(p,d){}module.exports=p=>({m:i=>m(p,i),c:d=>r(p,d)});";
+    let (out, source_type) = run_script(code);
+    assert!(source_type.is_commonjs(), "{source_type:?}");
+    for expected in [
+        "function Context(e, t)",
+        "function loadChunkAsync(e)",
+        "function loadChunkAsyncOnDemand(e) {\n\t\treturn loadChunkAsync.call(this, e);",
+        "contextPrototype.l = loadChunkAsyncOnDemand",
+        "function getOrInstantiateRuntimeModule(p, i)",
+        "(sourcePath) => ({",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+}
+
+#[test]
+fn browser_runtime_script_keeps_its_globals() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}c.l=a;";
+    let (out, source_type) = run_script(code);
+    assert!(source_type.is_script(), "{source_type:?}");
+    assert!(out.contains("function g(e, t)"), "{out}");
+    assert!(out.contains("function a(e)"), "{out}");
+}
+
+#[test]
+fn node_chunks_and_entries_are_commonjs() {
+    let (_, chunk) = run_script(r"module.exports=[1,e=>{e.v(1)}];");
+    assert!(chunk.is_commonjs());
+    let (_, entry) = run_script(
+        r#"var R=require("./[turbopack]_runtime.js")("server/app/page.js");R.c("server/chunks/a.js");module.exports=R.m(1).exports;"#,
+    );
+    assert!(entry.is_commonjs());
+}
