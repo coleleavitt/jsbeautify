@@ -1,5 +1,6 @@
 use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
-use oxc_ast::ast::{BindingPattern, Expression, Statement, VariableDeclarator};
+use oxc_ast::ast::{BindingPattern, Expression, Program, Statement, VariableDeclarator};
+use oxc_ast_visit::{Visit, walk};
 use oxc_span::SPAN;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
@@ -34,29 +35,65 @@ impl DeadVarEliminator {
     }
 
     fn should_remove_declarator(&self, decl: &VariableDeclarator<'_>) -> bool {
-        let BindingPattern::BindingIdentifier(ident) = &decl.id else {
-            return false;
-        };
-        let Some(symbol_id) = ident.symbol_id.get() else {
-            return false;
-        };
-        if !self.dead_vars.contains(&symbol_id) {
-            return false;
-        }
-        decl.init.as_ref().is_none_or(Self::is_proven_safe_initializer)
+        is_removable(decl, &self.dead_vars)
     }
+}
 
-    /// Only expressions whose evaluation cannot perform user code, resolve a
-    /// binding, access `this`, coerce a value, iterate, or throw are removable.
-    fn is_proven_safe_initializer(expr: &Expression<'_>) -> bool {
-        match expr {
-            Expression::NumericLiteral(_)
-            | Expression::StringLiteral(_)
-            | Expression::BooleanLiteral(_)
-            | Expression::NullLiteral(_) => true,
-            Expression::ParenthesizedExpression(paren) => Self::is_proven_safe_initializer(&paren.expression),
-            _ => false,
+/// Whether [`DeadVarEliminator`] would remove a declarator of `program`:
+/// the same decision, made without changing the program.
+pub(super) fn removes_any(program: &Program<'_>, dead_vars: &FxHashSet<SymbolId>) -> bool {
+    struct Probe<'d> {
+        dead_vars: &'d FxHashSet<SymbolId>,
+        found: bool,
+    }
+    impl<'a> Visit<'a> for Probe<'_> {
+        fn visit_statement(&mut self, stmt: &Statement<'a>) {
+            if self.found {
+                return;
+            }
+            if let Statement::VariableDeclaration(var_decl) = stmt
+                && var_decl
+                    .declarations
+                    .iter()
+                    .any(|decl| is_removable(decl, self.dead_vars))
+            {
+                self.found = true;
+                return;
+            }
+            walk::walk_statement(self, stmt);
         }
+    }
+    let mut probe = Probe {
+        dead_vars,
+        found: false,
+    };
+    probe.visit_program(program);
+    probe.found
+}
+
+fn is_removable(decl: &VariableDeclarator<'_>, dead_vars: &FxHashSet<SymbolId>) -> bool {
+    let BindingPattern::BindingIdentifier(ident) = &decl.id else {
+        return false;
+    };
+    let Some(symbol_id) = ident.symbol_id.get() else {
+        return false;
+    };
+    if !dead_vars.contains(&symbol_id) {
+        return false;
+    }
+    decl.init.as_ref().is_none_or(is_proven_safe_initializer)
+}
+
+/// Only expressions whose evaluation cannot perform user code, resolve a
+/// binding, access `this`, coerce a value, iterate, or throw are removable.
+fn is_proven_safe_initializer(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_) => true,
+        Expression::ParenthesizedExpression(paren) => is_proven_safe_initializer(&paren.expression),
+        _ => false,
     }
 }
 

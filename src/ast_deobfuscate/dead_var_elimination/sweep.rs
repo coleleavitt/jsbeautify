@@ -9,6 +9,7 @@ use rustc_hash::FxHashSet;
 use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
+use super::eliminator::removes_any;
 use super::{DeadVarCollector, DeadVarEliminator};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,15 @@ pub fn eliminate_dead_vars<'a>(allocator: &'a Allocator, program: &mut Program<'
     let candidate_symbols = dead_vars.len();
     if dead_vars.is_empty() {
         return DeadVarSweepResult::default();
+    }
+    // Validation re-prints and re-parses the whole program; skip it when no
+    // candidate is removable anyway.
+    if !removes_any(program, &dead_vars) {
+        return DeadVarSweepResult {
+            candidate_symbols,
+            removed_declarators: 0,
+            rejected: false,
+        };
     }
 
     validate_and_commit(allocator, program, candidate_symbols, None)

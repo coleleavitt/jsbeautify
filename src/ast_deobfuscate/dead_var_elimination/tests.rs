@@ -284,6 +284,23 @@ fn preserves_side_effectful_initializer_and_reports_no_rewrite() {
 }
 
 #[test]
+fn for_head_declarator_is_a_candidate_but_not_removed() {
+    let result = run_elimination("for (var unused = 0; ; ) { break; }");
+    assert!(result.output.contains("unused = 0"), "got: {}", result.output);
+    assert_eq!(result.candidate_symbols, 1);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn removes_pure_declarator_nested_in_a_function_beside_an_unremovable_one() {
+    let result = run_elimination("let kept = effect(); export function f() { if (x) { let unused = 1; } }");
+    assert!(!result.output.contains("unused"), "got: {}", result.output);
+    assert!(result.output.contains("kept = effect()"), "got: {}", result.output);
+    assert_eq!(result.candidate_symbols, 2);
+    assert_eq!(result.removed_declarators, 1);
+}
+
+#[test]
 fn preserves_missing_identifier_initializer() {
     let result = run_elimination("let unused = definitelyMissing;");
     assert!(result.output.contains("definitelyMissing"), "got: {}", result.output);
