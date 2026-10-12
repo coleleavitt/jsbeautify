@@ -1,19 +1,26 @@
 use oxc_ast::ast::{
-    BinaryOperator, BindingPattern, CallExpression, Expression, ForOfStatement, ForStatementLeft, Statement,
+    Argument, BinaryOperator, BindingPattern, CallExpression, Expression, ForOfStatement, ForStatementLeft,
+    ObjectPropertyKind, Statement,
 };
 
+use super::ast_utils::{arrow_contains, block_body, expression_body, expression_contains, is_ident, param_names};
 use super::descriptor::{
-    argument_is_ident, call_callee_is_helper_or_object_property, expression_is_ident, expression_is_string,
-    stmt_has_reexport_define_property_copy,
+    argument_is_ident, call_callee_is_helper, call_callee_is_helper_or_object_property, expression_is_ident,
+    expression_is_string, stmt_has_reexport_define_property_copy,
 };
 use super::string_search::{body_contains_esmodule_check, stmt_returns_ident};
 use super::types::{BunHelper, BunHelperMap};
 
-/// `__copyProps`: `(H, $, q) => { var K = __getOwnPropNames($); for (let _ of K) ... }`.
+/// `__copyProps`, Bun's or esbuild's.
+pub(super) fn is_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    is_bun_copyprops_helper(arrow, helpers) || is_esbuild_copyprops_helper(arrow, helpers)
+}
+
+/// Bun's `__copyProps`: `(H, $, q) => { var K = __getOwnPropNames($); for (let _ of K) ... }`.
 /// Exactly 3 params (simple identifiers, not destructuring), block body,
 /// first statement is `VarDecl` with a `CallExpression` init, has for-of,
 /// does NOT contain `__esModule` (which would indicate __toESM instead).
-pub(super) fn is_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+fn is_bun_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
     if !(3..=4).contains(&arrow.params.items.len()) || arrow.body.is_expression() {
         return false;
     }
@@ -42,10 +49,84 @@ pub(super) fn is_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<
     has_for_of_over_keys && !body_contains_esmodule_check(&body.statements)
 }
 
-/// `__reExport`: Bun's 3-param export-star helper. It skips the `"default"`
+/// esbuild's `__copyProps`, which defines a getter on `to` for each own key of
+/// `from` (a `for…of` loop, or an indexed loop with `.bind` getters below ES6):
+///
+/// ```js
+/// (to, from, except, desc) => {
+///   if (from && typeof from === "object" || typeof from === "function")
+///     for (let key of __getOwnPropNames(from))
+///       if (!__hasOwnProp.call(to, key) && key !== except)
+///         __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+///   return to;
+/// }
+/// ```
+fn is_esbuild_copyprops_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    let Some(params) = param_names(arrow) else {
+        return false;
+    };
+    let (Some(body), 3..=4) = (block_body(arrow), params.len()) else {
+        return false;
+    };
+    let (to, from) = (params[0], params[1]);
+    let returns_to = body.statements.last().is_some_and(|stmt| stmt_returns_ident(stmt, to));
+    returns_to
+        && arrow_contains(arrow, |expr| {
+            matches!(expr, Expression::CallExpression(call)
+                if call_callee_is_helper_or_object_property(call, helpers, BunHelper::GetOwnPropNames, "getOwnPropertyNames")
+                    && call.arguments.first().is_some_and(|arg| argument_is_ident(arg, from)))
+        })
+        && arrow_contains(
+            arrow,
+            |expr| matches!(expr, Expression::CallExpression(call) if is_getter_copy(call, helpers, to, from)),
+        )
+}
+
+/// `__defProp(to, key, { get: … from[…] …, … })`.
+fn is_getter_copy(call: &CallExpression<'_>, helpers: &BunHelperMap, to: &str, from: &str) -> bool {
+    let [target, _, Argument::ObjectExpression(descriptor)] = call.arguments.as_slice() else {
+        return false;
+    };
+    let reads_from = |expr: &Expression<'_>| {
+        expression_contains(
+            expr,
+            |read| matches!(read, Expression::ComputedMemberExpression(member) if is_ident(&member.object, from)),
+        )
+    };
+    call_callee_is_helper_or_object_property(call, helpers, BunHelper::DefProp, "defineProperty")
+        && argument_is_ident(target, to)
+        && descriptor.properties.iter().any(|property| {
+            matches!(property, ObjectPropertyKind::ObjectProperty(prop)
+                if prop.key.static_name().is_some_and(|key| key == "get") && reads_from(&prop.value))
+        })
+}
+
+/// `__reExport`: esbuild's `(target, mod, secondTarget) => (__copyProps(target, mod, "default"),
+/// secondTarget && __copyProps(secondTarget, mod, "default"))`, or Bun's
+/// block-bodied helper below.
+pub(super) fn is_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    is_esbuild_reexport_helper(arrow, helpers) || is_bun_reexport_helper(arrow, helpers)
+}
+
+fn is_esbuild_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    let Some(&[target, module, _]) = param_names(arrow).as_deref() else {
+        return false;
+    };
+    let Some(Expression::SequenceExpression(seq)) = expression_body(arrow) else {
+        return false;
+    };
+    let [Expression::CallExpression(copy), Expression::LogicalExpression(_)] = seq.expressions.as_slice() else {
+        return false;
+    };
+    call_callee_is_helper(copy, helpers, BunHelper::CopyProps)
+        && matches!(copy.arguments.as_slice(), [t, m, Argument::StringLiteral(except)]
+            if argument_is_ident(t, target) && argument_is_ident(m, module) && except.value == "default")
+}
+
+/// Bun's 3-param export-star helper. It skips the `"default"`
 /// key and conditionally copies descriptors into a second target before
 /// returning the third parameter.
-pub(super) fn is_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+fn is_bun_reexport_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
     if arrow.params.items.len() != 3 || arrow.body.is_expression() {
         return false;
     }

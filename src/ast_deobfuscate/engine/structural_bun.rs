@@ -119,8 +119,8 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     let mut collector = BunRuntimeCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     drop(ctx);
-    let mut helper_symbols = collector.helper_symbols().clone();
-    let runtime = collector.into_runtime();
+    let helper_symbols = collector.helper_symbols().clone();
+    let mut runtime = collector.into_runtime();
     eprintln!(
         "[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check: {}",
         runtime_check_result(&runtime)
@@ -132,16 +132,28 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
             eprintln!("[DEOBFUSCATE] Phase 0.9: {name} = {}", helper.canonical());
         }
         let guards = rename_guards::guards(allocator, program);
-        helper_symbols.retain(|symbol, _| !guards.symbols.contains(symbol));
+        // A helper a code-split chunk exports (`export { __esm as a }`) keeps its export name.
         let desired = helper_symbols
-            .into_iter()
-            .map(|(symbol, helper)| (symbol, helper.canonical().to_string()))
+            .iter()
+            .filter(|(symbol, _)| !guards.symbols.contains(symbol) || guards.specifier_exports.contains(symbol))
+            .map(|(symbol, helper)| (*symbol, helper.canonical().to_string()))
             .collect();
         let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
         let globals: FxHashSet<&str> = scoping.root_unresolved_references().keys().map(Ident::as_str).collect();
         let reserved = guards.eval_names.iter().map(String::as_str).collect();
         let mut plan = bun::export_renamer::make_names_unique(desired, &scoping, &reserved);
         plan.retain(|_, name| !globals.contains(name.as_str()));
+        // Later phases (Phase 19's module annotation) find the helpers by these names.
+        runtime.helpers = helper_symbols
+            .iter()
+            .map(|(symbol, helper)| {
+                let name = plan
+                    .get(symbol)
+                    .cloned()
+                    .unwrap_or_else(|| scoping.symbol_name(*symbol).to_string());
+                (name, *helper)
+            })
+            .collect();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut renamer = BunRuntimeRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
@@ -155,9 +167,10 @@ fn rename_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     runtime
 }
 
-/// Phase 0.95: renames the locals passed to the `__export` helper to their
-/// export names, and minified `default` export locals (of `__export` and of
-/// native `export default`) per [`crate::ast_deobfuscate::default_export`].
+/// Phase 0.95: renames the locals passed to the `__export` helper and the
+/// minified locals of native `export { local as name }` to their export
+/// names, and minified `default` export locals (of `__export` and of native
+/// `export default`) per [`crate::ast_deobfuscate::default_export`].
 fn rename_exports<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
@@ -174,16 +187,22 @@ fn rename_exports<'a>(
     let mut collector = ExportNameCollector::new(export_helpers);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
     drop(ctx);
-    let mut export_map = collector.into_map();
+    let (mut export_map, specifier_names) = collector.into_maps();
 
     // Soundness guard: never rename a binding observable to a direct
     // `eval`, exposed as a native ES export, or a classic-script global
-    // (see `rename_guards`).
-    let eval_names = if export_map.is_empty() {
+    // (see `rename_guards`). A local exported only by `export { local as name }`
+    // may take its export name: the specifier keeps the public name.
+    let eval_names = if export_map.is_empty() && specifier_names.is_empty() {
         FxHashSet::default()
     } else {
         let guards = rename_guards::guards(allocator, program);
         export_map.retain(|sym, _| !guards.symbols.contains(sym));
+        export_map.extend(
+            specifier_names
+                .into_iter()
+                .filter(|(sym, _)| guards.specifier_exports.contains(sym)),
+        );
         guards.eval_names
     };
 

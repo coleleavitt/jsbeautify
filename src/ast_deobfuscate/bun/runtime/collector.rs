@@ -7,7 +7,8 @@ use rustc_hash::FxHashMap;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
-use super::ast_utils::{decl_binding, unwrap_cjs_iife};
+use super::ast_utils::{decl_binding, unwrap_cjs_iife, unwrap_iife};
+use super::lowering::{is_require_shim, lowering_helper};
 use super::matchers::{
     constructs_weak_map, export_descriptor_keys, is_commonjs_helper, is_esm_helper, is_export_helper,
     is_name_helper_arrow, is_tocommonjs_helper, is_toesm_helper,
@@ -89,8 +90,10 @@ impl BunRuntimeCollector {
         self.map.entry(binding.name.to_string()).or_insert(helper);
     }
 
-    /// Walk a list of statements and detect helpers. Used both for top-level
-    /// program body and for the body of a Bun CJS-wrapper IIFE.
+    /// Walk a list of statements and detect helpers. Used for the top-level
+    /// program body, the body of a Bun CJS-wrapper IIFE, and the body of an
+    /// esbuild `--format=iife` bundle (`(() => { … })()`, or
+    /// `var name = (() => { … })()` with `--global-name`).
     fn scan_statements(&mut self, stmts: &[Statement<'_>]) {
         for stmt in stmts {
             match stmt {
@@ -100,6 +103,16 @@ impl BunRuntimeCollector {
                         self.try_object_proto_alias(decl);
                         self.try_destructured_object_alias(decl);
                         self.try_arrow_helper(decl);
+                        if is_require_shim(decl)
+                            && let Some(binding) = decl_binding(decl)
+                        {
+                            self.record(binding, BunHelper::Require);
+                        }
+                    }
+                    if let [decl] = var_decl.declarations.as_slice()
+                        && let Some(body_stmts) = decl.init.as_ref().and_then(unwrap_iife)
+                    {
+                        self.scan_statements(body_stmts);
                     }
                 }
                 Statement::FunctionDeclaration(func) => {
@@ -107,7 +120,7 @@ impl BunRuntimeCollector {
                 }
                 Statement::ExpressionStatement(es) => {
                     // Look inside (function(...) { ... })(...) — Bun's CJS wrapper.
-                    if let Some(body_stmts) = unwrap_cjs_iife(&es.expression) {
+                    if let Some(body_stmts) = unwrap_cjs_iife(&es.expression).or_else(|| unwrap_iife(&es.expression)) {
                         self.scan_statements(body_stmts);
                     }
                 }
@@ -116,7 +129,7 @@ impl BunRuntimeCollector {
         }
     }
 
-    /// `var X = Object.create;` → `__create`
+    /// `var X = Object.create;` → `__create`, also `Reflect.get` and `Math.pow`.
     fn try_object_alias(&mut self, decl: &VariableDeclarator<'_>) {
         let Some(binding) = decl_binding(decl) else { return };
         let Some(init) = &decl.init else { return };
@@ -124,15 +137,14 @@ impl BunRuntimeCollector {
             return;
         };
         let Expression::Identifier(obj) = &m.object else { return };
-        if obj.name.as_str() != "Object" {
-            return;
-        }
-        let helper = match m.property.name.as_str() {
-            "create" => BunHelper::Create,
-            "getPrototypeOf" => BunHelper::GetProtoOf,
-            "defineProperty" => BunHelper::DefProp,
-            "getOwnPropertyNames" => BunHelper::GetOwnPropNames,
-            "getOwnPropertyDescriptor" => BunHelper::GetOwnPropDesc,
+        let helper = match (obj.name.as_str(), m.property.name.as_str()) {
+            ("Object", property) => match object_function_helper(property) {
+                Some(helper) => helper,
+                None => return,
+            },
+            ("Reflect", "get") => BunHelper::ReflectGet,
+            ("Reflect", "set") => BunHelper::ReflectSet,
+            ("Math", "pow") => BunHelper::Pow,
             _ => return,
         };
         self.record(binding, helper);
@@ -156,6 +168,7 @@ impl BunRuntimeCollector {
         }
         let helper = match outer.property.name.as_str() {
             "hasOwnProperty" => BunHelper::HasOwnProp,
+            "propertyIsEnumerable" => BunHelper::PropIsEnum,
             _ => return,
         };
         self.record(binding, helper);
@@ -176,19 +189,14 @@ impl BunRuntimeCollector {
             let BindingPattern::BindingIdentifier(val_ident) = &prop.value else {
                 continue;
             };
-            let helper = match key_name.as_ref() {
-                "create" => BunHelper::Create,
-                "getPrototypeOf" => BunHelper::GetProtoOf,
-                "defineProperty" => BunHelper::DefProp,
-                "getOwnPropertyNames" => BunHelper::GetOwnPropNames,
-                "getOwnPropertyDescriptor" => BunHelper::GetOwnPropDesc,
-                _ => continue,
-            };
-            self.record(val_ident, helper);
+            if let Some(helper) = object_function_helper(key_name.as_ref()) {
+                self.record(val_ident, helper);
+            }
         }
     }
 
-    /// Match arrow-function helpers: `__esm`, `__commonJS`, `__toESM`, `__toCommonJS`, `__export`.
+    /// Match arrow-function helpers: `__esm`, `__commonJS`, `__toESM`, `__toCommonJS`, `__export`,
+    /// `__reExport`, `__copyProps`, `__name`, and the [`lowering_helper`]s.
     fn try_arrow_helper(&mut self, decl: &VariableDeclarator<'_>) {
         let Some(binding) = decl_binding(decl) else { return };
         let Some(init) = &decl.init else { return };
@@ -209,18 +217,20 @@ impl BunRuntimeCollector {
                 self.esbuild_evidence = true;
             }
             self.record(binding, BunHelper::Export);
-        } else if is_toesm_helper(arrow) {
+        } else if is_toesm_helper(arrow, &self.map) {
             self.bun_evidence |= constructs_weak_map(arrow);
             self.record(binding, BunHelper::ToEsm);
-        } else if is_tocommonjs_helper(arrow) {
+        } else if is_tocommonjs_helper(arrow, &self.map) {
             self.bun_evidence |= constructs_weak_map(arrow);
             self.record(binding, BunHelper::ToCommonJs);
         } else if is_reexport_helper(arrow, &self.map) {
             self.record(binding, BunHelper::ReExport);
         } else if is_copyprops_helper(arrow, &self.map) {
             self.record(binding, BunHelper::CopyProps);
-        } else if is_name_helper_arrow(arrow) {
+        } else if is_name_helper_arrow(arrow, &self.map) {
             self.record(binding, BunHelper::Name);
+        } else if let Some(helper) = lowering_helper(arrow, &self.map) {
+            self.record(binding, helper);
         }
     }
 
@@ -252,6 +262,22 @@ impl BunRuntimeCollector {
             self.record(id, BunHelper::AccessProp);
         }
     }
+}
+
+/// The helper aliasing `Object.<property>`.
+fn object_function_helper(property: &str) -> Option<BunHelper> {
+    Some(match property {
+        "create" => BunHelper::Create,
+        "freeze" => BunHelper::Freeze,
+        "getPrototypeOf" => BunHelper::GetProtoOf,
+        "defineProperty" => BunHelper::DefProp,
+        "defineProperties" => BunHelper::DefProps,
+        "getOwnPropertyNames" => BunHelper::GetOwnPropNames,
+        "getOwnPropertyDescriptor" => BunHelper::GetOwnPropDesc,
+        "getOwnPropertyDescriptors" => BunHelper::GetOwnPropDescs,
+        "getOwnPropertySymbols" => BunHelper::GetOwnPropSymbols,
+        _ => return None,
+    })
 }
 
 impl Default for BunRuntimeCollector {

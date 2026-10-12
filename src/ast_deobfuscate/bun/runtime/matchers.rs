@@ -1,62 +1,104 @@
-use oxc_ast::ast::{Argument, Expression, ForStatementLeft, NewExpression, ObjectPropertyKind, Statement};
+use oxc_ast::ast::{
+    Argument, ArrowFunctionExpression, Expression, ForStatementLeft, LogicalOperator, NewExpression,
+    ObjectPropertyKind, Statement,
+};
 use oxc_ast_visit::{Visit, walk};
 
+use super::ast_utils::{arrow_contains, expression_body, is_ident, is_string, param_names};
+use super::descriptor::{call_callee_is_helper, call_callee_is_helper_or_object_property};
 use super::string_search::{
     body_calls_define_property_with_name, body_contains_esmodule_check, body_contains_esmodule_string,
 };
+use super::types::{BunHelper, BunHelperMap};
 
-/// `__esm`: `(H, $) => () => (H && ($ = H(H = 0)), $)` (plus paren variants).
-pub(super) fn is_esm_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> bool {
-    if arrow.params.items.len() != 2 || !arrow.body.is_expression() {
-        return false;
-    }
-    let Some(inner) = inner_arrow_body_expr(arrow) else {
+/// `__esm`: the returned function evaluates the module once, `fn && (res = fn(fn = 0)), res`.
+pub(super) fn is_esm_helper(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    let Some((params, value)) = lazy_wrapper(arrow) else {
         return false;
     };
-    // inner is the returned expression after paren-unwrap.
-    let Expression::SequenceExpression(seq) = inner else {
+    let Expression::SequenceExpression(seq) = value else {
         return false;
     };
-    if seq.expressions.len() != 2 {
-        return false;
-    }
-    // [0] = LogicalExpression with && operator
-    let Expression::LogicalExpression(logical) = &seq.expressions[0] else {
+    let [Expression::LogicalExpression(logical), result] = seq.expressions.as_slice() else {
         return false;
     };
-    if !matches!(logical.operator, oxc_ast::ast::LogicalOperator::And) {
-        return false;
-    }
-    // [1] = identifier (the result variable)
-    matches!(seq.expressions[1], Expression::Identifier(_))
+    logical.operator == LogicalOperator::And
+        && is_ident(&logical.left, params[0])
+        && matches!(logical.right.without_parentheses(), Expression::AssignmentExpression(assign)
+            if assign.left.get_identifier_name().is_some_and(|name| name == params[1]))
+        && is_ident(result, params[1])
 }
 
-/// `__commonJS`: `(H, $) => () => ($ || H(($ = { exports: {} }).exports, $), $.exports)`
-pub(super) fn is_commonjs_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> bool {
-    if arrow.params.items.len() != 2 || !arrow.body.is_expression() {
+/// `__commonJS`: the returned function runs the module once and returns its
+/// exports, `mod || cb((mod = { exports: {} }).exports, mod), mod.exports`.
+pub(super) fn is_commonjs_helper(arrow: &ArrowFunctionExpression<'_>) -> bool {
+    let Some((params, value)) = lazy_wrapper(arrow) else {
         return false;
+    };
+    let Expression::SequenceExpression(seq) = value else {
+        return false;
+    };
+    let [
+        Expression::LogicalExpression(logical),
+        Expression::StaticMemberExpression(exports),
+    ] = seq.expressions.as_slice()
+    else {
+        return false;
+    };
+    logical.operator == LogicalOperator::Or
+        && is_ident(&logical.left, params[1])
+        && is_ident(&exports.object, params[1])
+        && exports.property.name == "exports"
+}
+
+/// The parameters of a lazy module wrapper helper (`__esm` / `__commonJS`)
+/// and the value its returned function returns. The returned function is an
+/// arrow when minified and `function __init()` / `function __require()`
+/// otherwise; since esbuild 0.28 its body is wrapped in `try` (and `__esm`
+/// takes an `err` parameter that rethrows the first failure):
+///
+/// ```js
+/// (fn, res) => () => (fn && (res = fn(fn = 0)), res)
+/// (fn, res) => function __init() { return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res }
+/// (fn, res, err) => () => { if (err) throw err[0]; try { return fn && (res = fn(fn = 0)), res } catch (e) { throw err = [e], e } }
+/// (cb, mod) => () => { try { return mod || cb((mod = { exports: {} }).exports, mod), mod.exports } catch (e) { throw mod = 0, e } }
+/// ```
+fn lazy_wrapper<'a, 'b>(arrow: &'a ArrowFunctionExpression<'b>) -> Option<(Vec<&'a str>, &'a Expression<'b>)> {
+    let params = param_names(arrow)?;
+    if !(2..=3).contains(&params.len()) {
+        return None;
     }
-    let Some(inner) = inner_arrow_body_expr(arrow) else {
-        return false;
+    let statements = match expression_body(arrow)? {
+        Expression::ArrowFunctionExpression(inner) if inner.params.is_empty() => match expression_body(inner) {
+            Some(value) if params.len() == 2 => return Some((params, value)),
+            Some(_) => return None,
+            None => &inner.body.as_function_body()?.statements,
+        },
+        Expression::FunctionExpression(inner) if inner.params.is_empty() => &inner.body.as_ref()?.statements,
+        _ => return None,
     };
-    let Expression::SequenceExpression(seq) = inner else {
-        return false;
+    let statements = match (statements.as_slice(), params.get(2)) {
+        ([Statement::IfStatement(rethrow), rest @ ..], Some(err))
+            if rethrow.alternate.is_none()
+                && is_ident(&rethrow.test, err)
+                && matches!(&rethrow.consequent, Statement::ThrowStatement(_)) =>
+        {
+            rest
+        }
+        (statements, None) => statements,
+        _ => return None,
     };
-    if seq.expressions.len() != 2 {
-        return false;
-    }
-    // [0] = `$ || H(...)` — LogicalExpression with || (or LogicalOr)
-    let Expression::LogicalExpression(logical) = &seq.expressions[0] else {
-        return false;
+    let value = match statements {
+        [Statement::ReturnStatement(ret)] => ret.argument.as_ref()?,
+        [Statement::TryStatement(try_stmt)] if try_stmt.handler.is_some() && try_stmt.finalizer.is_none() => {
+            let [Statement::ReturnStatement(ret)] = try_stmt.block.body.as_slice() else {
+                return None;
+            };
+            ret.argument.as_ref()?
+        }
+        _ => return None,
     };
-    if !matches!(logical.operator, oxc_ast::ast::LogicalOperator::Or) {
-        return false;
-    }
-    // [1] = `$.exports` — StaticMemberExpression with property name "exports"
-    let Expression::StaticMemberExpression(member) = &seq.expressions[1] else {
-        return false;
-    };
-    member.property.name.as_str() == "exports"
+    Some((params, value.without_parentheses()))
 }
 
 /// `__export`: `(target, all) => { for (var name in all) __defProp(target, name, { get: all[name], … }) }`
@@ -156,64 +198,61 @@ pub(super) fn constructs_weak_map(arrow: &oxc_ast::ast::ArrowFunctionExpression<
     finder.0
 }
 
-/// `__toESM`: `(mod, isNodeMode, target) => …`. 2-3 params, block body, contains __getProtoOf.
-pub(super) fn is_toesm_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> bool {
-    let n = arrow.params.items.len();
-    if !(2..=3).contains(&n) || arrow.body.is_expression() {
+/// `__toESM`: `(mod, isNodeMode, target) => …` that copies `mod` onto a fresh
+/// object (`__create(__getProtoOf(mod))`) unless it is `__esModule`; Bun's has
+/// a block body, esbuild's is one sequence expression.
+pub(super) fn is_toesm_helper(arrow: &ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    if !(2..=3).contains(&arrow.params.items.len()) {
         return false;
     }
-    // Heuristic: body contains a reference to a getPrototypeOf-aliased function call,
-    // OR contains an `__esModule` string check.
-    body_contains_esmodule_check(
-        &arrow
-            .body
-            .as_function_body()
-            .expect("block body checked above")
-            .statements,
-    )
-}
-
-/// `__toCommonJS`: `from => { … __esModule: true … }`, 1 param.
-pub(super) fn is_tocommonjs_helper(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> bool {
-    if arrow.params.items.len() != 1 || arrow.body.is_expression() {
-        return false;
+    if let Some(body) = arrow.body.as_function_body() {
+        return body_contains_esmodule_check(&body.statements);
     }
-    body_contains_esmodule_string(
-        &arrow
-            .body
-            .as_function_body()
-            .expect("block body checked above")
-            .statements,
-    )
+    arrow_contains(arrow, is_esmodule_read)
+        && arrow_contains(arrow, |expr| {
+            matches!(expr, Expression::CallExpression(call)
+                if call_callee_is_helper_or_object_property(call, helpers, BunHelper::Create, "create"))
+        })
 }
 
-/// `__name` arrow form: `(target, name) => { Object.defineProperty(target, "name", …); return target; }`
-pub(super) fn is_name_helper_arrow(arrow: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> bool {
-    if arrow.params.items.len() != 2 || arrow.body.is_expression() {
+/// `__toCommonJS`: Bun's `from => { … __esModule: true … }`, or esbuild's
+/// `mod => __copyProps(__defProp({}, "__esModule", { value: true }), mod)`.
+pub(super) fn is_tocommonjs_helper(arrow: &ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    let Some(&[param]) = param_names(arrow).as_deref() else {
         return false;
-    }
-    body_calls_define_property_with_name(
-        &arrow
-            .body
-            .as_function_body()
-            .expect("block body checked above")
-            .statements,
-    )
-}
-
-/// Unwraps the "single `ExpressionStatement` returning an arrow whose body is a single
-/// `ExpressionStatement` returning a paren-wrapped sequence" structure used by both
-/// `__esm` and `__commonJS`. Returns the inner-most expression after paren-unwrap.
-fn inner_arrow_body_expr<'a, 'b>(arrow: &'a oxc_ast::ast::ArrowFunctionExpression<'b>) -> Option<&'a Expression<'b>> {
-    let Expression::ArrowFunctionExpression(inner_arrow) = arrow.body.as_expression()? else {
-        return None;
     };
-    if !inner_arrow.params.items.is_empty() {
-        return None;
+    if let Some(Expression::CallExpression(copy)) = expression_body(arrow) {
+        return call_callee_is_helper(copy, helpers, BunHelper::CopyProps)
+            && matches!(copy.arguments.as_slice(), [Argument::CallExpression(target), Argument::Identifier(from)]
+                if from.name == param && target.arguments.get(1).and_then(Argument::as_expression)
+                    .is_some_and(|key| is_string(key, "__esModule")));
     }
-    let inner = inner_arrow.body.as_expression()?;
-    Some(match inner {
-        Expression::ParenthesizedExpression(p) => &p.expression,
-        other => other,
-    })
+    arrow
+        .body
+        .as_function_body()
+        .is_some_and(|body| body_contains_esmodule_string(&body.statements))
+}
+
+/// `__name`: `(target, value) => __defProp(target, "name", { value, configurable: true })`,
+/// or a block body that makes such a call.
+pub(super) fn is_name_helper_arrow(arrow: &ArrowFunctionExpression<'_>, helpers: &BunHelperMap) -> bool {
+    let Some(&[target, _]) = param_names(arrow).as_deref() else {
+        return false;
+    };
+    match expression_body(arrow) {
+        Some(Expression::CallExpression(call)) => {
+            call_callee_is_helper_or_object_property(call, helpers, BunHelper::DefProp, "defineProperty")
+                && matches!(call.arguments.as_slice(), [Argument::Identifier(t), Argument::StringLiteral(key), Argument::ObjectExpression(_)]
+                    if t.name == target && key.value == "name")
+        }
+        Some(_) => false,
+        None => arrow
+            .body
+            .as_function_body()
+            .is_some_and(|body| body_calls_define_property_with_name(&body.statements)),
+    }
+}
+
+fn is_esmodule_read(expr: &Expression<'_>) -> bool {
+    matches!(expr, Expression::StaticMemberExpression(member) if member.property.name == "__esModule")
 }

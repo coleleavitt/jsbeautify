@@ -6,6 +6,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::BunHelper;
@@ -20,7 +21,8 @@ enum BunModuleKind {
 }
 
 /// Finds `var x = __esm(...)` / `var x = __commonJS(...)` module handles, by
-/// the resolved helper symbol of the callee.
+/// the resolved helper symbol of the callee. Handles that already carry a
+/// name (esbuild's unminified `init_foo` / `require_foo`) are kept.
 pub struct BunModuleHandleCollector {
     helpers: FxHashMap<SymbolId, BunHelper>,
     handles: Vec<(SymbolId, BunModuleKind)>,
@@ -85,6 +87,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunModuleHandleCollector {
         let Some(symbol_id) = binding.symbol_id.get() else {
             return;
         };
+        if !is_minified(&binding.name) {
+            return;
+        }
         let Some(Expression::CallExpression(call)) = &decl.init else {
             return;
         };
@@ -221,6 +226,14 @@ mod tests {
             "handle must skip the global init_2: {out}"
         );
         assert!(out.contains("init_2;\ninit_3();"), "got: {out}");
+    }
+
+    #[test]
+    fn keeps_handles_that_already_have_a_name() {
+        let out = run("var init_widget = E(() => {}); var require_lib = C((exports) => {}); var a = E(() => {});");
+        assert!(out.contains("var init_widget = E("), "got: {out}");
+        assert!(out.contains("var require_lib = C("), "got: {out}");
+        assert!(out.contains("var init_1 = E("), "got: {out}");
     }
 
     #[test]

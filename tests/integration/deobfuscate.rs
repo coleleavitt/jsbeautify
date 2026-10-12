@@ -168,7 +168,10 @@ fn names_a_minified_es_module_default_export_local() {
         .expect("deobfuscate");
     assert!(out.contains("const default_export = [{ name: \"asm\" }]"), "{out}");
     assert!(out.contains("default_export as default"), "{out}");
-    assert!(out.contains("e as size"), "a named export keeps its local: {out}");
+    assert!(
+        out.contains("const size = default_export.length") && out.contains("default_export as default, size"),
+        "a named export's local takes its export name: {out}"
+    );
     let allocator = Allocator::default();
     assert!(
         Parser::new(&allocator, &out, SourceType::mjs())

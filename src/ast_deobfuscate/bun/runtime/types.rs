@@ -1,6 +1,7 @@
 use rustc_hash::FxHashMap;
 
-/// Canonical Bun helper names — used as the rename targets.
+/// The runtime helpers esbuild and Bun emit, by their canonical names (the
+/// rename targets); esbuild's are listed in `internal/runtime/runtime.go`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BunHelper {
     Create,
@@ -18,6 +19,32 @@ pub enum BunHelper {
     ToCommonJs,
     Export,
     Name,
+    Freeze,
+    DefProps,
+    GetOwnPropDescs,
+    GetOwnPropSymbols,
+    PropIsEnum,
+    ReflectGet,
+    ReflectSet,
+    Pow,
+    DefNormalProp,
+    SpreadValues,
+    SpreadProps,
+    ObjRest,
+    PublicField,
+    TypeError,
+    AccessCheck,
+    PrivateIn,
+    PrivateGet,
+    PrivateAdd,
+    PrivateSet,
+    PrivateMethod,
+    EarlyAccess,
+    KnownSymbol,
+    Template,
+    Async,
+    Require,
+    Glob,
 }
 
 impl BunHelper {
@@ -39,6 +66,32 @@ impl BunHelper {
             Self::ToCommonJs => "__toCommonJS",
             Self::Export => "__export",
             Self::Name => "__name",
+            Self::Freeze => "__freeze",
+            Self::DefProps => "__defProps",
+            Self::GetOwnPropDescs => "__getOwnPropDescs",
+            Self::GetOwnPropSymbols => "__getOwnPropSymbols",
+            Self::PropIsEnum => "__propIsEnum",
+            Self::ReflectGet => "__reflectGet",
+            Self::ReflectSet => "__reflectSet",
+            Self::Pow => "__pow",
+            Self::DefNormalProp => "__defNormalProp",
+            Self::SpreadValues => "__spreadValues",
+            Self::SpreadProps => "__spreadProps",
+            Self::ObjRest => "__objRest",
+            Self::PublicField => "__publicField",
+            Self::TypeError => "__typeError",
+            Self::AccessCheck => "__accessCheck",
+            Self::PrivateIn => "__privateIn",
+            Self::PrivateGet => "__privateGet",
+            Self::PrivateAdd => "__privateAdd",
+            Self::PrivateSet => "__privateSet",
+            Self::PrivateMethod => "__privateMethod",
+            Self::EarlyAccess => "__earlyAccess",
+            Self::KnownSymbol => "__knownSymbol",
+            Self::Template => "__template",
+            Self::Async => "__async",
+            Self::Require => "__require",
+            Self::Glob => "__glob",
         }
     }
 }
