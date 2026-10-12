@@ -17,6 +17,9 @@ static FIRST_EXPORT_NAME_RE: LazyLock<Regex> =
 /// Derives a module name from the first non-generic export.
 #[must_use]
 pub fn annotate_namespace_modules(code: &str) -> (String, usize) {
+    if !code.contains("__export(") {
+        return (code.to_string(), 0);
+    }
     let mut result = String::with_capacity(code.len() + 4096);
     let mut count = 0usize;
     let mut last_end = 0;

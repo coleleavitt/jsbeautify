@@ -17,6 +17,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Regex pattern for the colon-delimited encrypted blob inside a string literal.
 ///
@@ -41,6 +42,26 @@ const SPLIT_PATTERN: &str = concat!(
     r#"\s*\.\s*join\s*\(\s*""\s*\)\s*\]\s*\(\s*"[:]"\s*\)"#,         //  .join("")](":")"
     r")",
 );
+
+static BLOB_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(BLOB_PATTERN).expect("valid blob regex"));
+static SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(SPLIT_PATTERN).expect("valid split regex"));
+
+/// Whether `source` has a `:` right after 200 or more base64 characters, which
+/// every [`BLOB_PATTERN`] match needs. Most inputs have none, so they skip
+/// compiling the regexes.
+fn has_blob_prefix(source: &str) -> bool {
+    let mut run = 0usize;
+    for &byte in source.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=') {
+            run += 1;
+        } else if byte == b':' && run >= 200 {
+            return true;
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
 
 /// Linear congruential PRNG matching the JavaScript implementation.
 ///
@@ -148,8 +169,11 @@ pub fn decrypt_encrypted_evals(source: &str) -> Option<String> {
     let js_source = extract_script_content(source);
     let working_source = js_source.as_deref().unwrap_or(source);
 
-    let blob_re = Regex::new(BLOB_PATTERN).ok()?;
-    let split_re = Regex::new(SPLIT_PATTERN).ok()?;
+    if !has_blob_prefix(working_source) {
+        return None;
+    }
+    let blob_re = &*BLOB_RE;
+    let split_re = &*SPLIT_RE;
 
     // Find the encrypted blob
     let blob_match = blob_re.find(working_source)?;
@@ -277,6 +301,14 @@ mod tests {
     fn test_no_match_on_normal_js() {
         let normal_js = r#"const x = "hello world"; console.log(x);"#;
         assert!(decrypt_encrypted_evals(normal_js).is_none());
+    }
+
+    #[test]
+    fn blob_prefix_needs_200_base64_chars_before_a_colon() {
+        let blob = |n: usize| format!(r#"x = "{}:1:QQ==";"#, "A".repeat(n));
+        assert!(has_blob_prefix(&blob(200)));
+        assert!(!has_blob_prefix(&blob(199)));
+        assert!(!has_blob_prefix(&format!("{}-:", "A".repeat(300))));
     }
 
     #[test]
