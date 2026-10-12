@@ -35,9 +35,11 @@
 //!   (`devModuleCache`, `loadChunkAsyncOnDemand`), `DevContext` and its
 //!   `refresh`, `registerChunk` / `registerChunkList` and their lists,
 //!   `BACKEND`, `DEV_BACKEND`, `CHUNK_UPDATE_LISTENERS`, the React Refresh
-//!   hooks, error classes, functions found by a message only they contain
-//!   (`RUNTIME_FUNCTION_ANCHORS` in `collector.rs`), and the Node.js runtime's
-//!   `module.exports = (sourcePath) => ({ m, c })`;
+//!   hooks, error classes, the functions those call in the one way every
+//!   runtime version does (`RUNTIME_CALLS`), members whose meaning changed
+//!   between versions by what is installed (`b`, `w`, …), functions found by a
+//!   message only they contain (`RUNTIME_FUNCTION_ANCHORS` in `collector.rs`),
+//!   and the Node.js runtime's `module.exports = (sourcePath) => ({ m, c })`;
 //! - in the worker entrypoint (`turbopack-worker-<hash>.js`), `abort`, `params`,
 //!   `param` and `chunkUrls`;
 //! - in the Next.js edge wrapper, `self._ENTRIES[name] = new Proxy(modProm, …)`,
@@ -69,7 +71,8 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use collector::NameCollector;
 
 /// Rename Turbopack factory, export, import and runtime bindings in `program`.
-/// Inert on other input. `keep_fn_names` as
+/// A classic-script Node.js chunk, entry or runtime becomes `CommonJS`, which
+/// is how Node.js loads it. Inert on other input. `keep_fn_names` as
 /// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
 pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) {
     eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
@@ -112,6 +115,17 @@ pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Pro
         "[DEOBFUSCATE] Phase 0.86: Turbopack check: detected {}",
         detected.join(", ")
     );
+    if let Some(id) = crate::turbopack_extract::debug_id(program.source_text, &program.comments) {
+        // The prelude registers the id in `globalThis._debugIds` for error
+        // reporters, so it is kept.
+        eprintln!("[DEOBFUSCATE] Phase 0.86: debug id {id}");
+    }
+    if found.is_commonjs() && program.source_type.is_script() {
+        // Its top-level bindings are module locals, not globals another
+        // script could read, so they may be renamed.
+        program.source_type = program.source_type.with_commonjs(true);
+        eprintln!("[DEOBFUSCATE] Phase 0.86: Node.js Turbopack file is CommonJS; parsing as commonjs");
+    }
     let (plan, with_scopes) = names.into_plan();
     if plan.is_empty() {
         return;

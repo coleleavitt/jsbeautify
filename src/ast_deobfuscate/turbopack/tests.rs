@@ -463,3 +463,166 @@ fn keeps_authored_runtime_names() {
     assert!(out.contains("let devModuleCache = new Map()"), "{out}");
     assert!(out.contains("function loadChunkInternal(e)"), "{out}");
 }
+
+/// `-d`'s Phase 0.86 on a classic script, returning the output and the
+/// source type the program ends with.
+fn run_script(code: &str) -> (String, SourceType) {
+    let allocator = Allocator::default();
+    let mut program = Parser::new(&allocator, code, SourceType::script()).parse().program;
+    rename_turbopack_bindings(&allocator, &mut program, false);
+    let out = Codegen::new().build(&program).code;
+    let reparsed = Parser::new(&allocator, &out, program.source_type).parse();
+    assert!(reparsed.diagnostics.is_empty(), "output must parse: {out}");
+    (out, program.source_type)
+}
+
+/// `[turbopack]_runtime.js` (minified Node.js development runtime): Node.js
+/// loads it with `require`, so its top-level names are module locals, and the
+/// on-demand loader declared inside `if (…) {}` is renamed with its Annex B `var`.
+#[test]
+fn node_runtime_script_is_commonjs() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}c.l=a,c.w=1;let h=globalThis.__turbopack_server_hmr_handlers__;if(void 0!==globalThis.__turbopack_ensure_chunk__){function o(e){return a.call(this,e)}c.l=o}function m(p,i){}function r(p,d){}module.exports=p=>({m:i=>m(p,i),c:d=>r(p,d)});";
+    let (out, source_type) = run_script(code);
+    assert!(source_type.is_commonjs(), "{source_type:?}");
+    for expected in [
+        "function Context(e, t)",
+        "function loadChunkAsync(e)",
+        "function loadChunkAsyncOnDemand(e) {\n\t\treturn loadChunkAsync.call(this, e);",
+        "contextPrototype.l = loadChunkAsyncOnDemand",
+        "function getOrInstantiateRuntimeModule(p, i)",
+        "(sourcePath) => ({",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+}
+
+#[test]
+fn browser_runtime_script_keeps_its_globals() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}c.l=a;";
+    let (out, source_type) = run_script(code);
+    assert!(source_type.is_script(), "{source_type:?}");
+    assert!(out.contains("function g(e, t)"), "{out}");
+    assert!(out.contains("function a(e)"), "{out}");
+}
+
+#[test]
+fn node_chunks_and_entries_are_commonjs() {
+    let (_, chunk) = run_script(r"module.exports=[1,e=>{e.v(1)}];");
+    assert!(chunk.is_commonjs());
+    let (_, entry) = run_script(
+        r#"var R=require("./[turbopack]_runtime.js")("server/app/page.js");R.c("server/chunks/a.js");module.exports=R.m(1).exports;"#,
+    );
+    assert!(entry.is_commonjs());
+}
+
+/// Context members whose meaning changed between Next.js versions are named by
+/// what is installed (16.0 `b = getWorkerBlobURL`, 16.2 `b = createWorker`,
+/// 16.4 `b = RUNTIME_CHUNK_BASE_PATH`; `w = loadWebAssembly` in a browser).
+#[test]
+fn names_versioned_members_by_what_is_installed() {
+    let old = run(
+        r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function a(e){}function k(e){return new Blob([e])}function q(e){}c.l=a,c.b=k,c.w=q;",
+    );
+    for expected in [
+        "function getWorkerBlobURL(e)",
+        "function loadWebAssembly(e)",
+        "function loadChunk(e)",
+    ] {
+        assert!(old.contains(expected), "{expected}: {old}");
+    }
+    let worker = run(r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;function k(e){return new Worker(e)}c.b=k;");
+    assert!(worker.contains("function createWorker(e)"), "{worker}");
+    let new = run(r#"function g(e,t){this.m=e,this.e=t}var c=g.prototype;let p="/_next/",x="?v=1";c.b=p,c.X=x;"#);
+    assert!(new.contains("let RUNTIME_CHUNK_BASE_PATH = \"/_next/\""), "{new}");
+    assert!(new.contains("ASSET_SUFFIX = \"?v=1\""), "{new}");
+}
+
+/// Calls the runtime source makes the same way in every version name their
+/// callee, also from a member function the minifier inlined; the call graph
+/// outranks the message anchors.
+#[test]
+fn names_runtime_functions_by_their_callers() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;
+function I(e,t,r){return {id:e}}
+let B=(e,t)=>I(e,1,t.id);
+function w(e){let t=B(e,this.m);return t.exports}
+function M(e,t,r){return fetch(r).catch(n=>{throw Error(`Failed to load chunk ${r} ${e}${t}`)})}
+c.i=w;c.L=function(e){return M(1,this.m.id,e)};";
+    let out = run(code);
+    for expected in [
+        "function esmImport(e)",
+        "let getOrInstantiateModuleFromParent = (e, t) => instantiateModule(e, 1, t.id)",
+        "function instantiateModule(e, t, r)",
+        "function loadChunkByUrlInternal(e, t, r)",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    assert!(!out.contains("loadChunkByUrlWhole"), "{out}");
+}
+
+/// Next.js 16.0 throws the "factory is not available" message inline in
+/// `instantiateModule`; only a function returning it is `factoryNotAvailableMessage`.
+#[test]
+fn message_builders_return_their_message() {
+    let runtime = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;";
+    let thrown = run(&format!(
+        "{runtime}function A(e,t,r){{if(!r)throw Error(`Module ${{e}} was instantiated ${{t}}, but the module factory is not available.`)}}"
+    ));
+    assert!(thrown.contains("function A(e, t, r)"), "{thrown}");
+    let returned = run(&format!(
+        "{runtime}function A(e,t,r){{let n=t;return`Module ${{e}} was instantiated ${{n}}, but the module factory is not available.`}}"
+    ));
+    assert!(
+        returned.contains("function factoryNotAvailableMessage(e, t, r)"),
+        "{returned}"
+    );
+}
+
+/// Next.js 16.4 server chunk with a WebAssembly import and a top-level-await
+/// module (`turbopack.debugIds` build): async loader, async dependencies,
+/// asset modules and the bundled `loadWasm.ts` helper.
+const WASM_CHUNK: &str = r#";!function(){try { var e="undefined"!=typeof globalThis?globalThis:{},n=(new e.Error).stack;n&&((e._debugIds|| (e._debugIds={}))[n]="8b06e878-84da-932e-79ca-1f7f27f8946b")}catch(e){}}();
+module.exports=[36588,e=>e.a(async(t,r)=>{try{var a=e.i(51360),n=e.i(59776),i=t([a,n]);async function s(){return Response.json({sum:(0,a.add)(2,3)})}[a,n]=i.then?(await i)():i,e.s(["GET",0,s]),r()}catch(e){r(e)}},!1),51360,e=>e.a(async(t,r)=>{try{var a=e.i(70614),n=e.i(18400);let{add:t}=await (0,a.f)(n.default,{});e.s(["add",0,t]),r()}catch(e){r(e)}},!0),70614,e=>{async function t(t,r){let{instance:n}=await WebAssembly.instantiateStreaming(fetch(t),r);return n.exports}e.s(["f",0,t])},18400,function(e){e.q("server/chunks/src_lib_add_05ek5-kaqh2we.wasm")},79095,a=>{a.v(b=>Promise.all(["server/chunks/ssr/heavy.js"].map(b=>a.l(b))).then(()=>b(34526)))},803,a=>{var x=a.i("123456789012345678");a.v(x)}];
+//# debugId=8b06e878-84da-932e-79ca-1f7f27f8946b"#;
+
+#[test]
+fn names_async_modules_assets_and_the_wasm_helper() {
+    let out = run(WASM_CHUNK);
+    for expected in [
+        "__turbopack_async_dependencies__ = __turbopack_handle_async_dependencies__([module_51360, module_59776])",
+        "[module_51360, module_59776] = __turbopack_async_dependencies__.then ? (await __turbopack_async_dependencies__)() : __turbopack_async_dependencies__",
+        "async function GET()",
+        "asset_src_lib_add_05ek5_kaqh2we_wasm = __turbopack_context__.i(18400)",
+        "async function instantiate(t, r)",
+        "(parentImport) => Promise.all",
+        ".then(() => parentImport(34526))",
+        "module_123456789012345678 = __turbopack_context__.i(\"123456789012345678\")",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    assert!(out.contains("e._debugIds"), "the debug id prelude stays: {out}");
+}
+
+/// The deployment constants a minified runtime keeps (Next.js inlines most):
+/// the Node.js runtime's opening `var`, the chunk base path and `crossOrigin`.
+#[test]
+fn names_runtime_constants() {
+    let (node, _) = run_script(
+        r#"var e="server/chunks/[turbopack]_runtime.js",t="..",n="/";function g(e,t){this.m=e,this.e=t}var c=g.prototype;function m(p,i){}function r(p,d){}module.exports=p=>({m:i=>m(p,i),c:d=>r(p,d)});"#,
+    );
+    assert!(
+        node.contains(
+            "var RUNTIME_PUBLIC_PATH = \"server/chunks/[turbopack]_runtime.js\", RELATIVE_ROOT_PATH = \"..\", ASSET_PREFIX = \"/\""
+        ),
+        "{node}"
+    );
+    let browser = run(
+        r#"(()=>{var b="/_next/",o=null;function g(e,t){this.m=e,this.e=t}var c=g.prototype;let k="string"==typeof TURBOPACK_CHUNK_BASE_PATH?TURBOPACK_CHUNK_BASE_PATH:b;function s(u){let e=document.createElement("script");e.crossOrigin=o,e.src=k+u}c.l=s})()"#,
+    );
+    for expected in [
+        "var CHUNK_BASE_PATH = \"/_next/\", CROSS_ORIGIN = null",
+        "let RUNTIME_CHUNK_BASE_PATH = \"string\" == typeof TURBOPACK_CHUNK_BASE_PATH ? TURBOPACK_CHUNK_BASE_PATH : CHUNK_BASE_PATH",
+    ] {
+        assert!(browser.contains(expected), "{expected}: {browser}");
+    }
+}

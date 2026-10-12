@@ -33,16 +33,27 @@ use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::symbol::SymbolId;
 use serde::Serialize;
 
+pub use merged::MergedModule;
+
+mod merged;
+
+pub use crate::ast_deobfuscate::turbopack::shapes::LoaderChunk;
 use crate::ast_deobfuscate::turbopack::shapes::{
-    FactoryGroup, Payload, ReexportSource, Registration, chunk_list, context_map, edge_entry, esm_bindings,
-    factory_params, has_use_strict, module_id, module_ident, node_entry_runtime, program_node_chunk, reexport_groups,
-    registration,
+    FactoryGroup, Payload, ReexportSource, Registration, asset_path, async_loader, chunk_list, context_map, edge_entry,
+    esm_bindings, factory_params, has_use_strict, module_id, module_ident, node_entry_runtime, program_node_chunk,
+    reexport_groups, registration,
 };
 
 /// The Turbopack registrations of one chunk file.
 #[derive(Debug, Clone, Serialize)]
 pub struct TurbopackChunk {
     pub registrations: Vec<ChunkRegistration>,
+    /// The `//# debugId=<uuid>` of a chunk built with debug ids
+    /// (`turbopack-core/src/code_builder.rs`). Its prelude
+    /// `;!function(){…e._debugIds[stack] = "<uuid>"…}();` registers the id for
+    /// error reporters at load time, so it stays in every output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_id: Option<String>,
 }
 
 /// How a chunk hands its contents to the runtime.
@@ -87,6 +98,10 @@ pub struct ModuleFactory {
     /// The chunk item's id first, then the ids of scope-hoisted modules other
     /// chunks may import through this factory.
     pub ids: Vec<String>,
+    /// [`Self::ids`] as written in the chunk: a string id such as
+    /// `"123456789012345678"` (above `Number.MAX_SAFE_INTEGER`) stays a string.
+    #[serde(skip)]
+    pub id_literals: Vec<String>,
     /// Byte range of the factory function in the chunk source.
     pub start: usize,
     pub end: usize,
@@ -106,9 +121,24 @@ pub struct ModuleFactory {
     /// The Next.js edge entry (`self._ENTRIES["middleware_<page>"]`) it registers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge_entry: Option<String>,
+    /// What an async loader module (`ctx.A(id)` calls it) loads and imports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub async_loader: Option<AsyncLoaderModule>,
+    /// The path a static asset module exports (`ctx.q(path)`, `ctx.v(path)`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
     /// `// MERGED MODULE: <ident>` markers of an unminified scope-hoisted factory.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub merged: Vec<MergedModule>,
+}
+
+/// An async loader module: `ctx.A(loader)` loads `chunks`, then imports `module`
+/// (`turbopack-ecmascript/src/async_chunk/module.rs`).
+#[derive(Debug, Clone, Serialize)]
+pub struct AsyncLoaderModule {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    pub chunks: Vec<LoaderChunk>,
 }
 
 /// One `esmReexport` group: exports forwarded from `from` (a module id, or
@@ -117,19 +147,6 @@ pub struct ModuleFactory {
 pub struct Reexport {
     pub from: Option<String>,
     pub names: Vec<(String, String)>,
-}
-
-/// A module scope hoisting merged into a factory.
-///
-/// Read from its `// MERGED MODULE: <ident>` marker
-/// (`turbopack-ecmascript/src/lib.rs`). Hoisting inlines a dependency at its import, so the range runs from the
-/// marker to the next marker or the factory's end; an importer's code that
-/// follows an inlined dependency falls into the dependency's range.
-#[derive(Debug, Clone, Serialize)]
-pub struct MergedModule {
-    pub ident: String,
-    pub start: usize,
-    pub end: usize,
 }
 
 /// A module merged into another module's factory by scope hoisting; its
@@ -184,8 +201,20 @@ fn detect_on_current_stack(source: &str) -> Option<TurbopackChunk> {
         entry: None,
     };
     finder.visit_program(&program);
-    (!finder.registrations.is_empty()).then_some(TurbopackChunk {
+    (!finder.registrations.is_empty()).then(|| TurbopackChunk {
         registrations: finder.registrations,
+        debug_id: debug_id(source, &program.comments),
+    })
+}
+
+/// The id of a `//# debugId=<uuid>` comment.
+#[must_use]
+pub fn debug_id(source: &str, comments: &[oxc_ast::Comment]) -> Option<String> {
+    comments.iter().rev().find_map(|comment| {
+        let content = comment.content_span();
+        source[content.start as usize..content.end as usize]
+            .strip_prefix("# debugId=")
+            .map(|id| id.trim().to_string())
     })
 }
 
@@ -206,19 +235,19 @@ struct RegistrationFinder<'s> {
 impl RegistrationFinder<'_> {
     fn module_factory(&self, group: &FactoryGroup<'_, '_>) -> ModuleFactory {
         let factory_span = group.factory.span();
-        let (scope, has_directive, body_end) = match group.factory.without_parentheses() {
+        let (scope, has_directive, body) = match group.factory.without_parentheses() {
             Expression::FunctionExpression(func) => (
                 func.scope_id.get(),
                 func.body.as_ref().is_some_and(|body| has_use_strict(body)),
-                func.body.as_ref().map(|body| body.span.end as usize - 1),
+                func.body.as_deref(),
             ),
             Expression::ArrowFunctionExpression(arrow) => (
                 arrow.scope_id.get(),
                 arrow.has_use_strict_directive(),
-                Some(match &arrow.body {
-                    ArrowFunctionBody::FunctionBody(body) => body.span.end as usize - 1,
-                    body => body.span().end as usize,
-                }),
+                match &arrow.body {
+                    ArrowFunctionBody::FunctionBody(body) => Some(&**body),
+                    _ => None,
+                },
             ),
             _ => (None, false, None),
         };
@@ -239,27 +268,29 @@ impl RegistrationFinder<'_> {
             reexports: Vec::new(),
             context_map: Vec::new(),
             edge_entry: None,
+            async_loader: None,
+            asset: None,
         };
         if scan.context.is_some() {
             scan.visit_expression(group.factory);
         }
-        let body_end = body_end.unwrap_or(factory_span.end as usize);
-        let inside: Vec<&(usize, String)> = self
-            .markers
-            .iter()
-            .filter(|(start, _)| (factory_span.start as usize..body_end).contains(start))
-            .collect();
-        let merged = inside
-            .iter()
-            .enumerate()
-            .map(|(index, (start, ident))| MergedModule {
-                ident: ident.clone(),
-                start: *start,
-                end: inside.get(index + 1).map_or(body_end, |(next, _)| *next),
+        let merged = body
+            .filter(|body| {
+                let range = body.span.start as usize..body.span.end as usize;
+                self.markers.iter().any(|(start, _)| range.contains(start))
             })
-            .collect();
+            .map_or_else(Vec::new, |body| {
+                merged::merged_modules(
+                    &body.statements,
+                    body.span.start as usize,
+                    self.markers,
+                    self.scoping,
+                    scan.context,
+                )
+            });
         ModuleFactory {
             ids: group.ids.clone(),
+            id_literals: group.id_spans.iter().map(|&span| text(self.source, span)).collect(),
             start: factory_span.start as usize,
             end: factory_span.end as usize,
             strict,
@@ -270,6 +301,8 @@ impl RegistrationFinder<'_> {
             reexports: scan.reexports,
             context_map: scan.context_map,
             edge_entry: scan.edge_entry,
+            async_loader: scan.async_loader,
+            asset: scan.asset,
             merged,
         }
     }
@@ -414,6 +447,8 @@ struct FactoryScan<'s> {
     reexports: Vec<Reexport>,
     context_map: Vec<(String, String)>,
     edge_entry: Option<String>,
+    async_loader: Option<AsyncLoaderModule>,
+    asset: Option<String>,
 }
 
 impl FactoryScan<'_> {
@@ -484,6 +519,22 @@ impl<'a> Visit<'a> for FactoryScan<'_> {
                     self.depend_on(id);
                 }
             }
+            Some("v") if !matches!(call.arguments.first(), Some(Argument::ObjectExpression(_))) => {
+                let value = call.arguments.first().and_then(Argument::as_expression);
+                if let Some(loader) = value.and_then(async_loader) {
+                    self.async_loader = Some(AsyncLoaderModule {
+                        module: loader.module,
+                        chunks: loader.chunks,
+                    });
+                } else if let Some(path) = value.and_then(asset_path) {
+                    self.asset = Some(path.to_string());
+                }
+            }
+            Some("q") => {
+                if let [Argument::StringLiteral(path)] = call.arguments.as_slice() {
+                    self.asset = Some(path.value.to_string());
+                }
+            }
             Some("v" | "f") => {
                 if let Some(Argument::ObjectExpression(map)) = call.arguments.first()
                     && let Some(entries) = context_map(map)
@@ -547,9 +598,9 @@ impl TurbopackChunk {
                     let stub = unique_name(&mut names, format!("hoisted/module_{}.js", module_ident(&hoisted.id)));
                     stubs.push((stub, hoisted_stub(hoisted, module, &file)));
                 }
-                for merged in &module.merged {
+                for (index, merged) in module.merged.iter().enumerate() {
                     let part = unique_name(&mut names, format!("merged/module_{}.js", module_ident(&merged.ident)));
-                    stubs.push((part, merged_part(source, merged, module, &file)));
+                    stubs.push((part, merged_part(source, module, index, &file)));
                 }
             }
         }
@@ -577,9 +628,22 @@ impl TurbopackChunk {
     #[must_use]
     pub fn dependency_graph(&self) -> String {
         let mut graph = String::from("digraph turbopack_modules {\n  rankdir=LR;\n  node [shape=box];\n\n");
+        let loaded: BTreeMap<&str, &str> = self
+            .modules()
+            .filter_map(|m| Some((m.id(), m.async_loader.as_ref()?.module.as_deref()?)))
+            .collect();
         for module in self.modules() {
             for dep in &module.dependencies {
                 let _ = writeln!(graph, "  \"{}\" -> \"{}\";", dot_escape(module.id()), dot_escape(dep));
+                // `ctx.A(loader)` imports the loader's module once its chunks are loaded.
+                if let Some(target) = loaded.get(dep.as_str()) {
+                    let _ = writeln!(
+                        graph,
+                        "  \"{}\" -> \"{}\" [style=dashed, label=\"import()\"];",
+                        dot_escape(module.id()),
+                        dot_escape(target)
+                    );
+                }
             }
         }
         graph.push_str("}\n");
@@ -649,13 +713,25 @@ fn module_file(source: &str, registration: &ChunkRegistration, module: &ModuleFa
     if let Some(entry) = &module.edge_entry {
         let _ = writeln!(out, "// edge entry: self._ENTRIES[{}]", id_literal(entry));
     }
+    if let Some(loader) = &module.async_loader {
+        let chunks: Vec<&str> = loader.chunks.iter().map(|chunk| chunk.path.as_str()).collect();
+        let _ = writeln!(
+            out,
+            "// async loader: loads [{}], then imports {}",
+            chunks.join(", "),
+            loader.module.as_deref().unwrap_or("nothing")
+        );
+    }
+    if let Some(asset) = &module.asset {
+        let _ = writeln!(out, "// asset: {asset}");
+    }
     for merged in &module.merged {
         let _ = writeln!(out, "// merged module: {}", merged.ident);
     }
     if module.strict {
         out.push_str("\"use strict\";\n");
     }
-    let ids: Vec<String> = module.ids.iter().map(|id| id_literal(id)).collect();
+    let ids = &module.id_literals;
     let factory = &source[module.range()];
     match &registration.script {
         Some(script) => {
@@ -685,15 +761,34 @@ fn hoisted_stub(hoisted: &HoistedModule, module: &ModuleFactory, file: &str) -> 
     )
 }
 
-fn merged_part(source: &str, merged: &MergedModule, module: &ModuleFactory, file: &str) -> String {
-    format!(
-        "// Turbopack module {} is scope-hoisted into module {} ({file}).\n\
-         // Source from its MERGED MODULE marker to the next marker; code its importer\n\
-         // runs after an inlined dependency appears in the dependency's part.\n{}\n",
+fn merged_part(source: &str, module: &ModuleFactory, index: usize, file: &str) -> String {
+    let merged = &module.merged[index];
+    let mut out = format!(
+        "// Turbopack module {} is scope-hoisted into module {} ({file}).\n",
         merged.ident,
-        module.id(),
-        source[merged.start..merged.end].trim_end()
-    )
+        module.id()
+    );
+    if let Some(parent) = merged.parent {
+        let _ = writeln!(out, "// Inlined into {}.", module.merged[parent].ident);
+    }
+    let mut pieces: Vec<(usize, String)> = merged
+        .own
+        .iter()
+        .map(|&(start, end)| (start, source[start..end].to_string()))
+        .collect();
+    pieces.extend(
+        module
+            .merged
+            .iter()
+            .filter(|child| child.parent == Some(index))
+            .map(|child| (child.start, format!("// (inlined here: {})", child.ident))),
+    );
+    pieces.sort_by_key(|(start, _)| *start);
+    for (_, piece) in pieces {
+        out.push_str(piece.trim_end());
+        out.push('\n');
+    }
+    out
 }
 
 fn unique_name(names: &mut BTreeMap<String, usize>, name: String) -> String {
@@ -906,7 +1001,7 @@ mod tests {
 
     #[test]
     fn splits_merged_module_markers() {
-        let source = "module.exports = [\n99665, ((__turbopack_context__) => {\n\"use strict\";\n\n// MERGED MODULE: [project]/src/app/api/hello/route.ts [app-route] (ecmascript)\n;\n// MERGED MODULE: [project]/src/lib/shared.ts [app-route] (ecmascript)\n;\nfunction greeting(name) {\n    return name;\n}\n;\nasync function GET() {}\n__turbopack_context__.s([\n    \"GET\",\n    0,\n    GET\n], 99665);\n}),\n];\n";
+        let source = "module.exports = [\n99665, ((__turbopack_context__) => {\n\"use strict\";\n\n// MERGED MODULE: [project]/src/app/api/hello/route.ts [app-route] (ecmascript)\n;\n// MERGED MODULE: [project]/src/lib/shared.ts [app-route] (ecmascript)\n;\nfunction greeting(name) {\n    return name;\n}\nconst VERSION = 1;\n;\nasync function GET() {}\n__turbopack_context__.s([\n    \"GET\",\n    0,\n    GET\n], 99665);\n}),\n];\n";
         let chunk = detect_turbopack_chunk(source).expect("node chunk");
         let module = chunk.modules().next().expect("one factory");
         let idents: Vec<_> = module.merged.iter().map(|m| m.ident.as_str()).collect();
@@ -917,7 +1012,13 @@ mod tests {
                 "[project]/src/lib/shared.ts [app-route] (ecmascript)"
             ]
         );
-        assert!(source[module.merged[1].start..module.merged[1].end].ends_with("], 99665);\n"));
+        let (route, shared) = (&module.merged[0], &module.merged[1]);
+        assert_eq!(shared.parent, Some(0));
+        assert!(source[route.start..route.end].ends_with("], 99665);"));
+        assert!(
+            source[shared.start..shared.end].ends_with("const VERSION = 1;"),
+            "the route's removed import `;` starts its body"
+        );
         let files = chunk.module_files(source);
         let names: Vec<_> = files.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
@@ -940,7 +1041,105 @@ mod tests {
             "{shared}"
         );
         assert!(shared.contains("function greeting(name)"), "{shared}");
-        assert!(!files[2].1.contains("function greeting"), "{}", files[2].1);
+        assert!(!shared.contains("GET"), "{shared}");
+        let route = &files[2].1;
+        assert!(route.contains("async function GET() {}"), "{route}");
+        assert!(
+            route.contains("// (inlined here: [project]/src/lib/shared.ts"),
+            "{route}"
+        );
+        assert!(!route.contains("function greeting"), "{route}");
+    }
+
+    /// Shapes from the unminified Next.js 16.4 build: an import variable after
+    /// an inlined module returns to the importer's hoisted part, a statement
+    /// reading an importer's import variable is the importer's, and `s(…, id)`
+    /// ends a module.
+    #[test]
+    fn merged_module_extents_follow_hoisting() {
+        let source = r#"module.exports = [
+1, 2, ((__turbopack_context__) => {
+"use strict";
+// MERGED MODULE: [project]/a.js [ssr] (ecmascript)
+;
+var __TURBOPACK__imported__module__7__ = __turbopack_context__.i(7);
+// MERGED MODULE: [project]/b.js [ssr] (ecmascript)
+;
+function b() {}
+var __TURBOPACK__imported__module__8__ = __turbopack_context__.i(8);
+// MERGED MODULE: [project]/c.js [ssr] (ecmascript)
+;
+var __TURBOPACK__imported__module__7__1 = __TURBOPACK__imported__module__7__;
+;
+const c = __TURBOPACK__imported__module__7__1.x;
+__turbopack_context__.s(["c", 0, c], 2);
+;
+;
+;
+'use client';
+const a = __TURBOPACK__imported__module__8__.y + b() + c;
+__turbopack_context__.s(["a", 0, a], 1);
+}),
+];
+"#;
+        let chunk = detect_turbopack_chunk(source).expect("node chunk");
+        let merged = &chunk.modules().next().expect("one factory").merged;
+        let text = |m: &MergedModule| source[m.start..m.end].to_string();
+        let own = |m: &MergedModule| -> Vec<&str> { m.own.iter().map(|&(s, e)| source[s..e].trim()).collect() };
+        let (a, b, c) = (&merged[0], &merged[1], &merged[2]);
+        assert_eq!((b.parent, c.parent), (Some(0), Some(0)));
+        assert!(text(b).ends_with("function b() {}"), "{}", text(b));
+        assert!(text(c).ends_with("], 2);"), "{}", text(c));
+        assert!(text(a).ends_with("], 1);"), "{}", text(a));
+        let a_own = own(a).join("\n");
+        assert!(a_own.contains("__turbopack_context__.i(8)"), "{a_own}");
+        assert!(a_own.contains("'use client';\nconst a ="), "{a_own}");
+        assert!(!a_own.contains("function b"), "{a_own}");
+    }
+
+    #[test]
+    fn reads_async_loaders_assets_debug_ids_and_string_ids() {
+        let source = r#";!function(){try{var e=globalThis,n=(new e.Error).stack;n&&((e._debugIds||(e._debugIds={}))[n]="8b06e878-84da-932e-79ca-1f7f27f8946b")}catch(e){}}();
+module.exports=[79095,a=>{a.v(b=>Promise.all(["server/chunks/ssr/heavy.js"].map(b=>a.l(b))).then(()=>b(34526)))},18400,function(e){e.q("server/chunks/add.wasm")},47678,a=>{a.v("/_next/static/media/w.ts"+(globalThis.NEXT_CLIENT_ASSET_SUFFIX||""))},"123456789012345678",e=>{e.A(79095)},5,e=>{e.v(t=>Promise.all([["static/chunks/m.js",["static/chunks/a.js","static/chunks/b.js"],[10,20]],{path:"static/chunks/c.js",included:[]}].map(t=>e.l(t))).then(()=>{}))}];
+//# debugId=8b06e878-84da-932e-79ca-1f7f27f8946b"#;
+        let chunk = detect_turbopack_chunk(source).expect("node chunk");
+        assert_eq!(chunk.debug_id.as_deref(), Some("8b06e878-84da-932e-79ca-1f7f27f8946b"));
+        let modules: Vec<_> = chunk.modules().collect();
+        let loader = modules[0].async_loader.as_ref().expect("async loader");
+        assert_eq!(loader.module.as_deref(), Some("34526"));
+        assert_eq!(loader.chunks[0].path, "server/chunks/ssr/heavy.js");
+        assert_eq!(modules[1].asset.as_deref(), Some("server/chunks/add.wasm"));
+        assert_eq!(modules[2].asset.as_deref(), Some("/_next/static/media/w.ts"));
+        let merged = &modules[4].async_loader.as_ref().expect("loader without module").chunks;
+        assert_eq!(modules[4].async_loader.as_ref().unwrap().module, None);
+        assert_eq!(merged[0].path, "static/chunks/m.js");
+        assert_eq!(merged[0].components, ["static/chunks/a.js", "static/chunks/b.js"]);
+        assert_eq!(merged[1].path, "static/chunks/c.js");
+        let graph = chunk.dependency_graph();
+        assert!(
+            graph.contains(r#""123456789012345678" -> "34526" [style=dashed, label="import()"];"#),
+            "{graph}"
+        );
+        let files = chunk.module_files(source);
+        assert!(
+            files[0]
+                .1
+                .contains("// async loader: loads [server/chunks/ssr/heavy.js], then imports 34526\n"),
+            "{}",
+            files[0].1
+        );
+        assert!(
+            files[1].1.contains("// asset: server/chunks/add.wasm\n"),
+            "{}",
+            files[1].1
+        );
+        assert!(
+            files[3]
+                .1
+                .contains(r#"module.exports = ["123456789012345678", e=>{e.A(79095)}];"#),
+            "a string id above MAX_SAFE_INTEGER stays a string: {}",
+            files[3].1
+        );
     }
 
     #[test]
