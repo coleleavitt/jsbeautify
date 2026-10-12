@@ -852,6 +852,7 @@ dependencies = [
  "clap",
  "dhat",
  "ec4rs",
+ "libc",
  "md5",
  "oxc_allocator",
  "oxc_ast",

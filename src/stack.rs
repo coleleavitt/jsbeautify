@@ -4,7 +4,9 @@
 //! all recurse once per nesting level, and nesting depth never exceeds the
 //! input length. A stack of `BASE_STACK_BYTES + len * STACK_BYTES_PER_INPUT_BYTE`
 //! therefore fits any input. The reservation is virtual: pages that deep
-//! nesting never touches cost no memory.
+//! nesting never touches cost no memory, but it does count against a finite
+//! address-space limit (`prlimit --as`, `ulimit -v`), so the stack then takes
+//! at most a quarter of that limit and leaves the rest to the Oxc arenas.
 
 use std::cell::Cell;
 use std::sync::{Mutex, PoisonError};
@@ -18,6 +20,27 @@ const BASE_STACK_BYTES: usize = 16 << 20;
 // binary-searching the deepest input that passes at a fixed stack size.
 const STACK_BYTES_PER_INPUT_BYTE: usize = if cfg!(debug_assertions) { 16 << 10 } else { 2 << 10 };
 const MIN_STACK_BYTES: usize = 8 << 20;
+
+/// Largest stack a worker may reserve: a quarter of a finite `RLIMIT_AS`.
+/// Without this, halving after a refused spawn settles just under the limit
+/// and the first arena allocation aborts (a 2.4 MB bundle asks for 5 GB of
+/// stack and failed under `--as` 2 GiB despite peaking at 0.33 GB RSS).
+fn address_space_stack_cap() -> usize {
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit only writes the rlimit struct passed to it.
+        if unsafe { libc::getrlimit(libc::RLIMIT_AS, &raw mut limit) } == 0 && limit.rlim_cur != libc::RLIM_INFINITY {
+            return usize::try_from(limit.rlim_cur / 4)
+                .unwrap_or(usize::MAX)
+                .max(MIN_STACK_BYTES);
+        }
+    }
+    usize::MAX
+}
 
 thread_local! {
     /// Stack size requested for the current worker; nested calls whose input
@@ -41,7 +64,8 @@ const fn stack_bytes_for(input_len: usize) -> usize {
 /// # Panics
 /// Panics when no worker thread can be spawned even at the floor size.
 pub fn run_on_sized_stack<T: Send>(input_len: usize, work: impl FnOnce() -> T + Send) -> T {
-    let requested = stack_bytes_for(input_len);
+    let needed = stack_bytes_for(input_len);
+    let requested = needed.min(address_space_stack_cap());
     if REQUESTED_STACK_BYTES.get() >= requested {
         return work();
     }
@@ -60,11 +84,11 @@ pub fn run_on_sized_stack<T: Send>(input_len: usize, work: impl FnOnce() -> T + 
                 .spawn_scoped(scope, run)
             {
                 Ok(worker) => {
-                    if stack_bytes < requested {
+                    if stack_bytes < needed {
                         eprintln!(
                             "warning: could not reserve a {} MiB stack for this input; using {} MiB, \
                              so very deeply nested input may overflow it",
-                            requested >> 20,
+                            needed >> 20,
                             stack_bytes >> 20
                         );
                     }
@@ -91,5 +115,10 @@ mod tests {
             1000 * STACK_BYTES_PER_INPUT_BYTE
         );
         assert_eq!(stack_bytes_for(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn stack_cap_never_drops_below_the_floor() {
+        assert!(address_space_stack_cap() >= MIN_STACK_BYTES);
     }
 }

@@ -45,18 +45,18 @@ use collector::NameCollector;
 /// Rename Turbopack factory, export, import and runtime bindings in `program`.
 /// Inert on other input.
 pub fn rename_turbopack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
-    eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack module naming");
+    eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
     let mut names = NameCollector::default();
     traverse_mut_with_ctx(&mut names, program, &mut ctx);
     if names.registrations() == 0 && !names.has_runtime() {
-        eprintln!("[DEOBFUSCATE] Phase 0.86: No Turbopack chunk registration or runtime found");
+        eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check: not found");
         return;
     }
     eprintln!(
-        "[DEOBFUSCATE] Phase 0.86: Turbopack chunk: {} registration(s), {} module factories{}",
+        "[DEOBFUSCATE] Phase 0.86: Turbopack check: detected {} registration(s), {} module factories{}",
         names.registrations(),
         names.factories(),
         if names.has_runtime() { ", runtime" } else { "" }

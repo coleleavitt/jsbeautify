@@ -99,6 +99,9 @@ md5 = "0.7"
 dhat = { version = "0.3", optional = true }
 ec4rs = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Heap profiling with dhat. Build/run with `--features dhat-heap` to swap in
 # dhat's allocator + profiler; produces `dhat-heap.json` (view at

@@ -140,7 +140,7 @@ fn deobfuscate_names_turbopack_context_imports_and_exports() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Phase 0.86: Turbopack chunk: 1 registration(s), 2 module factories"),
+        stderr.contains("Phase 0.86: Turbopack check: detected 1 registration(s), 2 module factories"),
         "{stderr}"
     );
     assert!(
