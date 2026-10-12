@@ -249,3 +249,19 @@ fn bundler_checks_print_one_result_line_each() {
         "{stderr}"
     );
 }
+
+#[test]
+fn version_banner_names_the_commit_as_build_metadata() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("--version")
+        .output()
+        .expect("run jsbeautify --version");
+    assert!(output.status.success(), "{output:?}");
+    let banner = String::from_utf8(output.stdout).expect("stdout is utf8");
+    let version = banner
+        .trim()
+        .strip_prefix("jsbeautify ")
+        .expect("banner starts with the binary name");
+    assert!(!version.contains(char::is_whitespace), "one token: {banner:?}");
+    assert!(version.starts_with(env!("CARGO_PKG_VERSION")), "{banner:?}");
+}
