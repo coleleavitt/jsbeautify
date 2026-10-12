@@ -165,7 +165,7 @@ fn deobfuscate_file(name: &str, code: &str, args: &[&str]) -> String {
 
 /// javascript-obfuscator's default string array (`_0x533c`) is reached from its
 /// decoder before its declaration; every reference must follow the rename, or
-/// the rotation IIFE's `try`/`catch` loops forever on the ReferenceError.
+/// the rotation IIFE's `try`/`catch` loops forever on the `ReferenceError`.
 #[test]
 fn obfuscator_string_array_renames_every_reference() {
     let code = include_str!("../fixtures/obfuscator/string_array_default.js");
