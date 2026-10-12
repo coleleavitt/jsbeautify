@@ -32,11 +32,11 @@ mod tests;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_semantic::SemanticBuilder;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 use crate::ast_deobfuscate::rename_planner::apply_rename_plan;
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use collector::NameCollector;
@@ -47,7 +47,7 @@ use runtime::RuntimeCollector;
 /// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
 pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) {
     eprintln!("[DEOBFUSCATE] Phase 0.85: webpack check");
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
     let mut runtime = RuntimeCollector::default();
@@ -85,7 +85,7 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
 /// The ids of the webpack module factories `program` defines, for a project
 /// index (see [`crate::ast_deobfuscate::project`]).
 pub fn project_module_ids<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> Vec<String> {
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut runtime = RuntimeCollector::default();
     traverse_mut_with_ctx(&mut runtime, program, &mut ctx);

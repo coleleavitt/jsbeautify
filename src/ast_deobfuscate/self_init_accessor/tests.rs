@@ -1,9 +1,9 @@
-#[cfg(test)]
 use super::*;
+use crate::ast_deobfuscate::semantic;
+#[cfg(test)]
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -13,7 +13,7 @@ fn run(code: &str) -> String {
     let mut program = ret.program;
     let mut pass = SelfInitAccessorFlattener::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
     traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
     Codegen::new().build(&program).code

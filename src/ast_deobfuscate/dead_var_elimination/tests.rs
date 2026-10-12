@@ -1,10 +1,9 @@
 use super::*;
-use crate::ast_deobfuscate::AstDeobfuscator;
+use crate::ast_deobfuscate::{AstDeobfuscator, semantic};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{BindingPattern, Statement};
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use rustc_hash::FxHashSet;
 
@@ -126,7 +125,7 @@ fn rejects_candidate_that_would_make_live_reference_unresolved() {
     .parse();
     assert_eq!(parsed.diagnostics.len(), 0);
     let mut program = parsed.program;
-    let semantic = SemanticBuilder::new().build(&program);
+    let semantic = semantic::build(&program);
     assert_eq!(semantic.diagnostics.len(), 0);
 
     let Statement::VariableDeclaration(declaration) = &program.body[0] else {

@@ -1,7 +1,8 @@
 use super::{
-    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, SemanticBuilder, TraceSpan, bun,
-    deob_trace_enabled, heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, TraceSpan, bun, deob_trace_enabled,
+    heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
+use crate::ast_deobfuscate::semantic;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -14,7 +15,7 @@ impl AstDeobfuscator {
         let guard = Self::collect_rename_guards(allocator, program, self.keep_fn_names);
         let guarded = {
             let _trace = TraceSpan::new("Phase 12.5: resolve rename guards");
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut guarded = guard.into_guarded(&scoping);
             guarded.extend(crate::ast_deobfuscate::project::seeded_imports(program, &self.project));
             guarded
@@ -31,7 +32,7 @@ impl AstDeobfuscator {
         };
         let (plan, plan_stats) = {
             let _trace = TraceSpan::new("Phase 12.5: plan local renames");
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             bun::local_renamer::plan_local_renames_with_stats(&scoping, &guarded, mode, &desired, &free_names)
         };
         if deob_trace_enabled() {
@@ -50,7 +51,7 @@ impl AstDeobfuscator {
         keep_fn_names: bool,
     ) -> rename_guards::RenameGuardCollector {
         let _trace = TraceSpan::new("Phase 12.5: collect rename guards");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut guard = rename_guards::RenameGuardCollector::new().keep_fn_names(keep_fn_names);
         traverse_mut_with_ctx(&mut guard, program, &mut ctx);
@@ -62,7 +63,7 @@ impl AstDeobfuscator {
         program: &mut Program<'a>,
     ) -> (FxHashMap<SymbolId, String>, FxHashMap<ScopeId, FxHashSet<String>>) {
         let _trace = TraceSpan::new("Phase 12.5: collect readable-name heuristics");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut collector = heuristic_rename::HeuristicNameCollector::new();
         traverse_mut_with_ctx(&mut collector, program, &mut ctx);
@@ -78,7 +79,7 @@ impl AstDeobfuscator {
     ) {
         let _trace = TraceSpan::new("Phase 12.5: apply local renames");
         let plan_len = plan.len();
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut renamer = bun::local_renamer::LocalRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);

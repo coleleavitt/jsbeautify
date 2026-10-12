@@ -28,7 +28,7 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
-use oxc_semantic::{Scoping, SemanticBuilder};
+use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::symbol::SymbolId;
 use serde::Serialize;
@@ -37,6 +37,7 @@ pub use merged::MergedModule;
 
 mod merged;
 
+use crate::ast_deobfuscate::semantic;
 pub use crate::ast_deobfuscate::turbopack::shapes::LoaderChunk;
 use crate::ast_deobfuscate::turbopack::shapes::{
     FactoryGroup, Payload, ReexportSource, Registration, asset_path, async_loader, chunk_list, context_map, edge_entry,
@@ -182,7 +183,7 @@ fn detect_on_current_stack(source: &str) -> Option<TurbopackChunk> {
         return None;
     }
     let program = parsed.program;
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let markers: Vec<(usize, String)> = program
         .comments
         .iter()

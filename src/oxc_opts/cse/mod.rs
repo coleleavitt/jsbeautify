@@ -10,11 +10,11 @@ mod tests;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{BindingPattern, Program, Statement};
-use oxc_semantic::SemanticBuilder;
 
 use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::semantic;
 use crate::oxc_opts::state::OptimizationState;
 
 pub type Ctx<'a> = TraverseCtx<'a, OptimizationState>;
@@ -41,7 +41,7 @@ impl CommonSubexpressionElimination {
         self.var_counter = 0;
 
         let state = OptimizationState::new();
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(state, scoping, allocator);
 
         traverse_mut_with_ctx(self, program, &mut ctx);

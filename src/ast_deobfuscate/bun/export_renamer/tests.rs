@@ -1,10 +1,9 @@
 use super::*;
-use crate::ast_deobfuscate::DeobfuscateState;
 use crate::ast_deobfuscate::bun::{BunHelper, BunRuntimeCollector};
+use crate::ast_deobfuscate::{DeobfuscateState, semantic};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashSet;
@@ -16,7 +15,7 @@ const EXPORT_HELPER: &str =
 fn collect<'a>(alloc: &'a Allocator, code: &'a str) -> (oxc_ast::ast::Program<'a>, ExportNameMap) {
     let parsed = Parser::new(alloc, code, SourceType::mjs()).parse();
     let mut prog = parsed.program;
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, alloc);
     let mut helpers = BunRuntimeCollector::new();
     traverse_mut_with_ctx(&mut helpers, &mut prog, &mut ctx);
@@ -41,7 +40,7 @@ fn collect_and_rename(code: &str) -> (String, usize) {
     let alloc = Allocator::default();
     let code = format!("{EXPORT_HELPER}{code}");
     let (mut prog, map) = collect(&alloc, &code);
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let reserved: FxHashSet<&str> = scoping
         .root_unresolved_references()
         .keys()

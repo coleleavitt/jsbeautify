@@ -1,6 +1,6 @@
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_semantic::{Semantic, SemanticBuilder};
+use oxc_semantic::Semantic;
 use oxc_span::GetSpan;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
@@ -10,6 +10,7 @@ use crate::ast_deobfuscate::bun::export_renamer::make_names_unique;
 use crate::ast_deobfuscate::class_name_renamer::ClassNameRenamer;
 use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::collector::AngularNameCollector;
@@ -24,7 +25,7 @@ use super::collector::AngularNameCollector;
 /// [`RenameGuardCollector::keep_fn_names`].
 pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) -> usize {
     eprintln!("[DEOBFUSCATE] Phase 0.995: Angular check");
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = AngularNameCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
@@ -39,14 +40,14 @@ pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Progra
         collector.actions.len()
     );
 
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, program, &mut ctx);
     drop(ctx);
 
     let plan = {
-        let semantic = SemanticBuilder::new().with_build_nodes(true).build(program).semantic;
+        let semantic = semantic::build_with(program, |builder| builder.with_build_nodes(true)).semantic;
         let guarded = guard.into_guarded(semantic.scoping());
         plan_renames(&collector, &semantic, &guarded)
     };
@@ -54,7 +55,7 @@ pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Progra
         return 0;
     }
 
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut renamer = ClassNameRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, program, &mut ctx);

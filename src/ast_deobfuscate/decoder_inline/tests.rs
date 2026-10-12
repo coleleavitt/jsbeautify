@@ -1,9 +1,8 @@
 use super::*;
-use crate::ast_deobfuscate::{DeobfuscateState, StringArrayInliner, StringArrayRotation};
+use crate::ast_deobfuscate::{DeobfuscateState, StringArrayInliner, StringArrayRotation, semantic};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 
 fn run_decoder_inline(code: &str) -> (String, DecoderInliner) {
@@ -14,7 +13,7 @@ fn run_decoder_inline(code: &str) -> (String, DecoderInliner) {
 
     let mut rotation = StringArrayRotation::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = oxc_traverse::ReusableTraverseCtx::new(state, scoping, &allocator);
 
     oxc_traverse::traverse_mut_with_ctx(&mut rotation, &mut program, &mut ctx);
@@ -22,7 +21,7 @@ fn run_decoder_inline(code: &str) -> (String, DecoderInliner) {
     let mut state = DeobfuscateState::new();
     rotation.finalize(&mut state);
 
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = oxc_traverse::ReusableTraverseCtx::new(state, scoping, &allocator);
 
     let mut inliner = StringArrayInliner::new();

@@ -8,11 +8,12 @@ use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{ArrayExpressionElement, AssignmentTarget, Expression};
 use oxc_parser::Parser;
-use oxc_semantic::{Semantic, SemanticBuilder};
+use oxc_semantic::Semantic;
 use oxc_span::SourceType;
 use rustc_hash::FxHashMap;
 
 use super::naming::object_property;
+use crate::ast_deobfuscate::semantic;
 use extract::{Extractor, Instructions, TemplateFn, as_function};
 use render::{Bundle, ConstAttrs, Renderer};
 
@@ -40,7 +41,7 @@ pub fn annotate_angular_templates(code: &str, source_type: SourceType) -> (Strin
         return (code.to_string(), 0);
     }
     let program = parsed.program;
-    let semantic = SemanticBuilder::new().with_build_nodes(true).build(&program).semantic;
+    let semantic = semantic::build_with(&program, |builder| builder.with_build_nodes(true)).semantic;
     let mut inserts = decompile(code, &semantic);
     if inserts.is_empty() {
         return (code.to_string(), 0);

@@ -1,11 +1,10 @@
-#[cfg(test)]
 use super::*;
-use crate::ast_deobfuscate::DeobfuscateState;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+use crate::ast_deobfuscate::{DeobfuscateState, semantic};
+#[cfg(test)]
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -15,13 +14,13 @@ fn run(code: &str) -> String {
     let mut prog = parsed.program;
 
     // Soundness guard (mirrors the Phase 12.5 wiring in `mod.rs`).
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut guard = RenameGuardCollector::new();
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let guarded = guard.into_guarded(&scoping);
     // Slot mode (the original behaviour these tests pin): no proposals.
     let plan = plan_local_renames(
@@ -32,7 +31,7 @@ fn run(code: &str) -> String {
         &FxHashMap::default(),
     );
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut renamer = LocalRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
@@ -48,26 +47,26 @@ fn run_readable(code: &str) -> String {
     let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
     let mut prog = parsed.program;
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut guard = RenameGuardCollector::new();
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let guarded = guard.into_guarded(&scoping);
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut collector = HeuristicNameCollector::new();
     traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
     drop(ctx);
     let (desired, free_names) = collector.into_parts();
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let plan = plan_local_renames(&scoping, &guarded, RenameMode::Readable, &desired, &free_names);
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut renamer = LocalRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
@@ -211,13 +210,13 @@ fn plan_with_stats(code: &str) -> (LocalRenameMap, LocalRenamePlanStats) {
     let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
     let mut prog = parsed.program;
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut guard = RenameGuardCollector::new();
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
 
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let guarded = guard.into_guarded(&scoping);
     plan_local_renames_with_stats(
         &scoping,
@@ -259,12 +258,12 @@ fn stats_plan_agrees_with_plain_planner() {
     let alloc = Allocator::default();
     let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
     let mut prog = parsed.program;
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     let mut guard = RenameGuardCollector::new();
     traverse_mut_with_ctx(&mut guard, &mut prog, &mut ctx);
     drop(ctx);
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let guarded = guard.into_guarded(&scoping);
     let plain = plan_local_renames(
         &scoping,

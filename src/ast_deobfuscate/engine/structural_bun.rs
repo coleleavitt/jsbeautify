@@ -2,8 +2,9 @@ use super::{
     Allocator, AstDeobfuscator, BunHelper, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector,
     BunRuntimeRenamer, BundleRuntime, Bundler, ClassNameCollector, ClassNameRenamer, DeobfuscateState,
     DisplayNameCollector, ExportNameCollector, ExportNameRenamer, ParamHeuristicRenamer, Program, ReusableTraverseCtx,
-    SemanticBuilder, bun, flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
+    bun, flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
+use crate::ast_deobfuscate::semantic;
 
 use crate::ast_deobfuscate::project;
 use oxc_ast::ast::Ident;
@@ -31,7 +32,7 @@ impl AstDeobfuscator {
         }
 
         let helper_symbols = {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut collector = BunRuntimeCollector::new();
             traverse_mut_with_ctx(&mut collector, program, &mut ctx);
@@ -51,13 +52,13 @@ impl AstDeobfuscator {
 
         eprintln!("[DEOBFUSCATE] Phase 0.97: Class name detection (this.name / displayName)");
         {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut class_collector = ClassNameCollector::new();
             traverse_mut_with_ctx(&mut class_collector, program, &mut ctx);
             let mut class_map = class_collector.into_map();
 
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut display_collector = DisplayNameCollector::new();
             traverse_mut_with_ctx(&mut display_collector, program, &mut ctx);
@@ -77,7 +78,7 @@ impl AstDeobfuscator {
                     "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
                     class_map.len()
                 );
-                let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+                let scoping = semantic::scoping(program);
                 // Two classes may carry the same `this.name`, and a name may
                 // already be bound or read as a global in scope.
                 let reserved = rename_guards::free_global_names(program, &scoping)
@@ -94,7 +95,7 @@ impl AstDeobfuscator {
 
         eprintln!("[DEOBFUSCATE] Phase 0.98: Heuristic parameter renaming");
         {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut param_renamer = ParamHeuristicRenamer::new().keep_fn_names(self.keep_fn_names);
             traverse_mut_with_ctx(&mut param_renamer, program, &mut ctx);
@@ -131,7 +132,7 @@ fn rename_runtime_helpers<'a>(
 ) -> BundleRuntime {
     mem_ck("enter Phase 0.9 (helpers)");
     eprintln!("[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check");
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = BunRuntimeCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
@@ -160,7 +161,7 @@ fn rename_runtime_helpers<'a>(
             .filter(|(symbol, _)| !guards.symbols.contains(symbol) || guards.specifier_exports.contains(symbol))
             .map(|(symbol, helper)| (*symbol, helper.canonical().to_string()))
             .collect();
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let globals: FxHashSet<&str> = scoping.root_unresolved_references().keys().map(Ident::as_str).collect();
         let reserved = guards.eval_names.iter().map(String::as_str).collect();
         let mut plan = bun::export_renamer::make_names_unique(desired, &scoping, &reserved);
@@ -209,7 +210,7 @@ fn rename_exports<'a>(
     short_export_names: bool,
 ) {
     eprintln!("[DEOBFUSCATE] Phase 0.95: __export() name extraction & rename");
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     // Import bindings named by the project plan keep its name.
     let seeded = project::seeded_imports(program, seeds);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -248,7 +249,7 @@ fn rename_exports<'a>(
             "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
             export_map.len()
         );
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         // Legal, unique-per-scope names (reserved words like `instanceof`,
         // duplicate `ZodType`/`Client`) that never capture a global or a
         // name read by `eval("name")`.
@@ -278,7 +279,7 @@ fn rename_module_handles<'a>(
 ) {
     mem_ck("enter Phase 0.99 (module handles)");
     eprintln!("[DEOBFUSCATE] Phase 0.99: module-handle renaming");
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = BunModuleHandleCollector::new(helper_symbols);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
@@ -302,7 +303,7 @@ fn rename_module_handles<'a>(
             "[DEOBFUSCATE] Phase 0.99: Found {} module wrapper handles",
             module_handles.len()
         );
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut renamer = BunModuleHandleRenamer::new(module_handles);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);

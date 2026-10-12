@@ -1,9 +1,9 @@
 use super::{
     Allocator, AstDeobfuscator, BodyBlockWrapper, BunRuntimeCollector, BundleRuntime, Codegen, DeobfuscateState,
     LetToConst, MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx,
-    SemanticBaseline, SemanticBuilder, SourceType, checkpoint_error_context, eliminate_dead_vars, mem_ck,
-    traverse_mut_with_ctx,
+    SemanticBaseline, SourceType, checkpoint_error_context, eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
 };
+use crate::ast_deobfuscate::semantic;
 
 use rustc_hash::FxHashSet;
 
@@ -29,10 +29,11 @@ impl AstDeobfuscator {
                 )));
             }
             let mut program = parse_result.program;
+            semantic::carry_stats_to(&program);
             mem_ck("cosmetic-A start (after re-parse)");
 
             eprintln!("[DEOBFUSCATE] Phase 13: SemanticBuilder for empty_statement_cleanup");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let scoping = semantic::scoping(&program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             eprintln!("[DEOBFUSCATE] Phase 13: Running empty_statement_cleanup");
             traverse_mut_with_ctx(&mut self.empty_statement_cleanup, &mut program, &mut ctx);
@@ -52,7 +53,7 @@ impl AstDeobfuscator {
 
             mem_ck("enter Phase 14 (sequence split)");
             eprintln!("[DEOBFUSCATE] Phase 14: SemanticBuilder for sequence_expression_split");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let scoping = semantic::scoping(&program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             eprintln!("[DEOBFUSCATE] Phase 14: Running sequence_expression_splitter");
             traverse_mut_with_ctx(&mut self.sequence_expression_splitter, &mut program, &mut ctx);
@@ -63,7 +64,7 @@ impl AstDeobfuscator {
 
             eprintln!("[DEOBFUSCATE] Phase 14.5: Return-sequence splitting");
             {
-                let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+                let scoping = semantic::scoping(&program);
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
                 let mut return_splitter = ReturnSequenceSplitter::new();
                 traverse_mut_with_ctx(&mut return_splitter, &mut program, &mut ctx);
@@ -75,7 +76,7 @@ impl AstDeobfuscator {
 
             mem_ck("enter Phase 15 (multi-var split)");
             eprintln!("[DEOBFUSCATE] Phase 15: SemanticBuilder for multi_var_split");
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let scoping = semantic::scoping(&program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             eprintln!("[DEOBFUSCATE] Phase 15: Running multi_var_splitter");
             traverse_mut_with_ctx(&mut self.multi_var_splitter, &mut program, &mut ctx);
@@ -118,11 +119,12 @@ impl AstDeobfuscator {
             )));
         }
         let mut program = parse_result.program;
+        semantic::carry_stats_to(&program);
         mem_ck("cosmetic-B start (after re-parse)");
 
         mem_ck("enter Phase 16 (ternary-to-if)");
         eprintln!("[DEOBFUSCATE] Phase 16: SemanticBuilder for ternary_to_if_else");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16: Running ternary_to_if_else");
         traverse_mut_with_ctx(&mut self.ternary_to_if_else, &mut program, &mut ctx);
@@ -132,7 +134,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 16.5: SemanticBuilder for switch_true_converter");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16.5: Running switch_true_converter");
         traverse_mut_with_ctx(&mut self.switch_true_converter, &mut program, &mut ctx);
@@ -142,7 +144,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 16.7: SemanticBuilder for json_parse_evaluator");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16.7: Running json_parse_evaluator");
         traverse_mut_with_ctx(&mut self.json_parse_evaluator, &mut program, &mut ctx);
@@ -152,7 +154,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 16.9: SemanticBuilder for optional_chaining_normalizer");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16.9: Running optional_chaining_normalizer");
         traverse_mut_with_ctx(&mut self.optional_chaining_normalizer, &mut program, &mut ctx);
@@ -162,7 +164,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 17.1: SemanticBuilder for nullish_coalescing_simplifier");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 17.1: Running nullish_coalescing_simplifier");
         traverse_mut_with_ctx(&mut self.nullish_coalescing_simplifier, &mut program, &mut ctx);
@@ -175,7 +177,7 @@ impl AstDeobfuscator {
         self.run_statement_split_fixpoint(&allocator, &mut program);
 
         eprintln!("[DEOBFUSCATE] Phase 17.5: SemanticBuilder for minifier idiom reversal");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut idiom_reverser = MinifierIdiomReverser::new();
         traverse_mut_with_ctx(&mut idiom_reverser, &mut program, &mut ctx);
@@ -185,7 +187,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 17.6: SemanticBuilder for let_to_const");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut let_to_const = LetToConst::new();
         traverse_mut_with_ctx(&mut let_to_const, &mut program, &mut ctx);
@@ -195,7 +197,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 18: SemanticBuilder for iife_unwrap");
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 18: Running iife_unwrap");
         traverse_mut_with_ctx(&mut self.iife_unwrap, &mut program, &mut ctx);
@@ -204,7 +206,7 @@ impl AstDeobfuscator {
             self.iife_unwrap.unwrapped_count()
         );
 
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut helper_collector = BunRuntimeCollector::new();
         traverse_mut_with_ctx(&mut helper_collector, &mut program, &mut ctx);
@@ -252,7 +254,7 @@ impl AstDeobfuscator {
         };
         for round in 1..=STATEMENT_SPLIT_MAX_ROUNDS {
             let before = total(self, &return_splitter, &body_wrapper);
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             traverse_mut_with_ctx(&mut body_wrapper, program, &mut ctx);
             traverse_mut_with_ctx(&mut self.short_circuit_to_if, program, &mut ctx);

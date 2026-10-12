@@ -1,11 +1,12 @@
 use super::{InspectError, Inspection, Position, Positions, parse, render};
 use crate::ParseGoal;
+use crate::ast_deobfuscate::semantic;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_cfg::graph::visit::EdgeRef;
 use oxc_cfg::{BlockNodeId, ControlFlowGraph, EdgeType};
 use oxc_semantic::dot::{DebugDot, DebugDotContext};
-use oxc_semantic::{AstNode, AstNodes, SemanticBuilder};
+use oxc_semantic::{AstNode, AstNodes};
 use oxc_span::GetSpan;
 use rustc_hash::FxHashSet;
 use serde::Serialize;
@@ -71,11 +72,12 @@ fn control_flow_on_current_stack(
 ) -> Result<Inspection<ControlFlow>, InspectError> {
     let allocator = Allocator::default();
     let (program, mut diagnostics) = parse(&allocator, source, goal, typescript)?;
-    let ret = SemanticBuilder::new()
-        .with_build_nodes(true)
-        .with_check_syntax_error(true)
-        .with_cfg(true)
-        .build(&program);
+    let ret = semantic::build_with(&program, |builder| {
+        builder
+            .with_build_nodes(true)
+            .with_check_syntax_error(true)
+            .with_cfg(true)
+    });
     diagnostics.extend(render(source, ret.diagnostics.into_vec()));
     let nodes = ret.semantic.nodes();
     let cfg = ret.semantic.cfg().expect("SemanticBuilder::with_cfg builds a CFG");

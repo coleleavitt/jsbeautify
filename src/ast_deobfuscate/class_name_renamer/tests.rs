@@ -1,9 +1,8 @@
-#[cfg(test)]
 use super::*;
-use crate::ast_deobfuscate::DeobfuscateState;
+use crate::ast_deobfuscate::{DeobfuscateState, semantic};
+#[cfg(test)]
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -12,7 +11,7 @@ fn collect(code: &str) -> ClassNameMap {
     let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
     let mut prog = parsed.program;
     let mut collector = ClassNameCollector::new();
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
     collector.into_map()
@@ -23,7 +22,7 @@ fn collect_display(code: &str) -> ClassNameMap {
     let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
     let mut prog = parsed.program;
     let mut collector = DisplayNameCollector::new();
-    let scoping = SemanticBuilder::new().build(&prog).semantic.into_scoping();
+    let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     traverse_mut_with_ctx(&mut collector, &mut prog, &mut ctx);
     collector.into_map()

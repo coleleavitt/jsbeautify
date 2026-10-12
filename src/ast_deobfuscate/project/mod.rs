@@ -25,14 +25,14 @@ pub mod facts;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{ImportDeclarationSpecifier, ModuleExportName, Program, Statement};
-use oxc_semantic::{Scoping, SemanticBuilder};
+use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::rename_planner::rename_unguarded;
-use crate::ast_deobfuscate::{BunHelper, rename_guards};
+use crate::ast_deobfuscate::{BunHelper, rename_guards, semantic};
 
 /// One file's part of the project naming plan.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,7 +202,7 @@ pub(crate) fn apply_project_seeds<'a>(
     seeds: &ProjectSeeds,
     keep_fn_names: bool,
 ) -> usize {
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let imports: FxHashMap<(&str, &str), &str> = seeds
         .imports
         .iter()
@@ -230,7 +230,7 @@ pub(crate) fn apply_project_seeds<'a>(
     let guards = rename_guards::guards(allocator, program, keep_fn_names);
     plan.retain(|(_, name)| !guards.eval_names.contains(name));
     let guarded: FxHashSet<SymbolId> = guards.symbols.difference(&guards.specifier_exports).copied().collect();
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let blockers = blocking_locals(&scoping, &plan, &guarded);
     let scoping = if blockers.is_empty() {
         scoping
@@ -240,7 +240,7 @@ pub(crate) fn apply_project_seeds<'a>(
             "[DEOBFUSCATE] Phase 0.84: Moved {} local bindings off names the project plan gives linked bindings",
             moved.planned
         );
-        SemanticBuilder::new().build(program).semantic.into_scoping()
+        semantic::scoping(program)
     };
     let counts = rename_unguarded(allocator, program, scoping, plan, &guarded, &FxHashMap::default());
     eprintln!(

@@ -1,10 +1,9 @@
-#[cfg(test)]
 use super::*;
-use crate::ast_deobfuscate::DeobfuscateState;
+use crate::ast_deobfuscate::{DeobfuscateState, semantic};
+#[cfg(test)]
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -16,7 +15,7 @@ fn run_operator_proxy(code: &str) -> String {
 
     let mut collector = OperatorProxyCollector::new();
     let state = DeobfuscateState::new();
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
     traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
@@ -26,7 +25,7 @@ fn run_operator_proxy(code: &str) -> String {
     if !proxies.is_empty() {
         let mut inliner = OperatorProxyInliner::new(proxies);
         let state = DeobfuscateState::new();
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
         traverse_mut_with_ctx(&mut inliner, &mut program, &mut ctx);

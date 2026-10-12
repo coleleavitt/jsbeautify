@@ -7,7 +7,7 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
-use oxc_semantic::{Scoping, SemanticBuilder};
+use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::operator::BinaryOperator;
 use oxc_syntax::scope::ScopeFlags;
@@ -16,6 +16,7 @@ use regex::Regex;
 
 use super::budget::AnalysisBudget;
 use super::report::SourceSpan;
+use crate::ast_deobfuscate::semantic;
 
 #[derive(Debug, Clone)]
 pub(super) struct ArrayFact {
@@ -55,7 +56,7 @@ pub(super) struct SyntaxFacts {
 pub(super) fn collect(source: &str, budget: &mut AnalysisBudget) -> SyntaxFacts {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, SourceType::mjs()).parse();
-    let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
+    let semantic = semantic::build(&parsed.program).semantic;
     let scoping = semantic.scoping();
 
     let mut collector = SyntaxCollector {

@@ -230,18 +230,18 @@ mod tests {
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::ReusableTraverseCtx;
 
     use super::apply_rename_plan;
+    use crate::ast_deobfuscate::semantic;
     use crate::ast_deobfuscate::state::DeobfuscateState;
 
     /// Rename the first binding called `from` to `to` in sloppy `CommonJS` code.
     fn rename(code: &str, from: &str, to: &str) -> String {
         let allocator = Allocator::default();
         let mut program = Parser::new(&allocator, code, SourceType::cjs()).parse().program;
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let symbol = scoping
             .symbol_ids()
             .find(|&s| scoping.symbol_name(s) == from)

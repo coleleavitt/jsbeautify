@@ -11,11 +11,11 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BinaryOperator, BindingPattern, Expression, ForStatement, ForStatementInit, Program, Statement, UpdateOperator,
 };
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SPAN;
 use oxc_syntax::scope::ScopeFlags;
 use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with_ctx};
 
+use crate::ast_deobfuscate::semantic;
 use crate::oxc_opts::state::OptimizationState;
 
 pub type Ctx<'a> = TraverseCtx<'a, OptimizationState>;
@@ -34,7 +34,7 @@ impl LoopUnroller {
         self.changed = false;
 
         let state = OptimizationState::new();
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(state, scoping, allocator);
 
         traverse_mut_with_ctx(self, program, &mut ctx);

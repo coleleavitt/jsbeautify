@@ -153,11 +153,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for ShortCircuitToIf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast_deobfuscate::DeobfuscateState;
+    use crate::ast_deobfuscate::{DeobfuscateState, semantic};
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -169,7 +168,7 @@ mod tests {
 
         let mut converter = ShortCircuitToIf::new();
         let state = DeobfuscateState::new();
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
         traverse_mut_with_ctx(&mut converter, &mut program, &mut ctx);
@@ -270,7 +269,7 @@ mod tests {
         let mut program = Parser::new(&allocator, "x && (y ? f() : g());", SourceType::mjs())
             .parse()
             .program;
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         traverse_mut_with_ctx(&mut ShortCircuitToIf::new(), &mut program, &mut ctx);
         let Statement::IfStatement(if_stmt) = &program.body[0] else {

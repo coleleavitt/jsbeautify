@@ -62,11 +62,11 @@ mod tests;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_semantic::SemanticBuilder;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 use crate::ast_deobfuscate::project::{TurbopackFacts, TurbopackReexport};
 use crate::ast_deobfuscate::rename_planner::apply_rename_plan;
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use collector::NameCollector;
@@ -84,7 +84,7 @@ pub fn rename_turbopack_bindings<'a>(
     keep_fn_names: bool,
 ) {
     eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
     let mut names = NameCollector::default();
@@ -149,7 +149,7 @@ pub fn rename_turbopack_bindings<'a>(
 /// The Turbopack facts of `program` a project index needs (see
 /// [`crate::ast_deobfuscate::project`]), or `None` on other input.
 pub fn project_facts<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> Option<TurbopackFacts> {
-    let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut names = NameCollector::default();
     traverse_mut_with_ctx(&mut names, program, &mut ctx);

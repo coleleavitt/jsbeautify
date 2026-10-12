@@ -1,9 +1,10 @@
 use super::{
     Allocator, ApplyCallSimplifier, AstDeobfuscator, BunSyntaxNormalizer, CallProxyCollector, CallProxyInliner,
     CallThisSimplifier, CffUnflattener, ConcatCanonicaliser, DeobfuscateState, DispatcherDetector, DynConcatResolver,
-    FromCharCodeFolder, OperatorProxyCollector, OperatorProxyInliner, Program, ReusableTraverseCtx, SemanticBuilder,
+    FromCharCodeFolder, OperatorProxyCollector, OperatorProxyInliner, Program, ReusableTraverseCtx,
     UnaryProxyCollector, UnaryProxyInliner, collect_case_bodies, eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
 };
+use crate::ast_deobfuscate::semantic;
 
 impl AstDeobfuscator {
     pub(super) fn run_structural_mid<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
@@ -16,7 +17,7 @@ impl AstDeobfuscator {
     fn run_string_array_and_decoder_phases<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
         mem_ck("enter Phase 1 (control-flow unflatten)");
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
         eprintln!("[DEOBFUSCATE] Phase 1: Running control_flow_unflattener");
@@ -28,7 +29,7 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 1: control_flow_unflattener DONE");
 
         eprintln!("[DEOBFUSCATE] Phase 2: SemanticBuilder for string_array_rotation");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
         eprintln!("[DEOBFUSCATE] Phase 2: Running string_array_rotation");
@@ -41,7 +42,7 @@ impl AstDeobfuscator {
         self.string_array_rotation.finalize(&mut state);
 
         eprintln!("[DEOBFUSCATE] Phase 2.5: Self-defending string array (javascript-obfuscator modern)");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(state, scoping, allocator);
         traverse_mut_with_ctx(&mut self.self_defending_string_array, program, &mut ctx);
         let mut state = ctx.into_state();
@@ -54,7 +55,7 @@ impl AstDeobfuscator {
 
         mem_ck("enter Phase 3 (decoder/string-array)");
         eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for decoder/string_array/dispatcher");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(state, scoping, allocator);
 
         eprintln!("[DEOBFUSCATE] Phase 3: Running decoder_inliner");
@@ -74,7 +75,7 @@ impl AstDeobfuscator {
 
     fn run_proxy_and_call_simplifiers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
         eprintln!("[DEOBFUSCATE] Phase 4: SemanticBuilder for call_proxy");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut call_proxy_collector = CallProxyCollector::new();
         eprintln!("[DEOBFUSCATE] Phase 4: Running call_proxy_collector");
@@ -84,7 +85,7 @@ impl AstDeobfuscator {
         let rewrites = if call_proxies.is_empty() {
             0
         } else {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = CallProxyInliner::new(call_proxies);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
@@ -99,7 +100,7 @@ impl AstDeobfuscator {
 
     fn run_operator_proxy<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
         eprintln!("[DEOBFUSCATE] Phase 5: SemanticBuilder for operator_proxy");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut op_proxy_collector = OperatorProxyCollector::new();
         eprintln!("[DEOBFUSCATE] Phase 5: Running operator_proxy_collector");
@@ -109,7 +110,7 @@ impl AstDeobfuscator {
         let rewrites = if op_proxies.is_empty() {
             0
         } else {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = OperatorProxyInliner::new(op_proxies);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
@@ -120,7 +121,7 @@ impl AstDeobfuscator {
 
     fn run_unary_proxy<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
         eprintln!("[DEOBFUSCATE] Phase 5b: SemanticBuilder for unary_proxy");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut un_proxy_collector = UnaryProxyCollector::new();
         eprintln!("[DEOBFUSCATE] Phase 5b: Running unary_proxy_collector");
@@ -128,7 +129,7 @@ impl AstDeobfuscator {
         let un_proxies = un_proxy_collector.get_proxies();
         eprintln!("[DEOBFUSCATE] Phase 5b: Found {} unary proxies", un_proxies.len());
         if !un_proxies.is_empty() {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = UnaryProxyInliner::new(un_proxies);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
@@ -141,7 +142,7 @@ impl AstDeobfuscator {
 
     fn run_apply_concat_and_call_this<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
         eprintln!("[DEOBFUSCATE] Phase 5c: apply/call simplifier");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut apply_call = ApplyCallSimplifier::new();
         traverse_mut_with_ctx(&mut apply_call, program, &mut ctx);
@@ -151,7 +152,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 5d: concat canonicaliser + String.fromCharCode folder");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut concat = ConcatCanonicaliser::new();
         traverse_mut_with_ctx(&mut concat, program, &mut ctx);
@@ -169,7 +170,7 @@ impl AstDeobfuscator {
         Self::run_dyn_concat(allocator, program);
 
         eprintln!("[DEOBFUSCATE] Phase 5e: call-this simplifier");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut call_this = CallThisSimplifier::new();
         traverse_mut_with_ctx(&mut call_this, program, &mut ctx);
@@ -183,7 +184,7 @@ impl AstDeobfuscator {
         mem_ck("enter Phase 5d.5 (dyn-concat)");
         eprintln!("[DEOBFUSCATE] Phase 5d.5: dyn-concat resolver (string-var inlining)");
         let mut dyn_resolver = DynConcatResolver::new();
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         traverse_mut_with_ctx(&mut dyn_resolver, program, &mut ctx);
         eprintln!("[DEOBFUSCATE] Phase 5d.5: {} rewrites", dyn_resolver.rewrites());
@@ -192,7 +193,7 @@ impl AstDeobfuscator {
     fn run_expression_cluster<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
         mem_ck("enter Phase 6 (simplify cluster)");
         eprintln!("[DEOBFUSCATE] Phase 6: SemanticBuilder for simplification passes");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         eprintln!("[DEOBFUSCATE] Phase 6: Running expression_simplifier");
         traverse_mut_with_ctx(&mut self.expression_simplifier, program, &mut ctx);
@@ -232,7 +233,7 @@ impl AstDeobfuscator {
 
     fn run_dead_var_and_cff<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
         eprintln!("[DEOBFUSCATE] Phase 7: SemanticBuilder for dead_code_eliminator");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         eprintln!("[DEOBFUSCATE] Phase 7: Running dead_code_eliminator");
         traverse_mut_with_ctx(&mut self.dead_code_eliminator, program, &mut ctx);
@@ -253,7 +254,7 @@ impl AstDeobfuscator {
         let dispatchers = detector.detect(program);
         eprintln!("[DEOBFUSCATE] Phase 8.5: Found {} dispatchers", dispatchers.len());
         if !dispatchers.is_empty() {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let case_bodies = collect_case_bodies(program, &dispatchers, allocator);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);

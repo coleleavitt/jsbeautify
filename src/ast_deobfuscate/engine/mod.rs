@@ -15,7 +15,6 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashMap;

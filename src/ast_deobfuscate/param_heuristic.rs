@@ -194,11 +194,10 @@ fn infer_param_name(param_name: &str, idx: usize, _body: &FunctionBody<'_>, tota
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast_deobfuscate::DeobfuscateState;
+    use crate::ast_deobfuscate::{DeobfuscateState, semantic};
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -206,7 +205,7 @@ mod tests {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, code, SourceType::mjs()).parse();
         let mut program = parsed.program;
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut renamer = ParamHeuristicRenamer::new();
         traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);

@@ -89,10 +89,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for BodyBlockWrapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast_deobfuscate::semantic;
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -101,7 +101,7 @@ mod tests {
         let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
         let mut program = ret.program;
         let mut wrapper = BodyBlockWrapper::new();
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         traverse_mut_with_ctx(&mut wrapper, &mut program, &mut ctx);
         (Codegen::new().build(&program).code, wrapper.wrapped_count())

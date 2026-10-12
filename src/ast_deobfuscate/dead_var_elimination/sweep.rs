@@ -2,11 +2,11 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashSet;
 
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::{DeadVarCollector, DeadVarEliminator};
@@ -96,7 +96,7 @@ fn validate_and_commit<'a>(
         };
     }
 
-    let scoping = SemanticBuilder::new().build(&candidate).semantic.into_scoping();
+    let scoping = semantic::scoping(&candidate);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &candidate_allocator);
     let mut eliminator = DeadVarEliminator::new(dead_vars);
     traverse_mut_with_ctx(&mut eliminator, &mut candidate, &mut ctx);
@@ -120,7 +120,7 @@ fn validate_and_commit<'a>(
     let accepted_source = Codegen::new().build(&candidate).code;
     let verification_allocator = Allocator::default();
     let verified = Parser::new(&verification_allocator, &accepted_source, source_type).parse();
-    let verified_semantic = SemanticBuilder::new().build(&verified.program);
+    let verified_semantic = semantic::build(&verified.program);
     if !verified.diagnostics.is_empty() || !verified_semantic.diagnostics.is_empty() {
         return rejected(candidate_symbols);
     }
@@ -132,6 +132,7 @@ fn validate_and_commit<'a>(
         "validated dead-var output failed deterministic reparse"
     );
     *program = committed.program;
+    semantic::carry_stats_to(program);
 
     DeadVarSweepResult {
         candidate_symbols,
@@ -149,7 +150,7 @@ const fn rejected(candidate_symbols: usize) -> DeadVarSweepResult {
 }
 
 fn collect_semantic_state<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> (DeadVarCollector, usize) {
-    let semantic = SemanticBuilder::new().build(program);
+    let semantic = semantic::build(program);
     let error_count = semantic.diagnostics.len();
     let scoping = semantic.semantic.into_scoping();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);

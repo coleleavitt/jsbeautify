@@ -1,11 +1,11 @@
 use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{BindingPattern, Expression, Program, Statement};
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SPAN;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 
+use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -51,7 +51,7 @@ impl StackTrackerRemover {
         collect_tracker_stats(&program.body, &mut candidates);
         if program.source_type.is_script() {
             // A script's top-level tracker is a global another script may read.
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             for name in scoping.get_bindings(scoping.root_scope_id()).keys() {
                 candidates.remove(name.as_str());
             }

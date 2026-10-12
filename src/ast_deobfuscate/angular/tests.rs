@@ -1,10 +1,10 @@
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 
 use super::{annotate_angular_templates, rename_angular_symbols};
+use crate::ast_deobfuscate::semantic;
 
 fn rename(code: &str) -> String {
     let allocator = Allocator::default();
@@ -13,7 +13,7 @@ fn rename(code: &str) -> String {
     let out = Codegen::new().build(&program).code;
     let reparsed = Parser::new(&allocator, &out, SourceType::mjs()).parse();
     assert!(reparsed.diagnostics.is_empty(), "renamed output must parse:\n{out}");
-    let semantic = SemanticBuilder::new().build(&reparsed.program);
+    let semantic = semantic::build(&reparsed.program);
     assert!(
         semantic.diagnostics.is_empty(),
         "renamed output must be semantically valid:\n{out}"

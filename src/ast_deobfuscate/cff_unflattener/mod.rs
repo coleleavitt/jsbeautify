@@ -39,11 +39,11 @@ pub use unflattener::CffUnflattener;
 mod tests {
     use super::*;
     use crate::ast_deobfuscate::dispatcher_detector::DispatcherDetector;
+    use crate::ast_deobfuscate::semantic;
     use crate::ast_deobfuscate::state::DeobfuscateState;
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -58,7 +58,7 @@ mod tests {
             return (Codegen::new().build(&program).code, 0);
         }
 
-        let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping = semantic::scoping(&program);
         let case_bodies = collect_case_bodies(&program, &dispatchers, &allocator);
         let mut unflattener = CffUnflattener::new(dispatchers, case_bodies);
 

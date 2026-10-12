@@ -1,9 +1,10 @@
 use super::{
     Allocator, AstDeobfuscator, DeobfuscateState, DispatchInlinerCollector, DispatchInlinerRewriter,
     DoWhileSwitchCleaner, DoWhileSwitchDetector, FunctionCollector, FunctionInliner, FxHashMap, Program,
-    ReusableTraverseCtx, SemanticBuilder, TraceSpan, collect_constants, eliminate_dead_vars, mem_ck, rename_guards,
+    ReusableTraverseCtx, TraceSpan, collect_constants, eliminate_dead_vars, mem_ck, rename_guards,
     resolve_compound_transitions, traverse_mut_with_ctx,
 };
+use crate::ast_deobfuscate::semantic;
 
 impl AstDeobfuscator {
     pub(super) fn run_structural_late<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
@@ -27,7 +28,7 @@ impl AstDeobfuscator {
 
         mem_ck("enter Phase 9 (function inline)");
         eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut func_collector = FunctionCollector::new();
         eprintln!("[DEOBFUSCATE] Phase 9: Running function_collector");
@@ -37,7 +38,7 @@ impl AstDeobfuscator {
         let rewrites = if single_use.is_empty() {
             0
         } else {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut inliner = FunctionInliner::new(single_use);
             traverse_mut_with_ctx(&mut inliner, program, &mut ctx);
@@ -46,7 +47,7 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 9: Found {found} single-use functions, {rewrites} inline rewrites");
 
         eprintln!("[DEOBFUSCATE] Phase 9.5: dispatch inliner (string-array-factory resolution)");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut di_collector = DispatchInlinerCollector::new();
         traverse_mut_with_ctx(&mut di_collector, program, &mut ctx);
@@ -61,7 +62,7 @@ impl AstDeobfuscator {
             .map(|(k, &v)| (k.clone(), i64::try_from(v).unwrap_or(i64::MAX)))
             .collect();
         if !di_factories.is_empty() {
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut di_rewriter = DispatchInlinerRewriter::new(di_factories, di_constants);
             traverse_mut_with_ctx(&mut di_rewriter, program, &mut ctx);
@@ -85,7 +86,7 @@ impl AstDeobfuscator {
 
             eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
             let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, program);
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             traverse_mut_with_ctx(&mut cleaner, program, &mut ctx);
             eprintln!("[DEOBFUSCATE] Phase 9.7: Pruned {} dead cases", cleaner.pruned_cases());
@@ -95,7 +96,7 @@ impl AstDeobfuscator {
         Self::run_dead_var_sweep(allocator, program, "10.5", "Post-CFF dead-var sweep");
 
         eprintln!("[DEOBFUSCATE] Phase 10: SemanticBuilder for array/dynamic/ternary/try_catch");
-        let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         eprintln!("[DEOBFUSCATE] Phase 10: Running array_unpacker");
         traverse_mut_with_ctx(&mut self.array_unpacker, program, &mut ctx);
@@ -120,7 +121,7 @@ impl AstDeobfuscator {
         // which create new BlockStatement nodes during traversal.
         mem_ck("enter Phase 11 (bool/void/sparsing)");
         eprintln!("[DEOBFUSCATE] Phase 11: SemanticBuilder for boolean/void/object_sparsing");
-        let semantic_result = SemanticBuilder::new().build(program);
+        let semantic_result = semantic::build(program);
         eprintln!(
             "[DEOBFUSCATE] Phase 11: SemanticBuilder completed, errors: {}",
             semantic_result.diagnostics.len()
@@ -156,7 +157,7 @@ impl AstDeobfuscator {
             };
             kept.extend(crate::ast_deobfuscate::project::seeded_imports(program, &self.project));
             self.variable_renamer.keep(kept);
-            let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             eprintln!("[DEOBFUSCATE] Phase 12: Running variable_renamer");
             traverse_mut_with_ctx(&mut self.variable_renamer, program, &mut ctx);

@@ -1,8 +1,9 @@
 use oxc_allocator::Allocator;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_parser::Parser;
-use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
+
+use crate::ast_deobfuscate::semantic;
 
 /// Builds a human-readable context window around the first parse error of a
 /// failed checkpoint re-parse. The byte offset is read from the diagnostic's
@@ -61,7 +62,7 @@ pub(super) fn semantic_baseline(code: &str, source_type: SourceType) -> Semantic
     if !parse_result.diagnostics.is_empty() {
         return SemanticBaseline::Unknown;
     }
-    SemanticBaseline::Errors(SemanticBuilder::new().build(&parse_result.program).diagnostics.len())
+    SemanticBaseline::Errors(semantic::build(&parse_result.program).diagnostics.len())
 }
 
 /// Logs validity of generated output and returns whether it is valid.
@@ -87,7 +88,7 @@ pub(super) fn log_output_validity(
         return false;
     }
 
-    let semantic_result = SemanticBuilder::new().build(&parse_result.program);
+    let semantic_result = semantic::build(&parse_result.program);
     if !semantic_result.diagnostics.is_empty() {
         let found = semantic_result.diagnostics.len();
         eprintln!(
