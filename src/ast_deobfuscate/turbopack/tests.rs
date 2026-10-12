@@ -299,3 +299,155 @@ fn reads_a_leading_plain_factory_list() {
     );
     assert!(node.contains("function(__turbopack_context__)"), "{node}");
 }
+
+#[test]
+fn names_mangled_exports_from_reexports_in_the_same_file() {
+    let out = run(r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["c.js",
+        13477,e=>{let t=(0,e.i(42871).f)("work-async-storage");e.s(["f",0,t])},
+        26088,e=>{function t(){}function n(){}e.s(["a",0,t,"U",0,n])},
+        52482,e=>{e.S([96154,0,13477,"workAsyncStorage,f"])},
+        16448,e=>{var n=e.i(26088);e.S([n,"getCacheSignal","a"])},
+        7,e=>{function t(){}e.s(["b",0,t])},
+        8,e=>{e.S([7,"one,b",0,9,"two,b"]);e.S([7,"three,b"])}
+    ]);"#);
+    assert!(out.contains("let workAsyncStorage = (0, "), "{out}");
+    assert!(out.contains("function getCacheSignal()"), "namespace head: {out}");
+    assert!(out.contains("function n()"), "key nobody re-exports: {out}");
+    assert!(out.contains("function t()"), "two names for one key: {out}");
+}
+
+#[test]
+fn skips_mangled_reexport_names() {
+    let out = run(r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["c.js",
+        1,e=>{let t=1;e.s(["f",0,t])},
+        2,e=>{e.S([1,"a,f"])}
+    ]);"#);
+    assert!(out.contains("let t = 1"), "{out}");
+}
+
+#[test]
+fn names_react_refresh_handles() {
+    let out = run(
+        r#"(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push(["c.js",
+"[project]/src/app/counter.tsx [app-client] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+var _s = __turbopack_context__.k.signature();
+function Counter() {
+    _s();
+    return 1;
+}
+_s(Counter, "abc123=");
+_c = Counter;
+var _c;
+__turbopack_context__.k.register(_c, "Counter");
+if (typeof globalThis.$RefreshHelpers$ === 'object' && globalThis.$RefreshHelpers !== null) {
+    __turbopack_context__.k.registerExports(__turbopack_context__.m, globalThis.$RefreshHelpers$);
+}
+}),
+]);"#,
+    );
+    assert!(
+        out.contains("var refreshSig_Counter = __turbopack_context__.k.signature();"),
+        "{out}"
+    );
+    assert!(out.contains("refreshSig_Counter(Counter, \"abc123=\");"), "{out}");
+    assert!(out.contains("refreshReg_Counter = Counter;"), "{out}");
+    assert!(
+        out.contains("__turbopack_context__.k.register(refreshReg_Counter, \"Counter\");"),
+        "{out}"
+    );
+}
+
+#[test]
+fn names_require_context_maps() {
+    let out = run(r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["c.js",
+        60168,e=>{var t=e.f(e.r(52812));e.s(["iconNames",0,function(){return t.keys()}])},
+        52812,function(e){e.v({"./moon.js":{id:()=>3456,module:()=>e.r(3456)}})},
+        "[project]/src/lib/icons.js [app-rsc] (ecmascript)",(__turbopack_context__)=>{const iconsCtx=__turbopack_context__.f(__turbopack_context__.r("[project]/src/lib/icons.js (require.context ./icons/*)"));const c=__turbopack_context__.f(__turbopack_context__.r("[project]/src/lib/icons.js (require.context ./icons/*)"))}
+    ]);"#);
+    assert!(
+        out.contains("var requireContext_52812 = __turbopack_context__.f("),
+        "{out}"
+    );
+    assert!(out.contains("const iconsCtx ="), "authored names stay: {out}");
+    assert!(out.contains("const requireContext_src_lib_icons_js ="), "{out}");
+}
+
+#[test]
+fn names_the_next_edge_wrapper() {
+    let out = run(
+        r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["chunks/a.js",
+        28517,(e,t,n)=>{self._ENTRIES||={};let s=Promise.resolve().then(()=>e.i(55658));s.catch(()=>{}),self._ENTRIES["middleware_app/api/edge/route"]=new Proxy(s,{get(e,t){if("then"===t)return(t,n)=>e.then(t,n);let n=(...n)=>e.then(e=>(0,e[t])(...n));return n.then=(n,s)=>e.then(e=>e[t]).then(n,s),n}})}
+    ]);"#,
+    );
+    assert!(out.contains("let modProm = Promise.resolve()"), "{out}");
+    assert!(out.contains("new Proxy(modProm, {"), "{out}");
+    assert!(out.contains("get(innerModProm, name) {"), "{out}");
+}
+
+/// The shapes of `browser/runtime/base/dev-base.ts` and `dom/*-backend-dom.ts`
+/// after minification.
+const MINIFIED_DEV_RUNTIME: &str = r#"(()=>{let e,D;var r=globalThis.TURBOPACK;if(void 0===r)r=[];else if(!Array.isArray(r))return;globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS||=[];var U={push:e=>globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS.push(e)};
+function i(e,t){this.m=e,this.e=t}let u=i.prototype;function a(e){return this.r(e)}function m(e){}u.i=a;
+let L=new Map;u.c=L;u.l=m;
+class E extends Error{name="UpdateApplyError";constructor(e){super(e)}}
+function k(e,t,r){i.call(this,e,t),this.k=r}k.prototype=i.prototype;
+function F(e){throw Error(`Invariant: ${e}`)}
+function C(e,t){if(e.type!=="x")throw Error(`Unknown chunk update type: ${e.type}`);return t}
+function S(e,t){let r=e.get(t);r.then(()=>{},n=>{throw Error(`Failed to load chunk ${t} ${n}${""}`)});return r}
+function W(e){throw Error(function(e){return`Module ${e} was instantiated ${e}, but the module factory is not available.`}(e))}
+function X(e){if("function"==typeof globalThis.$RefreshInterceptModuleExecution$){let t=globalThis.$RefreshInterceptModuleExecution$(e.id);try{e.run({register:globalThis.$RefreshReg$,signature:globalThis.$RefreshSig$,registerExports:Y})}finally{t()}}else e.run(Z)}
+function Y(e,t){}const Z={register:(e,t)=>{},signature:()=>e=>{},registerExports:(e,t)=>{}};
+function H(t){return e.registerChunk(t[0],t[1])}function G(t){}
+e={async registerChunk(e,t){},loadChunkCached:(e,t)=>S(e,t)};D={unloadChunk(e){},reloadChunk(e){}};
+globalThis.TURBOPACK={push:H},r.forEach(H);var V=globalThis.TURBOPACK_CHUNK_LISTS||[];globalThis.TURBOPACK_CHUNK_LISTS={push:G},V.forEach(G)})();"#;
+
+#[test]
+fn names_minified_development_browser_runtime() {
+    let out = run(MINIFIED_DEV_RUNTIME);
+    for expected in [
+        "function Context(e, t)",
+        "function DevContext(e, t, refresh)",
+        "this.k = refresh",
+        "contextPrototype.c = devModuleCache",
+        "contextPrototype.l = loadChunk",
+        "class UpdateApplyError extends Error",
+        "function invariant(e)",
+        "function applyChunkListUpdate(e, t)",
+        "function loadChunkByUrlWhole(e, t)",
+        "function runModuleExecutionHooks(e)",
+        "registerExports: registerExportsAndSetupBoundaryForReactRefresh",
+        "const DUMMY_REFRESH_CONTEXT = {",
+        "function registerChunk(t)",
+        "function registerChunkList(t)",
+        "chunksToRegister.forEach(registerChunk)",
+        "chunkListsToRegister.forEach(registerChunkList)",
+        "BACKEND = {",
+        "DEV_BACKEND = {",
+        "var CHUNK_UPDATE_LISTENERS = {",
+    ] {
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    assert!(
+        out.contains("function W(e)"),
+        "a message inlined from another function is not this one's: {out}"
+    );
+}
+
+#[test]
+fn names_development_node_runtime_overrides() {
+    let code = r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;let M=new Map;function a(e){}function b(e){}c.l=a,c.w=1;c.c=M;let h=globalThis.__turbopack_server_hmr_handlers__??new Map;function o(e){}c.l=o;";
+    let out = run(code);
+    assert!(out.contains("function loadChunkAsync(e)"), "{out}");
+    assert!(out.contains("function loadChunkAsyncOnDemand(e)"), "{out}");
+    assert!(out.contains("let devModuleCache = new Map()"), "{out}");
+    let prod = run(r"function g(e,t){this.m=e,this.e=t}var c=g.prototype;let M=new Map;c.c=M;");
+    assert!(prod.contains("let moduleCache = new Map()"), "{prod}");
+}
+
+#[test]
+fn runtime_anchors_need_the_runtime() {
+    let out = run(r"function F(e){throw Error(`Invariant: ${e}`)}class E extends Error{name='UpdateApplyError'}");
+    assert!(out.contains("function F(e)"), "{out}");
+    assert!(out.contains("class E extends Error"), "{out}");
+}
