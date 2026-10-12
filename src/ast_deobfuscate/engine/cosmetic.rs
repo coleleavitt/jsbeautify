@@ -1,7 +1,7 @@
 use super::{
     Allocator, AstDeobfuscator, BodyBlockWrapper, BunRuntimeCollector, BundleRuntime, Codegen, DeobfuscateState,
     LetToConst, MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx,
-    SemanticBaseline, SourceType, checkpoint_error_context, eliminate_dead_vars, mem_ck, traverse_mut_with_ctx,
+    SemanticBaseline, SourceType, checkpoint_error_context, mem_ck, traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::semantic;
 
@@ -36,26 +36,30 @@ impl AstDeobfuscator {
             let scoping = semantic::scoping(&program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             eprintln!("[DEOBFUSCATE] Phase 13: Running empty_statement_cleanup");
+            let removed_before = self.empty_statement_cleanup.removed_count();
             traverse_mut_with_ctx(&mut self.empty_statement_cleanup, &mut program, &mut ctx);
             eprintln!(
                 "[DEOBFUSCATE] Phase 13: Removed {} empty statements",
                 self.empty_statement_cleanup.removed_count()
             );
+            let unchanged = self.empty_statement_cleanup.removed_count() == removed_before;
+            let scoping = unchanged.then(|| ctx.into_scoping());
 
-            eprintln!("[DEOBFUSCATE] Phase 13.5: Post-Phase-13 dead-var sweep");
-            let result = eliminate_dead_vars(&allocator, &mut program);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 13.5: Removed {} dead declarators ({} candidate symbols, rejected={})",
-                result.removed_declarators(),
-                result.candidate_symbols(),
-                result.was_rejected()
+            let (_, scoping) = Self::run_dead_var_sweep(
+                &allocator,
+                &mut program,
+                "13.5",
+                "Post-Phase-13 dead-var sweep",
+                scoping,
+                None,
             );
 
             mem_ck("enter Phase 14 (sequence split)");
             eprintln!("[DEOBFUSCATE] Phase 14: SemanticBuilder for sequence_expression_split");
-            let scoping = semantic::scoping(&program);
+            let scoping = semantic::reuse_or_build(&program, scoping);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             eprintln!("[DEOBFUSCATE] Phase 14: Running sequence_expression_splitter");
+            let split_before = self.sequence_expression_splitter.split_count();
             traverse_mut_with_ctx(&mut self.sequence_expression_splitter, &mut program, &mut ctx);
             eprintln!(
                 "[DEOBFUSCATE] Phase 14: Split {} sequence expressions",
@@ -63,20 +67,19 @@ impl AstDeobfuscator {
             );
 
             eprintln!("[DEOBFUSCATE] Phase 14.5: Return-sequence splitting");
-            {
-                let scoping = semantic::scoping(&program);
-                let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-                let mut return_splitter = ReturnSequenceSplitter::new();
-                traverse_mut_with_ctx(&mut return_splitter, &mut program, &mut ctx);
-                eprintln!(
-                    "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
-                    return_splitter.split_count()
-                );
-            }
+            let changed = self.sequence_expression_splitter.split_count() != split_before;
+            let scoping = semantic::refresh(&program, ctx.into_scoping(), changed);
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+            let mut return_splitter = ReturnSequenceSplitter::new();
+            traverse_mut_with_ctx(&mut return_splitter, &mut program, &mut ctx);
+            eprintln!(
+                "[DEOBFUSCATE] Phase 14.5: Split {} return sequences",
+                return_splitter.split_count()
+            );
 
             mem_ck("enter Phase 15 (multi-var split)");
             eprintln!("[DEOBFUSCATE] Phase 15: SemanticBuilder for multi_var_split");
-            let scoping = semantic::scoping(&program);
+            let scoping = semantic::refresh(&program, ctx.into_scoping(), return_splitter.split_count() > 0);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
             eprintln!("[DEOBFUSCATE] Phase 15: Running multi_var_splitter");
             traverse_mut_with_ctx(&mut self.multi_var_splitter, &mut program, &mut ctx);
@@ -127,14 +130,17 @@ impl AstDeobfuscator {
         let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16: Running ternary_to_if_else");
+        let converted_before = self.ternary_to_if_else.converted_count();
         traverse_mut_with_ctx(&mut self.ternary_to_if_else, &mut program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 16: Converted {} ternary expressions to if/else",
             self.ternary_to_if_else.converted_count()
         );
 
+        // Phases 16.5–17.1 only count patterns, so they share one scoping.
         eprintln!("[DEOBFUSCATE] Phase 16.5: SemanticBuilder for switch_true_converter");
-        let scoping = semantic::scoping(&program);
+        let changed = self.ternary_to_if_else.converted_count() != converted_before;
+        let scoping = semantic::refresh(&program, ctx.into_scoping(), changed);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16.5: Running switch_true_converter");
         traverse_mut_with_ctx(&mut self.switch_true_converter, &mut program, &mut ctx);
@@ -144,8 +150,6 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 16.7: SemanticBuilder for json_parse_evaluator");
-        let scoping = semantic::scoping(&program);
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16.7: Running json_parse_evaluator");
         traverse_mut_with_ctx(&mut self.json_parse_evaluator, &mut program, &mut ctx);
         eprintln!(
@@ -154,8 +158,6 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 16.9: SemanticBuilder for optional_chaining_normalizer");
-        let scoping = semantic::scoping(&program);
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 16.9: Running optional_chaining_normalizer");
         traverse_mut_with_ctx(&mut self.optional_chaining_normalizer, &mut program, &mut ctx);
         eprintln!(
@@ -164,14 +166,13 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 17.1: SemanticBuilder for nullish_coalescing_simplifier");
-        let scoping = semantic::scoping(&program);
-        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 17.1: Running nullish_coalescing_simplifier");
         traverse_mut_with_ctx(&mut self.nullish_coalescing_simplifier, &mut program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 17.1: Detected {} nullish coalescing chains",
             self.nullish_coalescing_simplifier.detected_count()
         );
+        drop(ctx);
         mem_ck("enter Phase 17 (statement-split fixpoint)");
         eprintln!("[DEOBFUSCATE] Phase 17: statement-split fixpoint");
         self.run_statement_split_fixpoint(&allocator, &mut program);
@@ -187,7 +188,7 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 17.6: SemanticBuilder for let_to_const");
-        let scoping = semantic::scoping(&program);
+        let scoping = semantic::refresh(&program, ctx.into_scoping(), idiom_reverser.rewritten_count() > 0);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut let_to_const = LetToConst::new();
         traverse_mut_with_ctx(&mut let_to_const, &mut program, &mut ctx);
@@ -197,16 +198,18 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 18: SemanticBuilder for iife_unwrap");
-        let scoping = semantic::scoping(&program);
+        let scoping = semantic::refresh(&program, ctx.into_scoping(), let_to_const.converted_count() > 0);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         eprintln!("[DEOBFUSCATE] Phase 18: Running iife_unwrap");
+        let unwrapped_before = self.iife_unwrap.unwrapped_count();
         traverse_mut_with_ctx(&mut self.iife_unwrap, &mut program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 18: Unwrapped {} IIFEs",
             self.iife_unwrap.unwrapped_count()
         );
 
-        let scoping = semantic::scoping(&program);
+        let changed = self.iife_unwrap.unwrapped_count() != unwrapped_before;
+        let scoping = semantic::refresh(&program, ctx.into_scoping(), changed);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
         let mut helper_collector = BunRuntimeCollector::new();
         traverse_mut_with_ctx(&mut helper_collector, &mut program, &mut ctx);
@@ -220,18 +223,19 @@ impl AstDeobfuscator {
                 helpers.entry(name.clone()).or_insert(*helper);
             }
         }
+        drop(bound);
         eprintln!(
             "[DEOBFUSCATE] Phase 19: Collected {} runtime helpers for module annotation",
             helpers.len()
         );
 
-        eprintln!("[DEOBFUSCATE] Phase 19.5: Final dead-var sweep");
-        let result = eliminate_dead_vars(&allocator, &mut program);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 19.5: Removed {} dead declarators ({} candidate symbols, rejected={})",
-            result.removed_declarators(),
-            result.candidate_symbols(),
-            result.was_rejected()
+        Self::run_dead_var_sweep(
+            &allocator,
+            &mut program,
+            "19.5",
+            "Final dead-var sweep",
+            Some(scoping),
+            None,
         );
 
         self.generate_final_output(&program, source_type, &helpers, runtime.bundler, baseline)

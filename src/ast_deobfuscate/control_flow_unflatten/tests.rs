@@ -109,3 +109,19 @@ for (;;) {
     assert!(!output.contains("for"));
     assert!(!output.contains("switch"));
 }
+
+#[test]
+fn dropping_a_sequence_declaration_counts_as_a_change_without_a_rewrite() {
+    let allocator = Allocator::default();
+    let mut program = Parser::new(&allocator, r#"var _flow = "2|0|1".split('|'); f();"#, SourceType::mjs())
+        .parse()
+        .program;
+    let mut unflattener = ControlFlowUnflattener::new();
+    let scoping = semantic::scoping(&program);
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut unflattener, &mut program, &mut ctx);
+
+    assert_eq!(unflattener.rewrites(), 0);
+    assert!(unflattener.changed());
+    assert!(!Codegen::new().build(&program).code.contains("_flow"));
+}

@@ -222,15 +222,13 @@ pub(crate) fn apply_project_seeds<'a>(
         )
         .filter(|(symbol, _)| planned.insert(*symbol))
         .collect();
-    drop(scoping);
     if plan.is_empty() {
         return 0;
     }
 
-    let guards = rename_guards::guards(allocator, program, keep_fn_names);
+    let (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, keep_fn_names);
     plan.retain(|(_, name)| !guards.eval_names.contains(name));
     let guarded: FxHashSet<SymbolId> = guards.symbols.difference(&guards.specifier_exports).copied().collect();
-    let scoping = semantic::scoping(program);
     let blockers = blocking_locals(&scoping, &plan, &guarded);
     let scoping = if blockers.is_empty() {
         scoping

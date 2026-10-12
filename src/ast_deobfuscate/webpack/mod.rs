@@ -32,6 +32,7 @@ mod tests;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
+use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
@@ -45,9 +46,17 @@ use runtime::RuntimeCollector;
 /// Rename webpack runtime, factory, export and import bindings in `program`.
 /// Inert on non-webpack input. `keep_fn_names` as
 /// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
-pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) {
+///
+/// `scoping` is a current analysis of `program`, if one is at hand; it is
+/// returned when nothing was renamed.
+pub fn rename_webpack_bindings<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: Option<Scoping>,
+    keep_fn_names: bool,
+) -> Option<Scoping> {
     eprintln!("[DEOBFUSCATE] Phase 0.85: webpack check");
-    let scoping = semantic::scoping(program);
+    let scoping = semantic::reuse_or_build(program, scoping);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
     let mut runtime = RuntimeCollector::default();
@@ -57,7 +66,7 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
     let kind = match (runtimes.is_empty(), has_chunk) {
         (true, false) => {
             eprintln!("[DEOBFUSCATE] Phase 0.85: webpack check: not found");
-            return;
+            return Some(ctx.into_scoping());
         }
         (false, false) => "runtime",
         (true, true) => "chunk",
@@ -72,7 +81,7 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
     );
     let (plan, opaque_scopes) = names.into_plan();
     if plan.is_empty() {
-        return;
+        return Some(ctx.into_scoping());
     }
 
     let counts = apply_rename_plan(allocator, program, ctx, plan, &opaque_scopes, keep_fn_names);
@@ -80,6 +89,7 @@ pub fn rename_webpack_bindings<'a>(allocator: &'a Allocator, program: &mut Progr
         "[DEOBFUSCATE] Phase 0.85: Renamed {} webpack bindings ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references
     );
+    None
 }
 
 /// The ids of the webpack module factories `program` defines, for a project

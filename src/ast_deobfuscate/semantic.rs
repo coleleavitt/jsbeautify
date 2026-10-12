@@ -53,6 +53,23 @@ pub fn scoping<'a>(program: &'a Program<'a>) -> Scoping {
     build(program).semantic.into_scoping()
 }
 
+/// `scoping`, a current analysis of `program` when one is at hand, or a fresh one.
+pub fn reuse_or_build<'a>(program: &'a Program<'a>, scoping: Option<Scoping>) -> Scoping {
+    scoping.unwrap_or_else(|| self::scoping(program))
+}
+
+/// The scoping for the next pass: `scoping`, the analysis the previous pass
+/// ran with, when that pass left the program unchanged; a fresh analysis
+/// otherwise.
+pub fn refresh<'a>(program: &'a Program<'a>, scoping: Scoping, changed: bool) -> Scoping {
+    if changed {
+        drop(scoping);
+        self::scoping(program)
+    } else {
+        scoping
+    }
+}
+
 /// Lets `program`, re-parsed from the code of the program analysed last, start
 /// from that program's stats.
 pub fn carry_stats_to(program: &Program<'_>) {
@@ -69,7 +86,7 @@ mod tests {
     use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
 
-    use super::{build, carry_stats_to, scoping};
+    use super::{build, carry_stats_to, refresh, scoping};
 
     fn summary(scoping: &oxc_semantic::Scoping) -> (usize, usize, usize, Vec<String>) {
         (
@@ -104,5 +121,18 @@ mod tests {
         let hinted = scoping(&grown);
         let fresh = SemanticBuilder::new().build(&grown).semantic.into_scoping();
         assert_eq!(summary(&hinted), summary(&fresh));
+    }
+
+    #[test]
+    fn refresh_keeps_the_scoping_only_when_unchanged() {
+        let allocator = Allocator::default();
+        let mut program = Parser::new(&allocator, "let a = 1;", SourceType::mjs()).parse().program;
+        let kept = refresh(&program, scoping(&program), false);
+        assert_eq!(kept.symbols_len(), 1);
+
+        let extra = Parser::new(&allocator, "let b = a;", SourceType::mjs()).parse().program;
+        program.body.extend(extra.body);
+        let rebuilt = refresh(&program, kept, true);
+        assert_eq!(summary(&rebuilt).3, vec!["a".to_string(), "b".to_string()]);
     }
 }

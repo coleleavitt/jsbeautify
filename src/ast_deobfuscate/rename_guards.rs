@@ -353,10 +353,22 @@ pub struct RenameGuards {
 /// [`RenameGuards`]; `keep_fn_names` as [`RenameGuardCollector::keep_fn_names`].
 pub fn guards<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) -> RenameGuards {
     let scoping = semantic::scoping(program);
+    guards_with(allocator, program, scoping, keep_fn_names).0
+}
+
+/// [`guards`] from `scoping`, a current analysis of `program`, which is
+/// handed back: the collector only reads.
+pub fn guards_with<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: Scoping,
+    keep_fn_names: bool,
+) -> (RenameGuards, Scoping) {
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    collector.into_guards(&ctx.into_scoping())
+    let scoping = ctx.into_scoping();
+    (collector.into_guards(&scoping), scoping)
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {

@@ -4,42 +4,58 @@ use super::{
     TrampolineCollector, TrampolineInliner, WindowAliasCollector, WindowAliasPropagator, traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::semantic;
+use oxc_semantic::Scoping;
 
 impl AstDeobfuscator {
-    pub(super) fn run_structural_preamble<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
-        Self::run_window_alias_preamble(allocator, program, self.window_alias_es5);
+    /// Phases 0.4–0.5. Returns the scoping of the program they leave when they
+    /// did not change it.
+    pub(super) fn run_structural_preamble<'a>(
+        &mut self,
+        allocator: &'a Allocator,
+        program: &mut Program<'a>,
+    ) -> Option<Scoping> {
+        let scoping = Self::run_window_alias_preamble(allocator, program, self.window_alias_es5);
 
         eprintln!("[DEOBFUSCATE] Phase 0.5: Akamai BMP check");
         let mut akamai = AkamaiDeobfuscator::new();
         if akamai.detect(program) {
+            drop(scoping);
             Self::run_akamai_core(allocator, program, &mut akamai);
             Self::run_akamai_forwarders(allocator, program);
             Self::run_akamai_trampolines(allocator, program);
+            return None;
         }
+        scoping
     }
 
-    fn run_window_alias_preamble<'a>(allocator: &'a Allocator, program: &mut Program<'a>, es5_only: bool) {
+    fn run_window_alias_preamble<'a>(
+        allocator: &'a Allocator,
+        program: &mut Program<'a>,
+        es5_only: bool,
+    ) -> Option<Scoping> {
         eprintln!("[DEOBFUSCATE] Phase 0.4: Window-alias propagation");
         let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut collector = WindowAliasCollector::new();
         traverse_mut_with_ctx(&mut collector, program, &mut ctx);
+        let scoping = ctx.into_scoping();
         let aliases = collector.aliases();
-        if !aliases.is_empty() {
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.4: Found {} window alias(es): {:?}",
-                aliases.len(),
-                aliases
-            );
-            let scoping = semantic::scoping(program);
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            let mut propagator = WindowAliasPropagator::new(aliases).es5_only(es5_only);
-            traverse_mut_with_ctx(&mut propagator, program, &mut ctx);
-            eprintln!(
-                "[DEOBFUSCATE] Phase 0.4: Propagated {} window-alias accesses",
-                propagator.rewrites()
-            );
+        if aliases.is_empty() {
+            return Some(scoping);
         }
+        eprintln!(
+            "[DEOBFUSCATE] Phase 0.4: Found {} window alias(es): {:?}",
+            aliases.len(),
+            aliases
+        );
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+        let mut propagator = WindowAliasPropagator::new(aliases).es5_only(es5_only);
+        traverse_mut_with_ctx(&mut propagator, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 0.4: Propagated {} window-alias accesses",
+            propagator.rewrites()
+        );
+        None
     }
 
     fn run_akamai_core<'a>(allocator: &'a Allocator, program: &mut Program<'a>, akamai: &mut AkamaiDeobfuscator) {

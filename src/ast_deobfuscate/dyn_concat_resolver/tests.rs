@@ -240,3 +240,19 @@ fn script_top_level_admits_only_const() {
     );
     assert!(out.contains("\"y!\""), "global const is immutable: {out}");
 }
+
+#[test]
+fn folding_adjacent_literals_counts_as_a_change_without_a_rewrite() {
+    let allocator = Allocator::default();
+    let mut program = Parser::new(&allocator, r#"f("a" + "b" + e);"#, SourceType::mjs())
+        .parse()
+        .program;
+    let mut pass = DynConcatResolver::new();
+    let scoping = semantic::scoping(&program);
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
+
+    assert_eq!(pass.rewrites(), 0);
+    assert!(pass.changed());
+    assert!(Codegen::new().build(&program).code.contains("\"ab\""));
+}

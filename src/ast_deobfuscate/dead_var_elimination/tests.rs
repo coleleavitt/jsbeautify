@@ -27,7 +27,8 @@ fn run_elimination_as(code: &str, source_type: SourceType) -> EliminationResult 
     );
     let mut program = ret.program;
 
-    let result = eliminate_dead_vars(&allocator, &mut program);
+    let scoping = semantic::scoping(&program);
+    let (result, _) = eliminate_dead_vars(&allocator, &mut program, scoping);
 
     EliminationResult {
         output: Codegen::new().build(&program).code,
@@ -160,7 +161,8 @@ fn known_globals_do_not_reject_valid_elimination() {
     .parse();
     assert_eq!(parsed.diagnostics.len(), 0);
     let mut program = parsed.program;
-    let result = eliminate_dead_vars(&allocator, &mut program);
+    let scoping = semantic::scoping(&program);
+    let (result, _) = eliminate_dead_vars(&allocator, &mut program, scoping);
     let output = Codegen::new().build(&program).code;
 
     assert!(!result.was_rejected());
@@ -298,6 +300,30 @@ fn removes_pure_declarator_nested_in_a_function_beside_an_unremovable_one() {
     assert!(result.output.contains("kept = effect()"), "got: {}", result.output);
     assert_eq!(result.candidate_symbols, 2);
     assert_eq!(result.removed_declarators, 1);
+}
+
+#[test]
+fn returns_the_scoping_only_when_the_program_is_unchanged() {
+    let allocator = Allocator::default();
+    let source = "let kept = effect(); let used = 1; consume(used);";
+    let mut program = Parser::new(&allocator, source, SourceType::mjs()).parse().program;
+    let scoping = semantic::scoping(&program);
+    let (result, scoping) = eliminate_dead_vars(&allocator, &mut program, scoping);
+    assert_eq!(result.removed_declarators(), 0);
+    let returned = scoping.expect("an unchanged program keeps its scoping");
+    let fresh = semantic::scoping(&program);
+    assert_eq!(
+        returned.symbol_names().collect::<Vec<_>>(),
+        fresh.symbol_names().collect::<Vec<_>>()
+    );
+
+    let mut program = Parser::new(&allocator, "let unused = 1;", SourceType::mjs())
+        .parse()
+        .program;
+    let scoping = semantic::scoping(&program);
+    let (result, scoping) = eliminate_dead_vars(&allocator, &mut program, scoping);
+    assert_eq!(result.removed_declarators(), 1);
+    assert!(scoping.is_none());
 }
 
 #[test]

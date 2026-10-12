@@ -2,6 +2,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
+use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::FxHashSet;
@@ -38,28 +39,40 @@ impl DeadVarSweepResult {
 
 /// Collect and transactionally eliminate dead variable declarations.
 ///
+/// `scoping` is a current analysis of `program`; it is returned when the sweep
+/// left `program` unchanged, so the next pass can reuse it.
+///
 /// Candidate discovery uses the owning AST without allocating a replacement.
 /// If there are candidates, validation occurs in a disposable arena. Only a
 /// semantically validated candidate is printed and parsed into the owning arena.
 /// A rejected candidate therefore leaves no candidate AST in the owning arena.
-pub fn eliminate_dead_vars<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> DeadVarSweepResult {
-    let (collector, _) = collect_semantic_state(allocator, program);
+pub fn eliminate_dead_vars<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: Scoping,
+) -> (DeadVarSweepResult, Option<Scoping>) {
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+    let mut collector = DeadVarCollector::new();
+    traverse_mut_with_ctx(&mut collector, program, &mut ctx);
+    let scoping = ctx.into_scoping();
     let dead_vars = collector.get_dead_vars();
     let candidate_symbols = dead_vars.len();
     if dead_vars.is_empty() {
-        return DeadVarSweepResult::default();
+        return (DeadVarSweepResult::default(), Some(scoping));
     }
     // Validation re-prints and re-parses the whole program; skip it when no
     // candidate is removable anyway.
     if !removes_any(program, &dead_vars) {
-        return DeadVarSweepResult {
+        let result = DeadVarSweepResult {
             candidate_symbols,
             removed_declarators: 0,
             rejected: false,
         };
+        return (result, Some(scoping));
     }
+    drop(scoping);
 
-    validate_and_commit(allocator, program, candidate_symbols, None)
+    (validate_and_commit(allocator, program, candidate_symbols, None), None)
 }
 
 #[cfg(test)]

@@ -62,6 +62,7 @@ mod tests;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
+use oxc_semantic::Scoping;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 use crate::ast_deobfuscate::project::{TurbopackFacts, TurbopackReexport};
@@ -77,14 +78,18 @@ use collector::NameCollector;
 /// names other chunks' `esmReexport` lists give module keys (empty for a
 /// single file); `keep_fn_names` as
 /// [`crate::ast_deobfuscate::rename_guards::RenameGuardCollector::keep_fn_names`].
+///
+/// `scoping` is a current analysis of `program`, if one is at hand; it is
+/// returned when the program was left unchanged.
 pub fn rename_turbopack_bindings<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
+    scoping: Option<Scoping>,
     reexports: &[TurbopackReexport],
     keep_fn_names: bool,
-) {
+) -> Option<Scoping> {
     eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check");
-    let scoping = semantic::scoping(program);
+    let scoping = semantic::reuse_or_build(program, scoping);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
     let mut names = NameCollector::default();
@@ -92,7 +97,7 @@ pub fn rename_turbopack_bindings<'a>(
     traverse_mut_with_ctx(&mut names, program, &mut ctx);
     if names.found.is_empty() && !names.has_runtime() {
         eprintln!("[DEOBFUSCATE] Phase 0.86: Turbopack check: not found");
-        return;
+        return Some(ctx.into_scoping());
     }
     let found = &names.found;
     let mut detected = Vec::new();
@@ -129,7 +134,8 @@ pub fn rename_turbopack_bindings<'a>(
         // reporters, so it is kept.
         eprintln!("[DEOBFUSCATE] Phase 0.86: debug id {id}");
     }
-    if found.is_commonjs() && program.source_type.is_script() {
+    let became_commonjs = found.is_commonjs() && program.source_type.is_script();
+    if became_commonjs {
         // Its top-level bindings are module locals, not globals another
         // script could read, so they may be renamed.
         program.source_type = program.source_type.with_commonjs(true);
@@ -137,13 +143,15 @@ pub fn rename_turbopack_bindings<'a>(
     }
     let (plan, with_scopes) = names.into_plan();
     if plan.is_empty() {
-        return;
+        // A scoping built for a classic script does not describe CommonJS.
+        return (!became_commonjs).then(|| ctx.into_scoping());
     }
     let counts = apply_rename_plan(allocator, program, ctx, plan, &with_scopes, keep_fn_names);
     eprintln!(
         "[DEOBFUSCATE] Phase 0.86: Renamed {} Turbopack bindings ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references
     );
+    None
 }
 
 /// The Turbopack facts of `program` a project index needs (see

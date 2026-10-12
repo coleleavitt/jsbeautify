@@ -1,6 +1,6 @@
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_semantic::Semantic;
+use oxc_semantic::{Scoping, Semantic};
 use oxc_span::GetSpan;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
@@ -23,16 +23,23 @@ use super::collector::AngularNameCollector;
 /// (global) reference already uses is dropped so no reference is captured.
 /// Returns the number of rewritten identifiers. `keep_fn_names` as
 /// [`RenameGuardCollector::keep_fn_names`].
-pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Program<'a>, keep_fn_names: bool) -> usize {
+///
+/// `scoping` is a current analysis of `program`, if one is at hand; it is
+/// returned when nothing was renamed.
+pub fn rename_angular_symbols<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: Option<Scoping>,
+    keep_fn_names: bool,
+) -> (usize, Option<Scoping>) {
     eprintln!("[DEOBFUSCATE] Phase 0.995: Angular check");
-    let scoping = semantic::scoping(program);
+    let scoping = semantic::reuse_or_build(program, scoping);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = AngularNameCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    drop(ctx);
     if collector.classes.is_empty() && collector.actions.is_empty() {
         eprintln!("[DEOBFUSCATE] Phase 0.995: Angular check: not found");
-        return 0;
+        return (0, Some(ctx.into_scoping()));
     }
     eprintln!(
         "[DEOBFUSCATE] Phase 0.995: Angular check: detected Angular with {} named classes, {} NgRx action creators",
@@ -40,26 +47,22 @@ pub fn rename_angular_symbols<'a>(allocator: &'a Allocator, program: &mut Progra
         collector.actions.len()
     );
 
-    let scoping = semantic::scoping(program);
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut guard = RenameGuardCollector::new().keep_fn_names(keep_fn_names);
     traverse_mut_with_ctx(&mut guard, program, &mut ctx);
     drop(ctx);
 
-    let plan = {
-        let semantic = semantic::build_with(program, |builder| builder.with_build_nodes(true)).semantic;
-        let guarded = guard.into_guarded(semantic.scoping());
-        plan_renames(&collector, &semantic, &guarded)
-    };
+    let semantic = semantic::build_with(program, |builder| builder.with_build_nodes(true)).semantic;
+    let guarded = guard.into_guarded(semantic.scoping());
+    let plan = plan_renames(&collector, &semantic, &guarded);
+    let scoping = semantic.into_scoping();
     if plan.is_empty() {
-        return 0;
+        return (0, Some(scoping));
     }
 
-    let scoping = semantic::scoping(program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut renamer = ClassNameRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
-    renamer.renamed()
+    (renamer.renamed(), None)
 }
 
 fn plan_renames(

@@ -5,6 +5,7 @@ use super::{
     bun, flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::semantic;
+use oxc_semantic::Scoping;
 
 use crate::ast_deobfuscate::project;
 use oxc_ast::ast::Ident;
@@ -12,16 +13,22 @@ use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 impl AstDeobfuscator {
+    /// Phases 0.9–0.99. `scoping` is a current analysis of `program`, if one
+    /// is at hand; the scoping of the program they leave is returned when the
+    /// last of them changed nothing.
     pub(super) fn run_bun_naming_phases<'a>(
         &mut self,
         allocator: &'a Allocator,
         program: &mut Program<'a>,
-    ) -> BundleRuntime {
-        let runtime = rename_runtime_helpers(allocator, program, &self.project, self.keep_fn_names);
+        scoping: Option<Scoping>,
+    ) -> (BundleRuntime, Option<Scoping>) {
+        let (runtime, mut scoping) =
+            rename_runtime_helpers(allocator, program, scoping, &self.project, self.keep_fn_names);
 
         eprintln!("[DEOBFUSCATE] Phase 0.91: Bun CJS wrapper flattening");
         let flattened_statements = flatten_top_level_cjs_wrapper(program, allocator);
         if flattened_statements > 0 {
+            scoping = None;
             // The statements now run as the wrapper's function body.
             program.source_type = program.source_type.with_commonjs(true);
             eprintln!(
@@ -31,19 +38,20 @@ impl AstDeobfuscator {
             eprintln!("[DEOBFUSCATE] Phase 0.91: No top-level Bun CJS wrapper flattened");
         }
 
-        let helper_symbols = {
-            let scoping = semantic::scoping(program);
+        let (helper_symbols, scoping) = {
+            let scoping = semantic::reuse_or_build(program, scoping);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut collector = BunRuntimeCollector::new();
             traverse_mut_with_ctx(&mut collector, program, &mut ctx);
             let mut helper_symbols = collector.helper_symbols().clone();
             helper_symbols.extend(project::seeded_helpers(program, &self.project));
-            helper_symbols
+            (helper_symbols, ctx.into_scoping())
         };
 
-        rename_exports(
+        let scoping = rename_exports(
             allocator,
             program,
+            scoping,
             &helper_symbols,
             &self.project,
             self.keep_fn_names,
@@ -51,34 +59,36 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 0.97: Class name detection (this.name / displayName)");
-        {
-            let scoping = semantic::scoping(program);
+        let scoping = {
+            let scoping = semantic::reuse_or_build(program, scoping);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut class_collector = ClassNameCollector::new();
             traverse_mut_with_ctx(&mut class_collector, program, &mut ctx);
             let mut class_map = class_collector.into_map();
 
-            let scoping = semantic::scoping(program);
-            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+            let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), ctx.into_scoping(), allocator);
             let mut display_collector = DisplayNameCollector::new();
             traverse_mut_with_ctx(&mut display_collector, program, &mut ctx);
             for (k, v) in display_collector.into_map() {
                 class_map.entry(k).or_insert(v);
             }
+            let mut scoping = ctx.into_scoping();
 
             let eval_names = if class_map.is_empty() {
                 FxHashSet::default()
             } else {
-                let guards = rename_guards::guards(allocator, program, self.keep_fn_names);
+                let guards;
+                (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, self.keep_fn_names);
                 class_map.retain(|sym, _| !guards.symbols.contains(sym));
                 guards.eval_names
             };
-            if !class_map.is_empty() {
+            if class_map.is_empty() {
+                Some(scoping)
+            } else {
                 eprintln!(
                     "[DEOBFUSCATE] Phase 0.97: Found {} class/component names",
                     class_map.len()
                 );
-                let scoping = semantic::scoping(program);
                 // Two classes may carry the same `this.name`, and a name may
                 // already be bound or read as a global in scope.
                 let reserved = rename_guards::free_global_names(program, &scoping)
@@ -90,12 +100,13 @@ impl AstDeobfuscator {
                 let mut renamer = ClassNameRenamer::new(class_map);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
                 eprintln!("[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers", renamer.renamed());
+                None
             }
-        }
+        };
 
         eprintln!("[DEOBFUSCATE] Phase 0.98: Heuristic parameter renaming");
-        {
-            let scoping = semantic::scoping(program);
+        let scoping = {
+            let scoping = semantic::reuse_or_build(program, scoping);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut param_renamer = ParamHeuristicRenamer::new().keep_fn_names(self.keep_fn_names);
             traverse_mut_with_ctx(&mut param_renamer, program, &mut ctx);
@@ -103,11 +114,12 @@ impl AstDeobfuscator {
                 "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",
                 param_renamer.renamed()
             );
-        }
+            (param_renamer.renamed() == 0).then(|| ctx.into_scoping())
+        };
 
-        rename_module_handles(allocator, program, helper_symbols, self.keep_fn_names);
+        let scoping = rename_module_handles(allocator, program, scoping, helper_symbols, self.keep_fn_names);
 
-        runtime
+        (runtime, scoping)
     }
 }
 
@@ -127,12 +139,13 @@ fn runtime_check_result(runtime: &BundleRuntime) -> String {
 fn rename_runtime_helpers<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
+    scoping: Option<Scoping>,
     seeds: &project::ProjectSeeds,
     keep_fn_names: bool,
-) -> BundleRuntime {
+) -> (BundleRuntime, Option<Scoping>) {
     mem_ck("enter Phase 0.9 (helpers)");
     eprintln!("[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check");
-    let scoping = semantic::scoping(program);
+    let scoping = semantic::reuse_or_build(program, scoping);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = BunRuntimeCollector::new();
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
@@ -141,27 +154,27 @@ fn rename_runtime_helpers<'a>(
         .into_iter()
         .map(|(symbol, helper)| (scoping.symbol_name(symbol).to_string(), helper))
         .collect();
-    drop(scoping);
     let helper_symbols = collector.helper_symbols().clone();
     let mut runtime = collector.into_runtime();
     eprintln!(
         "[DEOBFUSCATE] Phase 0.9: esbuild/Bun runtime check: {}",
         runtime_check_result(&runtime)
     );
-    if !runtime.helpers.is_empty() {
+    let scoping = if runtime.helpers.is_empty() {
+        Some(scoping)
+    } else {
         let mut helpers: Vec<_> = runtime.helpers.iter().collect();
         helpers.sort_unstable_by_key(|(name, _)| *name);
         for (name, helper) in helpers {
             eprintln!("[DEOBFUSCATE] Phase 0.9: {name} = {}", helper.canonical());
         }
-        let guards = rename_guards::guards(allocator, program, keep_fn_names);
+        let (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, keep_fn_names);
         // A helper a code-split chunk exports (`export { __esm as a }`) keeps its export name.
         let desired = helper_symbols
             .iter()
             .filter(|(symbol, _)| !guards.symbols.contains(symbol) || guards.specifier_exports.contains(symbol))
             .map(|(symbol, helper)| (*symbol, helper.canonical().to_string()))
             .collect();
-        let scoping = semantic::scoping(program);
         let globals: FxHashSet<&str> = scoping.root_unresolved_references().keys().map(Ident::as_str).collect();
         let reserved = guards.eval_names.iter().map(String::as_str).collect();
         let mut plan = bun::export_renamer::make_names_unique(desired, &scoping, &reserved);
@@ -185,7 +198,8 @@ fn rename_runtime_helpers<'a>(
             renamer.renamed_decls(),
             renamer.renamed_refs()
         );
-    }
+        None
+    };
     if !imported.is_empty() {
         eprintln!(
             "[DEOBFUSCATE] Phase 0.9: {} runtime helpers imported from other chunks",
@@ -194,7 +208,7 @@ fn rename_runtime_helpers<'a>(
         runtime.helpers.extend(imported);
     }
 
-    runtime
+    (runtime, scoping)
 }
 
 /// Phase 0.95: renames the locals passed to the `__export` helper and the
@@ -204,13 +218,13 @@ fn rename_runtime_helpers<'a>(
 fn rename_exports<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
+    scoping: Scoping,
     helper_symbols: &FxHashMap<SymbolId, BunHelper>,
     seeds: &project::ProjectSeeds,
     keep_fn_names: bool,
     short_export_names: bool,
-) {
+) -> Option<Scoping> {
     eprintln!("[DEOBFUSCATE] Phase 0.95: __export() name extraction & rename");
-    let scoping = semantic::scoping(program);
     // Import bindings named by the project plan keep its name.
     let seeded = project::seeded_imports(program, seeds);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
@@ -221,7 +235,7 @@ fn rename_exports<'a>(
         .collect();
     let mut collector = ExportNameCollector::new(export_helpers).short_export_names(short_export_names);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    drop(ctx);
+    let mut scoping = ctx.into_scoping();
     let (mut export_map, specifier_names) = collector.into_maps();
 
     // Soundness guard: never rename a binding observable to a direct
@@ -231,7 +245,8 @@ fn rename_exports<'a>(
     let eval_names = if export_map.is_empty() && specifier_names.is_empty() {
         FxHashSet::default()
     } else {
-        let guards = rename_guards::guards(allocator, program, keep_fn_names);
+        let guards;
+        (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, keep_fn_names);
         export_map.retain(|sym, _| !guards.symbols.contains(sym));
         export_map.extend(
             specifier_names
@@ -244,12 +259,12 @@ fn rename_exports<'a>(
 
     if export_map.is_empty() {
         eprintln!("[DEOBFUSCATE] Phase 0.95: No export names found");
+        Some(scoping)
     } else {
         eprintln!(
             "[DEOBFUSCATE] Phase 0.95: Found {} export name mappings",
             export_map.len()
         );
-        let scoping = semantic::scoping(program);
         // Legal, unique-per-scope names (reserved words like `instanceof`,
         // duplicate `ZodType`/`Client`) that never capture a global or a
         // name read by `eval("name")`.
@@ -267,6 +282,7 @@ fn rename_exports<'a>(
             renamer.renamed_refs(),
             renamer.total_renamed()
         );
+        None
     }
 }
 
@@ -274,36 +290,38 @@ fn rename_exports<'a>(
 fn rename_module_handles<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
+    scoping: Option<Scoping>,
     helper_symbols: FxHashMap<SymbolId, BunHelper>,
     keep_fn_names: bool,
-) {
+) -> Option<Scoping> {
     mem_ck("enter Phase 0.99 (module handles)");
     eprintln!("[DEOBFUSCATE] Phase 0.99: module-handle renaming");
-    let scoping = semantic::scoping(program);
+    let scoping = semantic::reuse_or_build(program, scoping);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let mut collector = BunModuleHandleCollector::new(helper_symbols);
     traverse_mut_with_ctx(&mut collector, program, &mut ctx);
+    let mut scoping = ctx.into_scoping();
     let mut module_handles = FxHashMap::default();
     if !collector.is_empty() {
-        let mut reserved: FxHashSet<String> = ctx
-            .into_scoping()
+        let mut reserved: FxHashSet<String> = scoping
             .root_unresolved_references()
             .keys()
             .map(Ident::to_string)
             .collect();
-        let guards = rename_guards::guards(allocator, program, keep_fn_names);
+        let guards;
+        (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, keep_fn_names);
         reserved.extend(guards.eval_names);
         module_handles = collector.into_map(&reserved);
         module_handles.retain(|sym, _| !guards.symbols.contains(sym));
     }
     if module_handles.is_empty() {
         eprintln!("[DEOBFUSCATE] Phase 0.99: No module wrapper handles found");
+        Some(scoping)
     } else {
         eprintln!(
             "[DEOBFUSCATE] Phase 0.99: Found {} module wrapper handles",
             module_handles.len()
         );
-        let scoping = semantic::scoping(program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
         let mut renamer = BunModuleHandleRenamer::new(module_handles);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
@@ -312,5 +330,6 @@ fn rename_module_handles<'a>(
             renamer.renamed_decls(),
             renamer.renamed_refs()
         );
+        None
     }
 }
