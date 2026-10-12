@@ -7,8 +7,8 @@
 //! - Module wrappers: calls to the detected `__commonJS` and `__esm` helpers
 
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentOperator, AssignmentTarget, BindingPattern, CallExpression, Expression,
-    VariableDeclaration,
+    AssignmentExpression, AssignmentOperator, AssignmentTarget, BindingPattern, CallExpression,
+    ExportDefaultDeclaration, Expression, VariableDeclaration, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
@@ -43,6 +43,17 @@ pub struct ModuleInfo {
     pub start: usize,
     pub end: usize,
     pub body_start: usize,
+    /// The declaration the module is a declarator of, if any.
+    pub declaration: Option<DeclaratorPosition>,
+}
+
+/// Where a module's declarator sits in its `var`/`let`/`const` chain. Only the
+/// first declarator's span starts at the keyword.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaratorPosition {
+    pub kind: &'static str,
+    pub first: bool,
+    pub last: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,10 +268,13 @@ pub fn extract_all_names(code: &str) -> FxHashMap<String, String> {
 
 /// Finds the lazy module wrappers in `code`.
 ///
-/// A wrapper is a variable declarator `X = helper(…)` (in any
-/// `var`/`let`/`const`, also later in a declarator chain) or an assignment
-/// `X = helper(…)` whose callee resolves to a `__commonJS` or `__esm` helper
-/// that `detect_bundle_runtime` identifies.
+/// A wrapper is a call whose callee (`helper` or `(0, helper)`) resolves to a
+/// `__commonJS` or `__esm` helper that `detect_bundle_runtime` identifies, as
+/// a variable declarator `X = helper(…)` (in any `var`/`let`/`const`, also
+/// later in a declarator chain), an assignment `X = helper(…)` (also
+/// `module.exports = …`), `export default helper(…)`, or a call argument
+/// `f(helper(…))`, named for the enclosing declarator or assignment, else the
+/// callee `f`.
 ///
 /// Callees are matched by resolved symbol, so a local that shadows a helper's
 /// name is not a module. A wrapper nested inside another is part of the outer
@@ -286,6 +300,7 @@ fn lazy_modules(code: &str) -> (Option<Bundler>, Vec<ModuleInfo>) {
             helpers,
             source: code,
             modules: Vec::new(),
+            context: Vec::new(),
         };
         if !finder.helpers.is_empty() {
             finder.visit_program(program);
@@ -309,6 +324,8 @@ struct WrapperFinder<'s> {
     helpers: FxHashMap<SymbolId, ModuleType>,
     source: &'s str,
     modules: Vec<ModuleInfo>,
+    /// The names of the enclosing declarators and assignment targets.
+    context: Vec<String>,
 }
 
 impl WrapperFinder<'_> {
@@ -317,14 +334,27 @@ impl WrapperFinder<'_> {
         let Expression::CallExpression(call) = expr.without_parentheses() else {
             return None;
         };
-        let Expression::Identifier(callee) = &call.callee else {
-            return None;
+        let callee = match call.callee.without_parentheses() {
+            Expression::Identifier(callee) => callee,
+            // `(0, helper)(…)`
+            Expression::SequenceExpression(seq) => match seq.expressions.as_slice() {
+                [Expression::NumericLiteral(_), Expression::Identifier(callee)] => callee,
+                _ => return None,
+            },
+            _ => return None,
         };
         let symbol = self.scoping.get_reference(callee.reference_id()).symbol_id()?;
         Some((*self.helpers.get(&symbol)?, call))
     }
 
-    fn push(&mut self, name: String, module_type: ModuleType, start: u32, call: &CallExpression<'_>) {
+    fn push(
+        &mut self,
+        name: String,
+        module_type: ModuleType,
+        start: u32,
+        call: &CallExpression<'_>,
+        declaration: Option<DeclaratorPosition>,
+    ) {
         let body_start = call.arguments.first().map_or(call.span.end - 1, |arg| arg.span().start);
         self.modules.push(ModuleInfo {
             name,
@@ -332,40 +362,92 @@ impl WrapperFinder<'_> {
             start: start as usize,
             end: call.span.end as usize,
             body_start: body_start as usize,
+            declaration,
         });
     }
 }
 
 impl<'a> Visit<'a> for WrapperFinder<'_> {
     fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        let last = it.declarations.len().saturating_sub(1);
         for (index, declarator) in it.declarations.iter().enumerate() {
             if let BindingPattern::BindingIdentifier(id) = &declarator.id
                 && let Some(init) = &declarator.init
                 && let Some((module_type, call)) = self.wrapper_call(init)
             {
+                let position = DeclaratorPosition {
+                    kind: it.kind.as_str(),
+                    first: index == 0,
+                    last: index == last,
+                };
                 // The first declarator's module starts at the keyword.
                 let start = if index == 0 {
                     it.span.start
                 } else {
                     declarator.span.start
                 };
-                self.push(id.name.to_string(), module_type, start, call);
+                self.push(id.name.to_string(), module_type, start, call, Some(position));
             }
         }
         walk::walk_variable_declaration(self, it);
     }
 
+    fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
+        let name = it.id.get_binding_identifier().map(|id| id.name.to_string());
+        let scoped = name.is_some();
+        self.context.extend(name);
+        walk::walk_variable_declarator(self, it);
+        if scoped {
+            self.context.pop();
+        }
+    }
+
     fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        let name = match &it.left {
+            AssignmentTarget::AssignmentTargetIdentifier(id) => id.name.to_string(),
+            target => target.span().source_text(self.source).to_string(),
+        };
         if it.operator == AssignmentOperator::Assign
             && let Some((module_type, call)) = self.wrapper_call(&it.right)
         {
-            let name = match &it.left {
-                AssignmentTarget::AssignmentTargetIdentifier(id) => id.name.to_string(),
-                target => target.span().source_text(self.source).to_string(),
-            };
-            self.push(name, module_type, it.span.start, call);
+            self.push(name.clone(), module_type, it.span.start, call, None);
         }
+        self.context.push(name);
         walk::walk_assignment_expression(self, it);
+        self.context.pop();
+    }
+
+    fn visit_export_default_declaration(&mut self, it: &ExportDefaultDeclaration<'a>) {
+        if let Some(expr) = it.declaration.as_expression()
+            && let Some((module_type, call)) = self.wrapper_call(expr)
+        {
+            self.push("default".to_string(), module_type, it.span.start, call, None);
+        }
+        walk::walk_export_default_declaration(self, it);
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        for arg in &it.arguments {
+            if let Some((module_type, call)) = arg.as_expression().and_then(|arg| self.wrapper_call(arg)) {
+                let name = self
+                    .context
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| callee_name(&it.callee, self.source));
+                self.push(name, module_type, call.span.start, call, None);
+            }
+        }
+        walk::walk_call_expression(self, it);
+    }
+}
+
+/// The source text of an identifier or member callee, else `module`.
+fn callee_name(callee: &Expression<'_>, source: &str) -> String {
+    match callee.without_parentheses() {
+        callee @ (Expression::Identifier(_) | Expression::StaticMemberExpression(_)) => {
+            callee.span().source_text(source).to_string()
+        }
+        _ => "module".to_string(),
     }
 }
 
@@ -392,35 +474,63 @@ pub fn split_bundle(code: &str) -> BundleSplit {
         };
     }
 
-    // Runtime is everything before first module
-    let runtime = code[..modules[0].start].to_string();
+    // Runtime is everything before first module; when that module is a later
+    // declarator, the runtime ends the declaration it started.
+    let before = &code[..modules[0].start];
+    let runtime = match modules[0].declaration {
+        Some(position) if !position.first => {
+            format!("{};", before.trim_end_matches(|c: char| c == ',' || c.is_whitespace()))
+        }
+        _ => before.to_string(),
+    };
 
-    // Extract each module's code
+    // Extract each module's code; a later declarator of a chain gets its
+    // declaration keyword so the module stays a standalone declaration.
     let mut module_codes = Vec::new();
     for module in &modules {
-        let module_code = code[module.start..module.end].to_string();
+        let slice = &code[module.start..module.end];
+        let module_code = match module.declaration {
+            Some(position) if !position.first => format!("{} {slice}", position.kind),
+            _ => slice.to_string(),
+        };
         module_codes.push((module.clone(), module_code));
     }
 
     // Main is the code between modules (esbuild hoists ESM module bodies'
     // declarations there), one statement run per gap, then everything after
-    // the last module.
+    // the last module. Code that continues a module's declarator chain gets
+    // the chain's keyword.
     let mut main = String::new();
     for pair in modules.windows(2) {
         let gap = code[pair[0].end..pair[1].start].trim_matches(|c: char| c == ';' || c == ',' || c.is_whitespace());
         if !gap.is_empty() {
-            main.push_str(gap);
+            main.push_str(&continue_declaration(&pair[0], gap));
             main.push_str(";\n");
         }
     }
-    let last_end = modules.last().map_or(0, |m| m.end);
-    main.push_str(&code[last_end..]);
+    if let Some(last) = modules.last() {
+        let tail = &code[last.end..];
+        let tail = match last.declaration {
+            Some(position) if !position.last => tail.trim_start_matches(|c: char| c == ',' || c.is_whitespace()),
+            _ => tail,
+        };
+        main.push_str(&continue_declaration(last, tail));
+    }
 
     BundleSplit {
         bundler,
         runtime,
         modules: module_codes,
         main,
+    }
+}
+
+/// `code` that follows `module`, prefixed with the keyword of the declaration
+/// it continues.
+fn continue_declaration(module: &ModuleInfo, code: &str) -> String {
+    match module.declaration {
+        Some(position) if !position.last => format!("{} {code}", position.kind),
+        _ => code.to_string(),
     }
 }
 
@@ -567,7 +677,52 @@ var h = (a, b) => () => (a && (b = a(a = 0)), b);
         );
         let split = split_bundle(&code);
         assert_eq!(split.modules.len(), 3);
-        assert_eq!(split.main, "n = 1;\nvar ns = {}; function f() {};\n;\nc();");
+        assert_eq!(split.main, "var n = 1;\nvar ns = {}; function f() {};\n;\nc();");
+    }
+
+    #[test]
+    fn finds_wrappers_passed_as_call_arguments() {
+        assert_eq!(
+            wrappers("var a = g(y((e, m) => { m.exports = 1; })); register(h(() => {}), 1);"),
+            named(&[("a", ModuleType::CommonJs), ("register", ModuleType::Esm)])
+        );
+    }
+
+    #[test]
+    fn finds_exported_and_module_exports_wrappers() {
+        assert_eq!(
+            wrappers("module.exports = y((e, m) => { m.exports = 1; });"),
+            named(&[("module.exports", ModuleType::CommonJs)])
+        );
+        assert_eq!(
+            wrappers("export default h(() => {});"),
+            named(&[("default", ModuleType::Esm)])
+        );
+    }
+
+    #[test]
+    fn finds_wrappers_called_through_a_comma_callee() {
+        assert_eq!(
+            wrappers("var a = (0, y)((e, m) => {}); b = (0, h)(() => {});"),
+            named(&[("a", ModuleType::CommonJs), ("b", ModuleType::Esm)])
+        );
+    }
+
+    #[test]
+    fn later_declarators_keep_their_declaration_keyword() {
+        let code = format!("{RUNTIME}let a = y((e) => {{}}), n = 1, b = h(() => {{}}), z = 2;\nb();");
+        let split = split_bundle(&code);
+        let modules: Vec<_> = split.modules.iter().map(|(_, code)| code.as_str()).collect();
+        assert_eq!(modules, ["let a = y((e) => {})", "let b = h(() => {})"]);
+        assert_eq!(split.main, "let n = 1;\nlet z = 2;\nb();");
+    }
+
+    #[test]
+    fn the_runtime_ends_the_declaration_a_module_continues() {
+        let code = format!("{RUNTIME}var p, a = y((e) => {{}});");
+        let split = split_bundle(&code);
+        assert_eq!(split.runtime, format!("{RUNTIME}var p;"));
+        assert_eq!(split.modules[0].1, "var a = y((e) => {})");
     }
 
     #[test]
