@@ -22,6 +22,7 @@ pub mod oxc_opts;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
+pub mod turbopack_extract;
 pub mod vm_analysis;
 pub mod webpack_module_extractor;
 

@@ -7,8 +7,9 @@ const MAX_EXTERNAL_SOURCE_MAP_BYTES: u64 = 32 * 1024 * 1024;
 /// Reconstruct a JS bundle's original source tree under `output_dir/reversed/`.
 ///
 /// Uses the bundle's trailing `sourceMappingURL` when present. If the bundle has
-/// no source map footer, falls back to synthetic boundaries: esbuild / Bun lazy
-/// module wrappers, else named functions and classes.
+/// no source map footer, or its external map file does not exist, falls back to
+/// synthetic boundaries: Turbopack module factories, esbuild / Bun lazy module
+/// wrappers, else named functions and classes.
 ///
 /// # Errors
 /// Returns an error when a referenced map cannot be read/decoded, or when the
@@ -18,19 +19,19 @@ pub fn reconstruct_bundle_tree(
     bundle_path: Option<&std::path::Path>,
     output_dir: &std::path::Path,
 ) -> Result<Vec<String>, String> {
-    if source_mapping_url(bundle_source).is_none() {
+    let Some(url) = source_mapping_url(bundle_source) else {
         return reconstruct_without_sourcemap(bundle_source, output_dir);
-    }
-
-    reconstruct_tree(&bundle_sourcemap_json(bundle_source, bundle_path)?, output_dir)
-}
-
-fn bundle_sourcemap_json(bundle_source: &str, bundle_path: Option<&std::path::Path>) -> Result<String, String> {
-    let url = source_mapping_url(bundle_source).ok_or_else(|| "bundle has no sourceMappingURL".to_string())?;
+    };
     if url.starts_with("data:") {
-        return inline_sourcemap_json(url);
+        return reconstruct_tree(&inline_sourcemap_json(url)?, output_dir);
     }
-    external_sourcemap_json(url, bundle_path)
+    external_sourcemap_json(url, bundle_path)?.map_or_else(
+        || {
+            eprintln!("[split-sources] source map {url} not found next to the bundle; using synthetic boundaries");
+            reconstruct_without_sourcemap(bundle_source, output_dir)
+        },
+        |json| reconstruct_tree(&json, output_dir),
+    )
 }
 
 fn source_mapping_url(bundle_source: &str) -> Option<&str> {
@@ -58,7 +59,8 @@ fn inline_sourcemap_json(url: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| format!("inline source map is not utf8: {e}"))
 }
 
-fn external_sourcemap_json(url: &str, bundle_path: Option<&std::path::Path>) -> Result<String, String> {
+/// The external map's JSON, or `None` when no file exists at its path.
+fn external_sourcemap_json(url: &str, bundle_path: Option<&std::path::Path>) -> Result<Option<String>, String> {
     if url.starts_with("http://") || url.starts_with("https://") {
         return Err("remote source maps are not fetched by --split-sources".to_string());
     }
@@ -76,7 +78,11 @@ fn external_sourcemap_json(url: &str, bundle_path: Option<&std::path::Path>) -> 
     let bundle_path = bundle_path.ok_or_else(|| "external source map needs a bundle file path".to_string())?;
     let parent = bundle_path.parent().unwrap_or_else(|| Path::new("."));
     let resolved = parent.join(map_path);
-    let metadata = std::fs::metadata(&resolved).map_err(|e| format!("stat source map {}: {e}", resolved.display()))?;
+    let metadata = match std::fs::metadata(&resolved) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("stat source map {}: {e}", resolved.display())),
+    };
     if !metadata.file_type().is_file() {
         return Err(format!("source map {} is not a regular file", resolved.display()));
     }
@@ -86,7 +92,9 @@ fn external_sourcemap_json(url: &str, bundle_path: Option<&std::path::Path>) -> 
             resolved.display()
         ));
     }
-    std::fs::read_to_string(&resolved).map_err(|e| format!("read source map {}: {e}", resolved.display()))
+    std::fs::read_to_string(&resolved)
+        .map(Some)
+        .map_err(|e| format!("read source map {}: {e}", resolved.display()))
 }
 
 #[cfg(test)]
@@ -157,6 +165,19 @@ mod tests {
             err.contains("absolute source map paths are not read"),
             "unexpected error: {err}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reconstruct_bundle_tree_falls_back_when_the_external_map_is_missing() {
+        let dir = std::env::temp_dir().join(format!("jsb-bundle-missing-smtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bundle_path = dir.join("app.js");
+        let bundle = "function alpha(){return 1;}\n//# sourceMappingURL=app.js.map";
+
+        let written = reconstruct_bundle_tree(bundle, Some(&bundle_path), &dir).unwrap();
+
+        assert_eq!(written, vec!["synthetic/functions/alpha.js".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

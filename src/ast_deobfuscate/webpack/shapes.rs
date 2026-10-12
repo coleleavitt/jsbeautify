@@ -9,11 +9,11 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub(super) type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
-pub(super) fn resolve(id: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> Option<SymbolId> {
+pub fn resolve(id: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> Option<SymbolId> {
     ctx.scoping().get_reference(id.reference_id()).symbol_id()
 }
 
-pub(super) fn resolve_expr(expr: &Expression<'_>, ctx: &Ctx<'_>) -> Option<SymbolId> {
+pub fn resolve_expr(expr: &Expression<'_>, ctx: &Ctx<'_>) -> Option<SymbolId> {
     match expr.without_parentheses() {
         Expression::Identifier(id) => resolve(id, ctx),
         _ => None,
@@ -22,7 +22,7 @@ pub(super) fn resolve_expr(expr: &Expression<'_>, ctx: &Ctx<'_>) -> Option<Symbo
 
 /// Symbols of `params` when every parameter is a plain identifier without a
 /// default value or rest element.
-pub(super) fn simple_params(params: &FormalParameters<'_>) -> Option<Vec<SymbolId>> {
+pub fn simple_params(params: &FormalParameters<'_>) -> Option<Vec<SymbolId>> {
     if params.rest.is_some() {
         return None;
     }
@@ -133,7 +133,7 @@ pub(super) fn chunk_payload<'b, 'a>(
 }
 
 /// The identifier an export getter returns: `() => x` or `function () { return x }`.
-pub(super) fn getter_target<'b, 'a>(expr: &'b Expression<'a>) -> Option<&'b IdentifierReference<'a>> {
+pub fn getter_target<'b, 'a>(expr: &'b Expression<'a>) -> Option<&'b IdentifierReference<'a>> {
     match expr.without_parentheses() {
         Expression::ArrowFunctionExpression(arrow) if arrow.params.items.is_empty() => {
             match arrow.body.as_expression()?.without_parentheses() {

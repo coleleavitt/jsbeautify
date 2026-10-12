@@ -253,6 +253,25 @@ fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut optio
 fn run_extract_modules(a: &ExtractModulesArgs) -> Fallible {
     let code = read_input(&a.input)?;
     let module_dir = a.output.clone().unwrap_or_else(|| PathBuf::from("./modules"));
+    if let Some(chunk) = js_beautify_rs::turbopack_extract::detect_turbopack_chunk(&code) {
+        eprintln!(
+            "[TURBOPACK] Found {} module factories and {} scope-hoisted modules in {} chunk registration(s)",
+            chunk.module_count(),
+            chunk.hoisted_count(),
+            chunk.registrations.len()
+        );
+        let written = chunk.write_modules(&code, &module_dir)?;
+        eprintln!(
+            "[TURBOPACK] {} files written to {}",
+            written.len(),
+            module_dir.display()
+        );
+        if let Some(graph_path) = &a.graph {
+            fs::write(graph_path, chunk.dependency_graph())?;
+            eprintln!("[TURBOPACK] Dependency graph written to {}", graph_path.display());
+        }
+        return Ok(());
+    }
     eprintln!("[WEBPACK] Extracting modules...");
     let mut tokenizer = Tokenizer::new(&code);
     let tokens = tokenizer.tokenize()?;

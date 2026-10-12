@@ -1,4 +1,5 @@
-//! Collision-free name assignment for the webpack rename plan.
+//! Collision-free name assignment for the bundler rename plans (webpack,
+//! Turbopack).
 //!
 //! Renaming symbol `S`, declared in scope `X`, to `N` is accepted only when:
 //!
@@ -11,13 +12,55 @@
 //! Otherwise `N$1`, `N$2`, … are tried. Names are tracked as they are
 //! assigned, so later plan entries see earlier renames.
 
+use oxc_allocator::Allocator;
+use oxc_ast::ast::Program;
 use oxc_semantic::Scoping;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
+use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::ExportNameRenamer;
+use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
+use crate::ast_deobfuscate::state::DeobfuscateState;
+
+/// Outcome of [`apply_rename_plan`].
+pub struct RenameCounts {
+    pub planned: usize,
+    pub declarations: usize,
+    pub references: usize,
+}
+
+/// Rename the symbols of `plan` (in priority order) to collision-free forms of
+/// their desired names. Symbols the shared rename guards protect, and every
+/// symbol visible from one of `with_scopes`, keep their names.
+pub fn apply_rename_plan<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    mut ctx: ReusableTraverseCtx<'a, DeobfuscateState>,
+    plan: Vec<(SymbolId, String)>,
+    with_scopes: &[ScopeId],
+) -> RenameCounts {
+    let mut guard = RenameGuardCollector::new();
+    traverse_mut_with_ctx(&mut guard, program, &mut ctx);
+    let scoping = ctx.into_scoping();
+    let mut guarded = guard.into_guarded(&scoping);
+    guarded.extend(symbols_visible_from(with_scopes, &scoping));
+
+    let names = assign_names(plan, &guarded, &scoping);
+    let planned = names.len();
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+    let mut renamer = ExportNameRenamer::new(names);
+    traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
+    RenameCounts {
+        planned,
+        declarations: renamer.renamed_decls(),
+        references: renamer.renamed_refs(),
+    }
+}
+
 /// Every symbol visible from one of `scopes` (declared in it or an ancestor).
-pub(super) fn symbols_visible_from(scopes: &[ScopeId], scoping: &Scoping) -> FxHashSet<SymbolId> {
+fn symbols_visible_from(scopes: &[ScopeId], scoping: &Scoping) -> FxHashSet<SymbolId> {
     if scopes.is_empty() {
         return FxHashSet::default();
     }
@@ -121,7 +164,7 @@ impl<'s> Planner<'s> {
 
 /// Resolve `plan` (in priority order) into final, collision-free names,
 /// skipping `guarded` symbols and symbols already carrying the desired name.
-pub(super) fn assign_names(
+fn assign_names(
     plan: Vec<(SymbolId, String)>,
     guarded: &FxHashSet<SymbolId>,
     scoping: &Scoping,
