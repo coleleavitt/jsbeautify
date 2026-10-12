@@ -77,7 +77,11 @@ fn runtime_header(helpers: &BunHelperMap, bundler: Option<Bundler>) -> String {
     }
     header.push_str("// Helpers:\n");
     for (canonical, name) in entries {
-        let _ = writeln!(header, "//   {name} → {canonical}");
+        if name == canonical {
+            let _ = writeln!(header, "//   {name}");
+        } else {
+            let _ = writeln!(header, "//   {name} → {canonical}");
+        }
     }
     header.push('\n');
     header
@@ -131,6 +135,15 @@ mod tests {
             out.starts_with("#!/usr/bin/env node\n// ═══ Bundler runtime ═══\n"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn lists_a_helper_already_named_canonically_without_an_arrow() {
+        let map = helpers(&[("__esm", BunHelper::Esm), ("__defProp$1", BunHelper::DefProp)]);
+        let out = annotate_runtime("var a = __esm(() => {});\n", &map, None);
+        assert!(out.contains("//   __esm\n"), "{out}");
+        assert!(out.contains("//   __defProp$1 → __defProp\n"), "{out}");
+        assert!(!out.contains("__esm → __esm"), "{out}");
     }
 
     #[test]

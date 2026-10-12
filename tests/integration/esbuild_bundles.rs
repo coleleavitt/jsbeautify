@@ -93,6 +93,6 @@ fn keeps_avoiding_a_free_global_read_outside_the_hint() {
 #[test]
 fn omits_the_bundler_without_a_distinguishing_helper() {
     let out = deobfuscate("var E=(e,t)=>()=>(e&&(t=e(e=0)),t);var m=E(()=>{});module.exports=m;");
-    assert!(out.contains("//   __esm → __esm"), "{out}");
+    assert!(out.contains("//   __esm\n"), "{out}");
     assert!(!out.contains("Runtime:"), "{out}");
 }
