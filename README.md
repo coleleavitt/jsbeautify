@@ -241,8 +241,8 @@ the name its own chunk gives it, its real export name, or `<chunk>_<export>`.
 Exports no file of the project imports are the public surface, so their short
 names count as names; `--short-export-names` is therefore ignored in project
 mode. `--keep-fn-names` and `--window-alias-es5` apply to every file; with
-`--keep-fn-names` a function's own binding keeps its name, while the import
-bindings of other chunks (which no `.name` reads) still take the plan's name.
+`--keep-fn-names` a binding a function or class takes its `.name` from keeps
+its name, and the chunks that import it use that name too.
 Mangled Turbopack keys are named by the `esmReexport`
 (`S([…])`) lists of other chunks. Import and export names never change. The
 output folder mirrors the input (other files are copied), with per-file logs in

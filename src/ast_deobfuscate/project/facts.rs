@@ -3,7 +3,7 @@
 //! They are its ES module links, runtime helpers, the names the single-file
 //! pipeline would give its exported locals, and Turbopack / webpack module ids.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::BuildHasher;
 
 use oxc_allocator::Allocator;
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::{TurbopackFacts, import_bindings, specifier_exports};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::{
-    BunHelper, BunRuntimeCollector, ClassNameCollector, DisplayNameCollector, ExportNameCollector,
+    BunHelper, BunRuntimeCollector, ClassNameCollector, DisplayNameCollector, ExportNameCollector, rename_guards,
 };
 
 /// What other files of the project need to know about one file.
@@ -48,6 +48,11 @@ pub struct FileFacts {
     /// Free (global) names the file reads, which its bindings cannot take.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub globals: Vec<String>,
+    /// With `--keep-fn-names`: the exported locals the file's own pipeline
+    /// keeps, chiefly those a function or class takes its `.name` from (see
+    /// [`crate::ast_deobfuscate::rename_guards`]).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub kept_locals: BTreeSet<String>,
 }
 
 /// One module request of the file.
@@ -94,17 +99,20 @@ pub struct LocalName {
     pub name: Option<String>,
 }
 
-/// Collect the facts of `code`, parsed as `source_type`. `import_helpers`
-/// tells which imports, by `(source, imported name)`, are runtime helpers, so
-/// that calls to an imported `__export` are read too.
+/// Collect the facts of `code`, parsed as `source_type`.
+///
+/// `import_helpers` tells which imports, by `(source, imported name)`, are
+/// runtime helpers, so that calls to an imported `__export` are read too.
+/// `keep_fn_names` is the option the file will be deobfuscated with.
 #[must_use]
 pub fn collect_facts<S: BuildHasher + Sync>(
     code: &str,
     source_type: SourceType,
     import_helpers: &HashMap<(String, String), BunHelper, S>,
+    keep_fn_names: bool,
 ) -> FileFacts {
     crate::stack::run_on_sized_stack(code.len(), || {
-        collect_on_current_stack(code, source_type, import_helpers)
+        collect_on_current_stack(code, source_type, import_helpers, keep_fn_names)
     })
 }
 
@@ -137,6 +145,7 @@ fn collect_on_current_stack<S: BuildHasher>(
     code: &str,
     source_type: SourceType,
     import_helpers: &HashMap<(String, String), BunHelper, S>,
+    keep_fn_names: bool,
 ) -> FileFacts {
     let allocator = Allocator::default();
     let mut program = Parser::new(&allocator, code, source_type).parse().program;
@@ -187,17 +196,27 @@ fn collect_on_current_stack<S: BuildHasher>(
         for (symbol, name) in classes.into_map().into_iter().chain(display_names.into_map()) {
             names.entry(symbol).or_insert(name);
         }
-        for (local, symbol) in exported {
+        for (local, symbol) in &exported {
             let entry = LocalName {
-                helper: helpers.get(&symbol).map(|helper| helper.canonical().to_string()),
-                name: names.get(&symbol).cloned(),
+                helper: helpers.get(symbol).map(|helper| helper.canonical().to_string()),
+                name: names.get(symbol).cloned(),
             };
             if entry != LocalName::default() {
-                facts.local_names.insert(local, entry);
+                facts.local_names.insert(local.clone(), entry);
             }
         }
     }
     drop(ctx);
+    if keep_fn_names && !exported.is_empty() {
+        // What Phase 0.84 keeps: the guarded symbols but the specifier
+        // exports it may rename.
+        let guards = rename_guards::guards(&allocator, &mut program, true);
+        facts.kept_locals = exported
+            .into_iter()
+            .filter(|(_, symbol)| guards.symbols.contains(symbol) && !guards.specifier_exports.contains(symbol))
+            .map(|(local, _)| local)
+            .collect();
+    }
 
     facts.turbopack = crate::ast_deobfuscate::turbopack::project_facts(&allocator, &mut program);
     facts.webpack_modules = crate::ast_deobfuscate::webpack::project_module_ids(&allocator, &mut program);

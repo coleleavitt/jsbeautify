@@ -7,8 +7,9 @@
 //!    exported locals, and Turbopack / webpack module ids.
 //! 2. [`plan_project`] resolves every `import { a as e } from "./chunk.js"`
 //!    (relative to the importing file, through re-exports) to the binding it
-//!    links and gives that binding one name in every file: the runtime helper
-//!    it is, the name its own file gives it, its real export name, or else
+//!    links and gives that binding one name in every file: its own name when
+//!    `--keep-fn-names` keeps it (a function's `.name`), the runtime helper it
+//!    is, the name its own file gives it, its real export name, or else
 //!    `<chunk>_<export>`. Exports nobody in the project imports are the public
 //!    surface: their short names are names, while the one- to three-character
 //!    names chunks use only to reach each other are not. Mangled Turbopack
@@ -104,7 +105,8 @@ pub struct IndexedFile {
 }
 
 /// Read the facts of `files` (relative to `root`) in parallel. `goal` gives
-/// each file's parse goal.
+/// each file's parse goal; `keep_fn_names` is the option the files will be
+/// deobfuscated with.
 ///
 /// # Errors
 /// Returns an error if a file cannot be read as UTF-8.
@@ -113,6 +115,7 @@ pub fn index_project(
     files: &[PathBuf],
     goal: impl Fn(&Path) -> ParseGoal + Sync,
     isolated: bool,
+    keep_fn_names: bool,
 ) -> std::io::Result<Vec<IndexedFile>> {
     let sources: Vec<(PathBuf, String)> = files
         .iter()
@@ -124,7 +127,7 @@ pub fn index_project(
         &sources.iter().zip(&source_types).collect::<Vec<_>>(),
         |&((path, code), &source_type)| IndexedFile {
             path: slash_path(path),
-            facts: collect_facts(code, source_type, &no_helpers),
+            facts: collect_facts(code, source_type, &no_helpers, keep_fn_names),
         },
     );
     // A chunk that calls an imported `__export` names its exports only once
@@ -136,7 +139,12 @@ pub fn index_project(
         .filter(|&file| !import_helpers[file].is_empty())
         .collect();
     let reread = parallel_map(&again, |&file| {
-        collect_facts(&sources[file].1, source_types[file], &import_helpers[file])
+        collect_facts(
+            &sources[file].1,
+            source_types[file],
+            &import_helpers[file],
+            keep_fn_names,
+        )
     });
     for (file, facts) in again.into_iter().zip(reread) {
         indexed[file].facts = facts;
@@ -161,6 +169,8 @@ pub enum NameSource {
     Collector,
     /// Its own unminified name.
     Local,
+    /// Its own name, which `--keep-fn-names` keeps (it is a `.name`).
+    Kept,
     /// Its export name.
     ExportName,
     /// `<chunk>_<export>`.
@@ -437,7 +447,8 @@ impl<'f> Graph<'f> {
         })
     }
 
-    /// The names of the minified locals `file` exports, by local: their
+    /// The names of the minified locals `file` exports, by local: their own
+    /// name when the file keeps it ([`FileFacts::kept_locals`]), their
     /// [`Self::linked_name`] when another file can read them, else their
     /// [`Self::origin_name`]. Two locals that want one name get `$N`, as the
     /// exporting file's own rename would give them, so importers agree.
@@ -460,6 +471,10 @@ impl<'f> Graph<'f> {
             .collect();
         let mut names = FxHashMap::default();
         for local in locals {
+            if facts.kept_locals.contains(local) {
+                names.insert(local.to_string(), (local.to_string(), NameSource::Kept));
+                continue;
+            }
             let origin = Origin {
                 file,
                 local: local.to_string(),
@@ -646,7 +661,9 @@ pub fn plan_project(files: &[IndexedFile]) -> ProjectPlan {
             let name = names[origin.file]
                 .get(&origin.local)
                 .or(unminified.as_ref())
-                .filter(|(name, _)| is_minified(local) && name != local);
+                // A kept name the importer already uses is still seeded, so
+                // its later renames keep it.
+                .filter(|(name, source)| is_minified(local) && (name != local || *source == NameSource::Kept));
             stats.imported_helpers += usize::from(helper.is_some());
             if let Some((_, source)) = name {
                 *stats.imports_named.entry(*source).or_default() += 1;

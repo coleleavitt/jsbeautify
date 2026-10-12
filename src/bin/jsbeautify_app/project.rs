@@ -75,7 +75,8 @@ pub(super) fn run_project(b: &BeautifyArgs, root: &Path) -> Fallible {
         return Err("--project writes a copy: -o must not be the project directory".into());
     }
     let goal = |path: &Path| b.goal.parse_goal(&path.to_string_lossy());
-    if options_for(b, &b.format.load_config()?, "-", None)?.short_export_names {
+    let naming = options_for(b, &b.format.load_config()?, "-", None)?;
+    if naming.short_export_names {
         // A short export name names its local exactly when no project file
         // imports it (`plan_project`), so the flag would only add the
         // internal names chunks share, which say nothing.
@@ -90,7 +91,7 @@ pub(super) fn run_project(b: &BeautifyArgs, root: &Path) -> Fallible {
         scripts.len(),
         root.display()
     );
-    let index = index_project(root, &scripts, goal, b.isolated)?;
+    let index = index_project(root, &scripts, goal, b.isolated, naming.keep_fn_names)?;
     let plan = plan_project(&index);
     log_plan(&plan.stats);
 

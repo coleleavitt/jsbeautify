@@ -27,7 +27,12 @@ fn project(name: &str) -> (PathBuf, PathBuf) {
 }
 
 fn run(src: &Path, out: &Path) -> std::process::Output {
+    run_with(src, out, &[])
+}
+
+fn run_with(src: &Path, out: &Path, flags: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .args(flags)
         .args(["-d", "--project"])
         .arg(src)
         .arg("-o")
@@ -108,5 +113,21 @@ fn single_file_output_ignores_project_naming() {
         "a single chunk cannot know its imports: {stdout}"
     );
     assert!(stdout.contains(" as util"), "{stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keep_fn_names_keeps_function_names_and_linked_names_agree() {
+    let (dir, src) = project("keep-fn-names");
+    let out = dir.join("out");
+    let output = run_with(&src, &out, &["--keep-fn-names"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("0 broken"), "{stderr}");
+    assert!(stderr.contains(", 0 differ"), "{stderr}");
+    let util = fs::read_to_string(out.join("assets/chunk-JCZOX377.js")).expect("util output");
+    assert!(util.contains("function p("), "p.name stays \"p\": {util}");
+    let entry = fs::read_to_string(out.join("assets/entry.js")).expect("entry output");
+    assert!(entry.contains("b as n"), "the importer takes the kept name: {entry}");
     let _ = fs::remove_dir_all(&dir);
 }

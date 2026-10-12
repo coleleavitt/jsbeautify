@@ -44,6 +44,7 @@ impl AstDeobfuscator {
             allocator,
             program,
             &helper_symbols,
+            &self.project,
             self.keep_fn_names,
             self.short_export_names,
         );
@@ -203,11 +204,14 @@ fn rename_exports<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     helper_symbols: &FxHashMap<SymbolId, BunHelper>,
+    seeds: &project::ProjectSeeds,
     keep_fn_names: bool,
     short_export_names: bool,
 ) {
     eprintln!("[DEOBFUSCATE] Phase 0.95: __export() name extraction & rename");
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    // Import bindings named by the project plan keep its name.
+    let seeded = project::seeded_imports(program, seeds);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
     let export_helpers = helper_symbols
         .iter()
@@ -233,6 +237,7 @@ fn rename_exports<'a>(
                 .into_iter()
                 .filter(|(sym, _)| guards.specifier_exports.contains(sym)),
         );
+        export_map.retain(|sym, _| !seeded.contains(sym));
         guards.eval_names
     };
 

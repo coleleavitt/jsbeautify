@@ -2,6 +2,10 @@ use super::*;
 use oxc_span::SourceType;
 
 fn indexed(files: &[(&str, &str)]) -> Vec<IndexedFile> {
+    indexed_with(files, false)
+}
+
+fn indexed_with(files: &[(&str, &str)], keep_fn_names: bool) -> Vec<IndexedFile> {
     let no_helpers = FxHashMap::default();
     let mut indexed: Vec<IndexedFile> = files
         .iter()
@@ -13,7 +17,7 @@ fn indexed(files: &[(&str, &str)]) -> Vec<IndexedFile> {
             };
             IndexedFile {
                 path: (*path).to_string(),
-                facts: collect_facts(code, source_type, &no_helpers),
+                facts: collect_facts(code, source_type, &no_helpers, keep_fn_names),
             }
         })
         .collect();
@@ -21,7 +25,7 @@ fn indexed(files: &[(&str, &str)]) -> Vec<IndexedFile> {
     let helpers: Vec<_> = (0..indexed.len()).map(|file| graph.imported_helpers(file)).collect();
     for ((file, (_, code)), helpers) in indexed.iter_mut().zip(files).zip(helpers) {
         if !helpers.is_empty() {
-            file.facts = collect_facts(code, SourceType::mjs(), &helpers);
+            file.facts = collect_facts(code, SourceType::mjs(), &helpers, keep_fn_names);
         }
     }
     indexed
@@ -99,6 +103,41 @@ fn every_runtime_helper_variant_is_seeded_across_chunks() {
         import_names(&plan.seeds[1]),
         vec![("k", Some("__restKey"), Some("__restKey"))]
     );
+}
+
+#[test]
+fn keep_fn_names_gives_importers_the_kept_function_names() {
+    let files = [
+        (
+            "lib.js",
+            "function p(e){return e}var o=()=>1,n={ k:1 };class C{}export{p as a,o as b,n as c,C as d};",
+        ),
+        (
+            "user.js",
+            r#"import{a as e,b as t,c as r,d as s}from"./lib.js";console.log(e,t,r,s);"#,
+        ),
+    ];
+    let kept_files = indexed_with(&files, true);
+    let kept: Vec<&str> = kept_files[0].facts.kept_locals.iter().map(String::as_str).collect();
+    assert_eq!(kept, vec!["C", "o", "p"]);
+    let plan = plan_project(&kept_files);
+    assert_eq!(
+        import_names(&plan.seeds[1]),
+        vec![
+            ("a", Some("p"), None),
+            ("b", Some("o"), None),
+            ("c", Some("lib_c"), None),
+            ("d", Some("C"), None),
+        ]
+    );
+    let exports: Vec<_> = plan.seeds[0]
+        .exports
+        .iter()
+        .map(|s| (s.exported.as_str(), s.name.as_str()))
+        .collect();
+    assert_eq!(exports, vec![("c", "lib_c")], "kept locals get no export seed");
+    let default_plan = plan_project(&indexed(&files));
+    assert_eq!(import_names(&default_plan.seeds[1])[0], ("a", Some("lib_a"), None));
 }
 
 #[test]

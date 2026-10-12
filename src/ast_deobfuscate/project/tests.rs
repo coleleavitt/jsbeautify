@@ -127,6 +127,24 @@ fn keep_fn_names_keeps_seeded_function_locals_but_names_imports() {
 }
 
 #[test]
+fn a_minified_local_moves_off_the_kept_name_of_a_linked_binding() {
+    let code = r#"import{a as e}from"./x.js";function f(){var p=2;return e(p)}var p=1;console.log(f(),p);function n(){}export{n as m};"#;
+    let seeds = ProjectSeeds {
+        imports: vec![import_seed("./x.js", "a", Some("p"), None)],
+        ..ProjectSeeds::default()
+    };
+    let output = AstDeobfuscator::new()
+        .with_parse_goal(ParseGoal::Module)
+        .with_keep_fn_names(true)
+        .with_project_seeds(seeds)
+        .deobfuscate(code)
+        .expect("deobfuscation succeeds");
+    assert!(output.contains("a as p"), "{output}");
+    assert!(output.contains("p$1 = 1"), "the module-scope local moves: {output}");
+    assert!(output.contains("return p("), "{output}");
+}
+
+#[test]
 fn seeded_names_avoid_collisions_and_globals() {
     let code =
         r#"import{a as e}from"./x.js";function compute(){return e()}console.log(compute(),window);export{compute};"#;

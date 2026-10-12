@@ -15,7 +15,9 @@ impl AstDeobfuscator {
         let guarded = {
             let _trace = TraceSpan::new("Phase 12.5: resolve rename guards");
             let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
-            guard.into_guarded(&scoping)
+            let mut guarded = guard.into_guarded(&scoping);
+            guarded.extend(crate::ast_deobfuscate::project::seeded_imports(program, &self.project));
+            guarded
         };
         let (desired, free_names) = if self.readable_names {
             Self::collect_readable_name_inputs(allocator, program)

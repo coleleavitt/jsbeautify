@@ -30,6 +30,7 @@ use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::rename_planner::rename_unguarded;
 use crate::ast_deobfuscate::{BunHelper, rename_guards};
 
@@ -172,6 +173,25 @@ pub(crate) fn seeded_helpers(program: &Program<'_>, seeds: &ProjectSeeds) -> FxH
         .collect()
 }
 
+/// The import bindings `seeds` name, which later renames keep: under
+/// `--keep-fn-names` the plan may give them a kept minified name. `program`'s
+/// binding symbols must be those of the latest semantic build.
+pub(crate) fn seeded_imports(program: &Program<'_>, seeds: &ProjectSeeds) -> FxHashSet<SymbolId> {
+    let named: FxHashSet<(&str, &str)> = seeds
+        .imports
+        .iter()
+        .filter(|seed| seed.name.is_some())
+        .map(|seed| (seed.source.as_str(), seed.imported.as_str()))
+        .collect();
+    if named.is_empty() {
+        return FxHashSet::default();
+    }
+    import_bindings(program)
+        .filter(|(source, imported, _)| named.contains(&(*source, *imported)))
+        .map(|(_, _, symbol)| symbol)
+        .collect()
+}
+
 /// Phase 0.84: rename the import bindings and specifier-exported locals
 /// `seeds` name; `keep_fn_names` as
 /// [`rename_guards::RenameGuardCollector::keep_fn_names`]. Returns the number
@@ -211,12 +231,74 @@ pub(crate) fn apply_project_seeds<'a>(
     plan.retain(|(_, name)| !guards.eval_names.contains(name));
     let guarded: FxHashSet<SymbolId> = guards.symbols.difference(&guards.specifier_exports).copied().collect();
     let scoping = SemanticBuilder::new().build(program).semantic.into_scoping();
+    let blockers = blocking_locals(&scoping, &plan, &guarded);
+    let scoping = if blockers.is_empty() {
+        scoping
+    } else {
+        let moved = rename_unguarded(allocator, program, scoping, blockers, &guarded);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 0.84: Moved {} local bindings off names the project plan gives linked bindings",
+            moved.planned
+        );
+        SemanticBuilder::new().build(program).semantic.into_scoping()
+    };
     let counts = rename_unguarded(allocator, program, scoping, plan, &guarded);
     eprintln!(
         "[DEOBFUSCATE] Phase 0.84: Renamed {} bindings from the project plan ({} declarations, {} references)",
         counts.planned, counts.declarations, counts.references
     );
     counts.planned
+}
+
+/// The bindings that would push a `plan` entry to a `$N` name and may move
+/// instead (to `name$N`): unguarded, not keeping their name by the plan
+/// themselves (a planned binding moves first and takes its own name later),
+/// and named the minified name a planned binding wants, in its own scope or in a scope between it and one of
+/// its references. With `--keep-fn-names` the plan gives linked bindings the
+/// exporter's kept minified names, which the importer's own minified locals
+/// often already use.
+fn blocking_locals(
+    scoping: &Scoping,
+    plan: &[(SymbolId, String)],
+    guarded: &FxHashSet<SymbolId>,
+) -> Vec<(SymbolId, String)> {
+    let wanted: FxHashSet<&str> = plan
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .filter(|name| is_minified(name))
+        .collect();
+    let planned: FxHashMap<SymbolId, &str> = plan.iter().map(|(symbol, name)| (*symbol, name.as_str())).collect();
+    let mut by_name: FxHashMap<&str, Vec<SymbolId>> = FxHashMap::default();
+    for symbol in scoping.symbol_ids() {
+        let name = scoping.symbol_name(symbol);
+        if wanted.contains(name) && planned.get(&symbol) != Some(&name) && !guarded.contains(&symbol) {
+            by_name.entry(name).or_default().push(symbol);
+        }
+    }
+    let mut moved = FxHashSet::default();
+    let mut blockers = Vec::new();
+    for (symbol, name) in plan {
+        let Some(candidates) = by_name.get(name.as_str()) else {
+            continue;
+        };
+        let home = scoping.symbol_scope_id(*symbol);
+        let mut scopes: FxHashSet<_> = scoping
+            .get_resolved_reference_ids(*symbol)
+            .iter()
+            .flat_map(|&reference| {
+                scoping
+                    .scope_ancestors(scoping.get_reference(reference).scope_id())
+                    .take_while(move |&scope| scope != home)
+            })
+            .collect();
+        scopes.insert(home);
+        for &blocker in candidates {
+            if scopes.contains(&scoping.symbol_scope_id(blocker)) && moved.insert(blocker) {
+                blockers.push((blocker, format!("{name}$1")));
+            }
+        }
+    }
+    blockers
 }
 
 #[cfg(test)]
