@@ -1,7 +1,7 @@
 //! esbuild / Bun runtime helpers and native ES module exports: export-name
 //! recovery and bundler labels.
 
-use js_beautify_rs::{AstDeobfuscator, ParseGoal};
+use jsbeautify::{AstDeobfuscator, ParseGoal};
 
 const ESBUILD_RUNTIME: &str = "var d=Object.defineProperty;\
     var X=(e,t)=>{for(var n in t)d(e,n,{get:t[n],enumerable:!0})};\

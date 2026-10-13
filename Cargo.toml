@@ -2,7 +2,7 @@
 resolver = "3"
 
 [package]
-name = "js-beautify-rs"
+name = "jsbeautify"
 version = "0.1.0"
 edition = "2024"
 autobins = false
@@ -10,7 +10,7 @@ autotests = false
 autobenches = false
 description = "A fast JavaScript beautifier and deobfuscator powered by oxc"
 license = "MIT"
-repository = "https://github.com/coleleavitt/js-beautify-rs"
+repository = "https://github.com/coleleavitt/jsbeautify"
 keywords = ["javascript", "beautifier", "deobfuscator", "webpack", "oxc"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [

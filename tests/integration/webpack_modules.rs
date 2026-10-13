@@ -1,6 +1,6 @@
-use js_beautify_rs::AstDeobfuscator;
-use js_beautify_rs::tokenizer::Tokenizer;
-use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
+use jsbeautify::AstDeobfuscator;
+use jsbeautify::tokenizer::Tokenizer;
+use jsbeautify::webpack_module_extractor::ModuleExtractor;
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;

@@ -3,10 +3,10 @@ use super::{
     SplitChunksArgs, SplitSourcesArgs, align, project, sources,
 };
 use clap::Parser;
-use js_beautify_rs::inspect::{self, Inspection};
-use js_beautify_rs::tokenizer::Tokenizer;
-use js_beautify_rs::webpack_module_extractor::ModuleExtractor;
-use js_beautify_rs::{Options, beautify};
+use jsbeautify::inspect::{self, Inspection};
+use jsbeautify::tokenizer::Tokenizer;
+use jsbeautify::webpack_module_extractor::ModuleExtractor;
+use jsbeautify::{Options, beautify};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -72,7 +72,7 @@ pub(super) fn read_input(input: &str) -> Result<String, Box<dyn std::error::Erro
 }
 
 fn read_vm_input_bounded(input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let limit = js_beautify_rs::vm_analysis::AnalysisLimits::default().max_source_bytes;
+    let limit = jsbeautify::vm_analysis::AnalysisLimits::default().max_source_bytes;
     read_input_bounded(input, limit, "analyze-vm")
 }
 
@@ -115,7 +115,7 @@ fn write_output(output: Option<&String>, text: &str) -> Fallible {
 
 fn run_analyze_vm(args: &AnalyzeVmArgs) -> Fallible {
     let source = read_vm_input_bounded(&args.input)?;
-    let artifact = js_beautify_rs::vm_analysis::analyze_artifact(&source);
+    let artifact = jsbeautify::vm_analysis::analyze_artifact(&source);
     let json = serde_json::to_string_pretty(&artifact.report)?;
     if let Some(path) = &args.output {
         fs::write(path, format!("{json}\n"))?;
@@ -213,7 +213,7 @@ fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut optio
     if sourcemap_rename {
         let sm = fs::read_to_string(b.sourcemap.as_ref().expect("sourcemap present"))?;
         eprintln!("[RENAME] Applying sourcemap original names...");
-        code = js_beautify_rs::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(
+        code = jsbeautify::ast_deobfuscate::sourcemap_rename::apply_sourcemap_names(
             &code,
             options.parse_goal.resolve(&code, options.isolated),
             &sm,
@@ -238,12 +238,12 @@ fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut optio
 
     let mut beautified = beautify(&code, &options)?;
     if b.rename_llm {
-        let overrides = js_beautify_rs::llm::LlmOverrides::default();
-        match js_beautify_rs::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {
+        let overrides = jsbeautify::llm::LlmOverrides::default();
+        match jsbeautify::ast_deobfuscate::llm_rename::OpenAiCompatSuggester::from_overrides(&overrides) {
             Some(suggester) => {
                 eprintln!("[RENAME] Querying LLM for residual minified names...");
                 let source_type = options.parse_goal.resolve(&code, options.isolated);
-                beautified = js_beautify_rs::ast_deobfuscate::llm_rename::apply_llm_names(
+                beautified = jsbeautify::ast_deobfuscate::llm_rename::apply_llm_names(
                     &beautified,
                     source_type,
                     &suggester,
@@ -276,7 +276,7 @@ fn beautify_input(b: &BeautifyArgs, input: &str, output: Option<&str>, mut optio
 fn run_extract_modules(a: &ExtractModulesArgs) -> Fallible {
     let code = read_input(&a.input)?;
     let module_dir = a.output.clone().unwrap_or_else(|| PathBuf::from("./modules"));
-    if let Some(chunk) = js_beautify_rs::turbopack_extract::detect_turbopack_chunk(&code) {
+    if let Some(chunk) = jsbeautify::turbopack_extract::detect_turbopack_chunk(&code) {
         eprintln!(
             "[TURBOPACK] Found {} module factories and {} scope-hoisted modules in {} chunk registration(s)",
             chunk.module_count(),

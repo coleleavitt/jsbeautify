@@ -1,4 +1,4 @@
-# js-beautify-rs — Claude working notes
+# jsbeautify — Claude working notes
 
 A JavaScript beautifier and AST deobfuscator built on Oxc. The CLI binary is
 `jsbeautify`; the crate also exposes library APIs for beautification,

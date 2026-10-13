@@ -1,6 +1,6 @@
 //! End-to-end beautifier tests against the public API.
 
-use js_beautify_rs::{Options, beautify};
+use jsbeautify::{Options, beautify};
 
 use crate::fixtures;
 

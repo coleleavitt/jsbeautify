@@ -1,20 +1,20 @@
-# Mindemon ↔ js-beautify-rs integration
+# Mindemon ↔ jsbeautify integration
 
 One repository, two halves: the **Mindemon** Firefox extension (in `frontend/`)
 captures everything a web page actually loads in the browser; the
-**js-beautify-rs** Rust crate + daemon (repo root) beautifies, deobfuscates,
+**jsbeautify** Rust crate + daemon (repo root) beautifies, deobfuscates,
 analyzes, and reverses source maps on the backend. This document describes how
 they connect.
 
 ## The two halves
 
-| | Mindemon (capture) | js-beautify-rs (analysis) |
+| | Mindemon (capture) | jsbeautify (analysis) |
 |---|---|---|
 | Location | `frontend/` (this repo) | repo root (`src/`, `Cargo.toml`) |
 | Role | Firefox DevTools extension — **capture** | Rust daemon — **analysis** |
 | Strength | Sees the real runtime: lazy chunks, workers, WASM, source maps, hydration globals | 20-phase AST deobfuscator, oxc-powered beautifier, 14 security analyzers, source-map reversal, cross-version alignment |
 
-Historically js-beautify-rs grew a full jxscout-style platform (MITM proxy,
+Historically jsbeautify grew a full jxscout-style platform (MITM proxy,
 WebSocket server, SQLite project DB, hooks, monitoring) but those modules were
 **library-only** — no binary ever ran them. The `--serve` daemon plus the
 `pipeline` + `server` modules are the seam that turns them into a live service
@@ -30,7 +30,7 @@ and connects them to Mindemon.
 └───────────────────────────┬───────────────────────────┘
                             │ HTTP (JSON)
                             ▼
-┌──────────── js-beautify-rs --serve ───────────────────┐
+┌──────────── jsbeautify --serve ───────────────────┐
 │  HTTP API :3333  ── /ingest, /ingest/batch            │
 │        │                                              │
 │        ▼                                              │
@@ -51,7 +51,7 @@ and connects them to Mindemon.
 
 1. **Start the backend:**
    ```bash
-   cd ~/RustProjects/active/js-beautify-rs
+   cd ~/RustProjects/active/jsbeautify
    cargo build --release
    ./target/release/jsbeautify --serve --project-name myhunt
    ```

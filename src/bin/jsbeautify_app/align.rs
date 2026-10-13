@@ -1,5 +1,5 @@
-use js_beautify_rs::cross_version::{AlignConfig, CrossVersionAligner};
-use js_beautify_rs::{Options, beautify};
+use jsbeautify::cross_version::{AlignConfig, CrossVersionAligner};
+use jsbeautify::{Options, beautify};
 use std::fs;
 use std::path::PathBuf;
 

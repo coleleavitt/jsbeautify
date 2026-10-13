@@ -1,6 +1,6 @@
 //! End-to-end Angular recovery on a trimmed real production build.
 
-use js_beautify_rs::{AstDeobfuscator, ParseGoal};
+use jsbeautify::{AstDeobfuscator, ParseGoal};
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;

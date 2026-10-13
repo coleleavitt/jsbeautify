@@ -1,4 +1,4 @@
-use js_beautify_rs::{Options, beautify};
+use jsbeautify::{Options, beautify};
 
 fn main() {
     let obfuscated_code = r#"

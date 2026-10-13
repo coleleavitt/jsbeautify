@@ -1,4 +1,4 @@
-//! Integration test suite for `js-beautify-rs`.
+//! Integration test suite for `jsbeautify`.
 //!
 //! Mirrors the layout used by `cargo` itself (`tests/testsuite/main.rs`): a
 //! single integration-test *binary* that `mod`-includes every test file. This

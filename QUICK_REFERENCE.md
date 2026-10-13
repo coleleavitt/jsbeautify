@@ -1,4 +1,4 @@
-# Quick Reference: js-beautify-rs
+# Quick Reference: jsbeautify
 
 ## 🚀 Common Commands
 

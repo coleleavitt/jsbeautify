@@ -33,7 +33,7 @@ single-file executable.
 | `__export` | `j$` | `for (var q in $) fjH(H,q,{get:$[q],…})` |
 | `__esm` | `V` | `(H,$) => () => (H && ($=H(H=0)), $)` ← **the lazy thunk** |
 
-## Why this matters for js-beautify-rs
+## Why this matters for jsbeautify
 
 `EsbuildHelperCollector` (in `src/ast_deobfuscate/esbuild/helper/`) already
 detects all of these by AST shape. **It returns 0 helpers on the Bun bundle**

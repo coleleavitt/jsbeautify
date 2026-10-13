@@ -1,4 +1,4 @@
-# Bug Analysis Report: js-beautify-rs
+# Bug Analysis Report: jsbeautify
 
 **Date:** 2025-06-12  
 **Analysis Method:** CodeGraph static analysis + grep + targeted code review  

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Port TypeScript cross-version alignment tools to Rust and integrate into js-beautify-rs to produce stable diffs between Bun-minified JavaScript bundle versions (e.g., Claude Code CLI across versions 2.1.88 → 2.1.96).
+Port TypeScript cross-version alignment tools to Rust and integrate into jsbeautify to produce stable diffs between Bun-minified JavaScript bundle versions (e.g., Claude Code CLI across versions 2.1.88 → 2.1.96).
 
 ## Current Status
 
@@ -360,10 +360,10 @@ The low recovery rate is because:
 
 ```bash
 # Basic beautify with deobfuscation
-/home/cole/RustProjects/active/js-beautify-rs/target/release/jsbeautify input.js -d -o output.js
+/home/cole/RustProjects/active/jsbeautify/target/release/jsbeautify input.js -d -o output.js
 
 # Cross-version alignment
-/home/cole/RustProjects/active/js-beautify-rs/target/release/jsbeautify \
+/home/cole/RustProjects/active/jsbeautify/target/release/jsbeautify \
   cli.2.1.88.js -d \
   --sourcemap cli.js.map \
   --align-with cli.2.1.96.js \
@@ -433,7 +433,7 @@ go build
 
 `/home/cole/VulnerabilityResearch/anthropic/tools/ultimate-align.ts` contains the original TypeScript implementation that was ported to Rust.
 
-## Key Files in js-beautify-rs
+## Key Files in jsbeautify
 
 ```
 src/
@@ -460,7 +460,7 @@ src/
 
 ## Constraints from User
 
-- "don't preprocess right idk check oxc or how does the typescript code it and edit oxc if needed or our js-beautify-rs right in a sense correctly right"
+- "don't preprocess right idk check oxc or how does the typescript code it and edit oxc if needed or our jsbeautify right in a sense correctly right"
 - "don't use a simpler approach use the proper approach right"
 - "implement all of it properly please thank you"
 

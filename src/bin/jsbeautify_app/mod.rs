@@ -5,7 +5,7 @@
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use clap::{Parser, Subcommand};
-use js_beautify_rs::ParseGoal;
+use jsbeautify::ParseGoal;
 use std::path::PathBuf;
 
 mod align;

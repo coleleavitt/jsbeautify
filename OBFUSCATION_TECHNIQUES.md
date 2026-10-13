@@ -889,7 +889,7 @@ console.log(_0x1()); // 'secret'
 
 ---
 
-## Implementation Priorities for js-beautify-rs
+## Implementation Priorities for jsbeautify
 
 ### Phase 1 (High Impact, Low Complexity):
 - Unicode/Hex Escapes (Techniques 1-2)

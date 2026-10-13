@@ -1,6 +1,5 @@
-# js-beautify-rs
+# jsbeautify
 
-[![Crates.io](https://img.shields.io/crates/v/js-beautify-rs.svg)](https://crates.io/crates/js-beautify-rs)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 
 A fast JavaScript beautifier and deobfuscator written in Rust, powered by [oxc](https://github.com/oxc-project/oxc).
@@ -18,14 +17,14 @@ exposed as subcommands (see the CLI reference below).
 ## Installation
 
 ```bash
-cargo install js-beautify-rs
+cargo install --git https://github.com/coleleavitt/jsbeautify --locked
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/coleleavitt/js-beautify-rs
-cd js-beautify-rs
+git clone https://github.com/coleleavitt/jsbeautify
+cd jsbeautify
 cargo build --release
 # binary at ./target/release/jsbeautify
 ```
@@ -177,10 +176,10 @@ stderr; an unrecoverable parse error prints the diagnostics and exits 1.
 
 ## Library Usage
 
-js-beautify-rs can also be used as a Rust library:
+jsbeautify can also be used as a Rust library:
 
 ```rust
-use js_beautify_rs::{beautify, Options};
+use jsbeautify::{beautify, Options};
 
 let code = "function test(){console.log('hello');}";
 let options = Options::default();
@@ -190,7 +189,7 @@ let beautified = beautify(code, &options).expect("beautification failed");
 For deobfuscation:
 
 ```rust
-use js_beautify_rs::AstDeobfuscator;
+use jsbeautify::AstDeobfuscator;
 
 let obfuscated = std::fs::read_to_string("bundle.js").unwrap();
 let mut deobfuscator = AstDeobfuscator::new();

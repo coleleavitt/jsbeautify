@@ -1,4 +1,4 @@
-//! `jsbeautify -d --project <DIR> -o <OUTDIR>`: see [`js_beautify_rs::project`].
+//! `jsbeautify -d --project <DIR> -o <OUTDIR>`: see [`jsbeautify::project`].
 //!
 //! The index and the plan are built in this process; every file is then
 //! deobfuscated by a child `jsbeautify` (`--project-job`), so each file has
@@ -6,7 +6,7 @@
 
 use super::BeautifyArgs;
 use super::runner::{Fallible, options_for, read_input};
-use js_beautify_rs::project::{
+use jsbeautify::project::{
     IndexedFile, LinkReport, PlanStats, ProjectSeeds, check_links, index_project, is_javascript, list_files,
     parallel_map, plan_project,
 };
@@ -34,7 +34,7 @@ pub(super) fn run_job(b: &BeautifyArgs, job: &str) -> Fallible {
     // `run_project`); the files' own Phase 0.95 must agree with it.
     options.short_export_names = false;
     let code = fs::read_to_string(&job.input)?;
-    let result = js_beautify_rs::beautifier::deobfuscate_with_project_seeds(&code, &options, job.seeds)?;
+    let result = jsbeautify::beautifier::deobfuscate_with_project_seeds(&code, &options, job.seeds)?;
     fs::write(&job.output, result)?;
     Ok(())
 }
@@ -46,7 +46,7 @@ struct FileReport<'a> {
     status: &'a FileStatus,
     #[serde(skip_serializing_if = "ProjectSeeds::is_empty")]
     seeds: &'a ProjectSeeds,
-    facts: &'a js_beautify_rs::project::FileFacts,
+    facts: &'a jsbeautify::project::FileFacts,
 }
 
 #[derive(Serialize)]

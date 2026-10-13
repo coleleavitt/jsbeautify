@@ -1,8 +1,8 @@
-# 🎉 Session Summary: js-beautify-rs - Advanced Optimizations & Module Extraction
+# 🎉 Session Summary: jsbeautify - Advanced Optimizations & Module Extraction
 
 ## 📊 Overview
 
-**Project:** js-beautify-rs  
+**Project:** jsbeautify  
 **Date:** January 14, 2026  
 **Session:** Second major feature addition  
 **Status:** ✅ ALL FEATURES COMPLETE & TESTED  

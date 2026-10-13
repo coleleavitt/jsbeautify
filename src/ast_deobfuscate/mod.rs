@@ -14,7 +14,7 @@
 //!
 //! ```compile_fail
 //! // Pass implementations are intentionally not exposed to downstream crates.
-//! use js_beautify_rs::ast_deobfuscate::ConstantFolder;
+//! use jsbeautify::ast_deobfuscate::ConstantFolder;
 //! ```
 
 // Private module hubs intentionally re-export selected sibling items for the

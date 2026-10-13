@@ -2,8 +2,8 @@
 //! point sizes its worker stack from the input length, so none of these may
 //! overflow.
 
-use js_beautify_rs::ParseGoal;
-use js_beautify_rs::inspect::scope::symbol_table;
+use jsbeautify::ParseGoal;
+use jsbeautify::inspect::scope::symbol_table;
 use std::io::Write;
 use std::process::{Command, Stdio};
 

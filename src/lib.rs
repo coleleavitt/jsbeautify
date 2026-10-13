@@ -1,11 +1,11 @@
-//! # js-beautify-rs
+//! # jsbeautify
 //!
 //! A Rust port of js-beautify with webpack-specific improvements.
 //!
 //! ## Example
 //!
 //! ```rust
-//! use js_beautify_rs::{beautify, Options};
+//! use jsbeautify::{beautify, Options};
 //!
 //! let code = "function test(){console.log('hello');}";
 //! let options = Options::default();

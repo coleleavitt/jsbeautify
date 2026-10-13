@@ -2,7 +2,7 @@
 
 ## 📋 Overview
 
-This index documents the complete deliverables from the **Exhaustive JavaScript Obfuscation Techniques Survey** conducted for the `js-beautify-rs` Rust deobfuscator project.
+This index documents the complete deliverables from the **Exhaustive JavaScript Obfuscation Techniques Survey** conducted for the `jsbeautify` Rust deobfuscator project.
 
 **Project Goal**: Create a comprehensive, production-ready reference guide for implementing handlers for 25+ modern JavaScript obfuscation techniques.
 
@@ -13,7 +13,7 @@ This index documents the complete deliverables from the **Exhaustive JavaScript 
 ## 📦 Primary Deliverables
 
 ### 1. **OBFUSCATION_TECHNIQUES.md** (918 lines)
-**Location**: `/home/cole/RustProjects/active/js-beautify-rs/OBFUSCATION_TECHNIQUES.md`
+**Location**: `/home/cole/RustProjects/active/jsbeautify/OBFUSCATION_TECHNIQUES.md`
 
 **Contents**:
 - 35 JavaScript obfuscation techniques with complete documentation
@@ -71,7 +71,7 @@ This index documents the complete deliverables from the **Exhaustive JavaScript 
 ---
 
 ### 2. **RESEARCH_VALIDATION.md** (313 lines)
-**Location**: `/home/cole/RustProjects/active/js-beautify-rs/RESEARCH_VALIDATION.md`
+**Location**: `/home/cole/RustProjects/active/jsbeautify/RESEARCH_VALIDATION.md`
 
 **Contents**:
 - Executive summary of research completion
@@ -79,7 +79,7 @@ This index documents the complete deliverables from the **Exhaustive JavaScript 
 - Coverage analysis and quality metrics
 - Cross-reference matrix (requirements → deliverables)
 - Quality assurance checklist
-- Implementation roadmap for js-beautify-rs
+- Implementation roadmap for jsbeautify
 
 **Key Sections**:
 - ✅ Exhaustive web/GitHub survey (15+ searches)

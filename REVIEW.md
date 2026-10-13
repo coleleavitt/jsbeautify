@@ -116,7 +116,7 @@ Every CVE finding emitted via `--vuln-scan` silently lacks CWE and OWASP classif
 **Fix:**  
 After `matches.extend(run_vuln_scan(...))` at line 1080, add:
 ```rust
-js_beautify_rs::analyzers::taxonomy::enrich(&mut matches);
+jsbeautify::analyzers::taxonomy::enrich(&mut matches);
 ```
 Or alternatively, move the enrichment call inside `run_vuln_scan()` before returning the Vec.
 
@@ -454,6 +454,6 @@ No structural issues detected in task dependencies or parallel execution paths. 
 
 ---
 
-**Report Generated:** Code review of js-beautify-rs / feature branch  
+**Report Generated:** Code review of jsbeautify / feature branch  
 **Review Scope:** 6 files (2 with changes, 4 unchanged)  
 **Total Issues:** 13 (1 critical, 3 high, 5 medium, 4 low)

@@ -8,7 +8,7 @@
 //! `"js"` object override top-level ones, and keys this tool does not honor
 //! are ignored so one file can be shared with js-beautify.
 
-use js_beautify_rs::{BraceStyle, Eol, Options};
+use jsbeautify::{BraceStyle, Eol, Options};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};

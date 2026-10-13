@@ -2,7 +2,7 @@
 //! name, so `-d` must neither rename nor remove them unless the input is
 //! declared isolated.
 
-use js_beautify_rs::{AstDeobfuscator, ParseGoal};
+use jsbeautify::{AstDeobfuscator, ParseGoal};
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
