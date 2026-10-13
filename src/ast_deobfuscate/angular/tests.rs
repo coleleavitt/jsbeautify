@@ -84,6 +84,14 @@ fn renames_ngrx_action_creators() {
 }
 
 #[test]
+fn turbopack_module_ids_are_not_ngrx_actions() {
+    let out = rename(
+        r#"var a = c.i("[project]/src/load.js [app-client] (ecmascript)"), b = c.i("[externals]/fs [external] (fs, cjs)"); use(a, b);"#,
+    );
+    assert!(out.contains("use(a, b)"), "{out}");
+}
+
+#[test]
 fn leaves_readable_and_selectorless_classes() {
     let code = r#"var LoginForm = class LoginForm { static ɵcmp = Vt({ type: LoginForm, selectors: [["app-login"]] }); };
         var a = class e { static ɵcmp = Vt({ type: e, selectors: [["ng-component"]] }); }; use(LoginForm, a);"#;

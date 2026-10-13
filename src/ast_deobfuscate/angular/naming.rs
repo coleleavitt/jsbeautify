@@ -74,7 +74,9 @@ fn pascal_case(raw: &str) -> Option<String> {
 pub(super) fn action_name(action_type: &str) -> Option<String> {
     let rest = action_type.strip_prefix('[')?;
     let (source, event) = rest.split_once(']')?;
-    if source.trim().is_empty() {
+    // NgRx types read `[Source] Event`; Turbopack module ids (`[project]/a.js [app] (ecmascript)`)
+    // also start with a bracketed word but continue with a path.
+    if source.trim().is_empty() || !event.starts_with(' ') {
         return None;
     }
     let pascal = pascal_case(event.trim())?;
