@@ -111,11 +111,11 @@ pub(super) fn parse_int_js(s: &str) -> Option<f64> {
     rest[..end].parse::<f64>().ok().map(|v| sign * v)
 }
 
-pub(super) fn apply_rotation(strings: &mut Vec<String>, count: usize) {
-    for _ in 0..count {
-        if let Some(first) = strings.first().cloned() {
-            strings.remove(0);
-            strings.push(first);
-        }
+#[allow(clippy::missing_const_for_fn)] // rotate_left is not const
+pub(super) fn apply_rotation(strings: &mut [String], count: usize) {
+    let len = strings.len();
+    if len > 0 {
+        // Use rotate_left for O(n) instead of O(n*count) with repeated remove(0)
+        strings.rotate_left(count % len);
     }
 }

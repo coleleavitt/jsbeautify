@@ -21,6 +21,7 @@ mod sources;
 /// subcommands so the default surface stays small.
 #[derive(Parser, Debug)]
 #[command(name = "jsbeautify", version = env!("JSB_VERSION"), about, long_about = None)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     /// Print version.
     #[arg(short = 'v', action = clap::ArgAction::Version, hide = true)]

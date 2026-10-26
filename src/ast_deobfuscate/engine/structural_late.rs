@@ -108,13 +108,11 @@ impl AstDeobfuscator {
             let _trace = TraceSpan::new("Phase 12: variable_renamer");
             eprintln!("[DEOBFUSCATE] Phase 12: SemanticBuilder for variable_renamer");
             let mut scoping = semantic::reuse_or_build(program, scoping);
-            let mut kept = if self.keep_fn_names {
-                let guards;
-                (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, true);
-                guards.symbols
-            } else {
-                rustc_hash::FxHashSet::default()
-            };
+            // Always call guards_with to protect eval-visible bindings, regardless of keep_fn_names.
+            // The keep_fn_names flag controls whether function/class names are also protected.
+            let guards;
+            (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, self.keep_fn_names);
+            let mut kept = guards.symbols;
             kept.extend(crate::ast_deobfuscate::project::seeded_imports(program, &self.project));
             self.variable_renamer.keep(kept);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);

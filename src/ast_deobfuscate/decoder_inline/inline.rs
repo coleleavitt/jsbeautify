@@ -70,6 +70,10 @@ impl DecoderInliner {
                     decoder.offset,
                     result
                 );
+                if result < 0 {
+                    deob_trace!("[AST]   Negative index after offset");
+                    return None;
+                }
                 result as usize
             }
         };

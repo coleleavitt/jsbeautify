@@ -155,12 +155,32 @@ fn run_inspect<T>(
     write_output(args.output.as_ref(), render(&inspection.report).trim_end())
 }
 
+/// Known subcommand names to catch typos like "jsbeautify prase-modules file.js".
+const SUBCOMMAND_NAMES: &[&str] = &[
+    "parse-modules", "split-chunks", "split-sources", "reconstruct",
+    "align", "analyze-vm", "ast", "scope", "cfg", "help",
+];
+
 fn run_beautify(b: &BeautifyArgs) -> Fallible {
     if let Some(job) = &b.project_job {
         return project::run_job(b, job);
     }
     if let Some(root) = &b.project {
         return project::run_project(b, root);
+    }
+    // Check for inputs that look like misspelled subcommands
+    for input in b.inputs.iter().chain(&b.files) {
+        if input.contains('-') && !input.contains('/') && !input.contains('.') {
+            // Looks like a subcommand name, not a file
+            let suggestion = SUBCOMMAND_NAMES.iter()
+                .find(|&&cmd| cmd.starts_with(&input[..input.len().min(4)]));
+            if let Some(cmd) = suggestion {
+                return Err(format!(
+                    "'{input}' looks like a subcommand, not a file. Did you mean '{cmd}'?
+                     Run 'jsbeautify help' for available subcommands."
+                ).into());
+            }
+        }
     }
     let mut inputs: Vec<&str> = b.files.iter().chain(&b.inputs).map(String::as_str).collect();
     if inputs.is_empty() {
