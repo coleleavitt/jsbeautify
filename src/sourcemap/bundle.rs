@@ -250,11 +250,11 @@ mod tests {
         );
         let written = split_paths("esbuild", &bundle);
         assert!(
-            written.contains(&"synthetic/esbuild/commonjs/alpha.js".to_string()),
+            written.iter().any(|path| path == "synthetic/esbuild/commonjs/alpha.js"),
             "{written:?}"
         );
         assert!(
-            written.contains(&"synthetic/esbuild/esm/beta.js".to_string()),
+            written.iter().any(|path| path == "synthetic/esbuild/esm/beta.js"),
             "{written:?}"
         );
     }
@@ -266,8 +266,8 @@ mod tests {
 
         let written = reconstruct_bundle_tree(LAZY_MODULES, None, &dir).unwrap();
 
-        assert!(written.contains(&"synthetic/modules/commonjs/alpha.js".to_string()));
-        assert!(written.contains(&"synthetic/modules/esm/beta.js".to_string()));
+        assert!(written.iter().any(|path| path == "synthetic/modules/commonjs/alpha.js"));
+        assert!(written.iter().any(|path| path == "synthetic/modules/esm/beta.js"));
         assert!(
             std::fs::read_to_string(dir.join("reversed/synthetic/modules/commonjs/alpha.js"))
                 .unwrap()
@@ -285,7 +285,10 @@ mod tests {
             "function y(e){let n=new Set(e);return t=>n.has(t)}var Ee=y(Object.keys(ge));",
         );
         assert!(written.iter().all(|path| !path.contains("commonjs")), "{written:?}");
-        assert!(written.contains(&"synthetic/functions/y.js".to_string()), "{written:?}");
+        assert!(
+            written.iter().any(|path| path == "synthetic/functions/y.js"),
+            "{written:?}"
+        );
     }
 
     #[test]
@@ -318,8 +321,8 @@ mod tests {
 
         let written = reconstruct_bundle_tree(bundle, None, &dir).unwrap();
 
-        assert!(written.contains(&"synthetic/bun/commonjs/pes.js".to_string()));
-        assert!(written.contains(&"synthetic/bun/esm/ges.js".to_string()));
+        assert!(written.iter().any(|path| path == "synthetic/bun/commonjs/pes.js"));
+        assert!(written.iter().any(|path| path == "synthetic/bun/esm/ges.js"));
         assert!(
             std::fs::read_to_string(dir.join("reversed/synthetic/bun/commonjs/pes.js"))
                 .unwrap()
