@@ -5,7 +5,7 @@
 //! once to a postfix program over `f64`, the arithmetic JavaScript performs
 //! on numbers, and evaluated for each rotation without running JavaScript.
 
-use oxc_ast::ast::{Argument, BinaryOperator, Expression, UnaryOperator};
+use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression, UnaryOperator};
 use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 
@@ -38,12 +38,23 @@ pub(super) struct Checksum {
 
 impl Checksum {
     /// Compiles `expr` when it only uses number literals, unary `-`/`+`,
-    /// binary `+ - * /`, and `parseInt(decoder(<number literal>))` with the
-    /// global `parseInt` and a decoder symbol from `decoders`.
-    pub(super) fn compile(expr: &Expression<'_>, scoping: &Scoping, decoders: &[SymbolId]) -> Option<Self> {
-        let mut ops = Vec::new();
-        compile_into(expr, scoping, decoders, &mut ops, 0)?;
-        Some(Self { ops })
+    /// binary `+ - * /`, and `parseInt(decoder(<index literal>))` with the
+    /// global `parseInt` and a decoder symbol from `decoders`. String index
+    /// literals are accepted when the decoder converts them to numbers.
+    pub(super) fn compile(
+        expr: &Expression<'_>,
+        scoping: &Scoping,
+        decoders: &[SymbolId],
+        coerces_strings: bool,
+    ) -> Option<Self> {
+        let mut compiler = Compiler {
+            scoping,
+            decoders,
+            coerces_strings,
+            ops: Vec::new(),
+        };
+        compiler.compile(expr, 0)?;
+        Some(Self { ops: compiler.ops })
     }
 
     /// The number of `push(shift())` steps after which the checksum first
@@ -106,73 +117,85 @@ pub(super) fn array_index(index: f64, len: usize) -> Option<usize> {
     Some(index as usize)
 }
 
-fn compile_into(
-    expr: &Expression<'_>,
-    scoping: &Scoping,
-    decoders: &[SymbolId],
-    ops: &mut Vec<Op>,
-    depth: usize,
-) -> Option<()> {
-    if ops.len() >= MAX_OPS || depth >= MAX_DEPTH {
-        return None;
-    }
-    let depth = depth + 1;
-    match expr {
-        Expression::NumericLiteral(lit) => ops.push(Op::Number(lit.value)),
-        Expression::ParenthesizedExpression(paren) => compile_into(&paren.expression, scoping, decoders, ops, depth)?,
-        Expression::UnaryExpression(unary) => {
-            compile_into(&unary.argument, scoping, decoders, ops, depth)?;
-            match unary.operator {
-                UnaryOperator::UnaryNegation => ops.push(Op::Negate),
-                // Every compiled value is already a number, so `+` keeps it.
-                UnaryOperator::UnaryPlus => {}
-                _ => return None,
-            }
-        }
-        Expression::BinaryExpression(binary) => {
-            let op = match binary.operator {
-                BinaryOperator::Addition => Op::Add,
-                BinaryOperator::Subtraction => Op::Subtract,
-                BinaryOperator::Multiplication => Op::Multiply,
-                BinaryOperator::Division => Op::Divide,
-                _ => return None,
-            };
-            compile_into(&binary.left, scoping, decoders, ops, depth)?;
-            compile_into(&binary.right, scoping, decoders, ops, depth)?;
-            ops.push(op);
-        }
-        Expression::CallExpression(call) => ops.push(Op::Decode(parse_int_of_decoder_call(call, scoping, decoders)?)),
-        _ => return None,
-    }
-    Some(())
+struct Compiler<'s> {
+    scoping: &'s Scoping,
+    decoders: &'s [SymbolId],
+    coerces_strings: bool,
+    ops: Vec<Op>,
 }
 
-/// The literal argument of `parseInt(decoder(<number literal>))`.
-fn parse_int_of_decoder_call(
-    call: &oxc_ast::ast::CallExpression<'_>,
-    scoping: &Scoping,
-    decoders: &[SymbolId],
-) -> Option<f64> {
-    let Expression::Identifier(parse_int) = &call.callee else {
-        return None;
-    };
-    let parse_int_ref = parse_int.reference_id.get()?;
-    if call.optional || parse_int.name != "parseInt" || scoping.get_reference(parse_int_ref).symbol_id().is_some() {
-        return None;
+impl Compiler<'_> {
+    fn compile(&mut self, expr: &Expression<'_>, depth: usize) -> Option<()> {
+        if self.ops.len() >= MAX_OPS || depth >= MAX_DEPTH {
+            return None;
+        }
+        let depth = depth + 1;
+        match expr {
+            Expression::NumericLiteral(lit) => self.ops.push(Op::Number(lit.value)),
+            Expression::ParenthesizedExpression(paren) => self.compile(&paren.expression, depth)?,
+            Expression::UnaryExpression(unary) => {
+                self.compile(&unary.argument, depth)?;
+                match unary.operator {
+                    UnaryOperator::UnaryNegation => self.ops.push(Op::Negate),
+                    // Every compiled value is already a number, so `+` keeps it.
+                    UnaryOperator::UnaryPlus => {}
+                    _ => return None,
+                }
+            }
+            Expression::BinaryExpression(binary) => {
+                let op = match binary.operator {
+                    BinaryOperator::Addition => Op::Add,
+                    BinaryOperator::Subtraction => Op::Subtract,
+                    BinaryOperator::Multiplication => Op::Multiply,
+                    BinaryOperator::Division => Op::Divide,
+                    _ => return None,
+                };
+                self.compile(&binary.left, depth)?;
+                self.compile(&binary.right, depth)?;
+                self.ops.push(op);
+            }
+            Expression::CallExpression(call) => {
+                let index = self.parse_int_of_decoder_call(call)?;
+                self.ops.push(Op::Decode(index));
+            }
+            _ => return None,
+        }
+        Some(())
     }
-    let [Argument::CallExpression(inner)] = call.arguments.as_slice() else {
-        return None;
-    };
-    let Expression::Identifier(decoder) = &inner.callee else {
-        return None;
-    };
-    if inner.optional || !decoders.contains(&reference_symbol(scoping, decoder)?) {
-        return None;
+
+    /// The index literal of `parseInt(decoder(<index literal>))`, as a number.
+    fn parse_int_of_decoder_call(&self, call: &CallExpression<'_>) -> Option<f64> {
+        let Expression::Identifier(parse_int) = &call.callee else {
+            return None;
+        };
+        let parse_int_ref = parse_int.reference_id.get()?;
+        if call.optional
+            || parse_int.name != "parseInt"
+            || self.scoping.get_reference(parse_int_ref).symbol_id().is_some()
+        {
+            return None;
+        }
+        let [Argument::CallExpression(inner)] = call.arguments.as_slice() else {
+            return None;
+        };
+        let Expression::Identifier(decoder) = &inner.callee else {
+            return None;
+        };
+        if inner.optional || !self.decoders.contains(&reference_symbol(self.scoping, decoder)?) {
+            return None;
+        }
+        index_literal(inner.arguments.as_slice(), self.coerces_strings)
     }
-    let [Argument::NumericLiteral(arg)] = inner.arguments.as_slice() else {
-        return None;
-    };
-    Some(arg.value)
+}
+
+/// The single number argument of a decoder call, or a string argument that
+/// the decoder converts to one.
+pub(super) fn index_literal(args: &[Argument<'_>], coerces_strings: bool) -> Option<f64> {
+    match args {
+        [Argument::NumericLiteral(lit)] => Some(lit.value),
+        [Argument::StringLiteral(lit)] if coerces_strings => string_to_number(&lit.value),
+        _ => None,
+    }
 }
 
 /// JavaScript's `parseInt(s)` without a radix. `Some(NaN)` when `s` has no

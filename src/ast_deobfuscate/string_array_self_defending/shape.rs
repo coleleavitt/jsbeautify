@@ -346,7 +346,7 @@ pub(super) fn match_rotation(
     stmt: &ExpressionStatement<'_>,
     scoping: &Scoping,
     array: &StringArray,
-    decoder: SymbolId,
+    decoder: &Decoder,
 ) -> Option<Rotation> {
     let Expression::CallExpression(call) = stmt.expression.without_parentheses() else {
         return None;
@@ -384,12 +384,12 @@ fn match_checksum_body(
     get_array: SymbolId,
     target_param: SymbolId,
     target: f64,
-    decoder: SymbolId,
+    decoder: &Decoder,
 ) -> Option<RotationKind> {
     let [prelude @ .., Statement::WhileStatement(while_stmt)] = statements else {
         return None;
     };
-    let mut decoders = vec![decoder];
+    let mut decoders = vec![decoder.symbol];
     let mut array = None;
     for stmt in prelude {
         let Statement::VariableDeclaration(decl) = stmt else {
@@ -398,7 +398,7 @@ fn match_checksum_body(
         for declarator in &decl.declarations {
             let symbol = binding_symbol(&declarator.id)?;
             let init = declarator.init.as_ref()?;
-            if is_identifier_of(init, scoping, decoder) {
+            if is_identifier_of(init, scoping, decoder.symbol) {
                 decoders.push(symbol);
             } else if array.is_none() && call_without_args_of(init, scoping, get_array).is_some() {
                 array = Some(symbol);
@@ -409,7 +409,7 @@ fn match_checksum_body(
     }
     let checksum = match_rotation_loop(while_stmt, scoping, array?, target_param)?;
     Some(RotationKind::Checksum {
-        checksum: Checksum::compile(checksum, scoping, &decoders)?,
+        checksum: Checksum::compile(checksum, scoping, &decoders, decoder.coerces_strings)?,
         target,
     })
 }

@@ -208,6 +208,15 @@ fn decodes_the_legacy_layout_with_string_indexes() {
 }
 
 #[test]
+fn solves_a_checksum_over_string_indexes() {
+    let code = PRELUDE.replace("parseInt(d(0x100))", "parseInt(d('0x100'))");
+    let (output, pass) = run(&format!("{code}console.log(_0xdec('0x102'));"));
+    assert_eq!(pass.inlined(), 1, "{output}");
+    assert_eq!(pass.removed_rotations(), 1, "{output}");
+    assert!(output.contains(r#"console.log("a");"#), "{output}");
+}
+
+#[test]
 fn keeps_string_indexes_it_cannot_convert() {
     let (output, pass) = run(&format!("{LEGACY}f(_0x4a2b('1e0'), _0x4a2b('-0x1'), _0x4a2b('0x1'));"));
     assert_eq!(pass.inlined(), 1, "{output}");

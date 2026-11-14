@@ -13,7 +13,7 @@ use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::checksum::{array_index, string_to_number};
+use super::checksum::{array_index, index_literal};
 use super::shape::{
     Decoder, DecoderCandidate, RotationKind, StringArray, decoder_candidate, match_array_variable, match_decoder,
     match_rotation, match_wrapper, reference_symbol,
@@ -97,7 +97,7 @@ fn analyze_array(
         .enumerate()
         .filter_map(|(index, stmt)| match stmt {
             Statement::ExpressionStatement(expr) => {
-                match_rotation(expr, scoping, array, decoder.symbol).map(|rotation| (index, &**expr, rotation))
+                match_rotation(expr, scoping, array, decoder).map(|rotation| (index, &**expr, rotation))
             }
             _ => None,
         })
@@ -345,13 +345,8 @@ impl<'s> Walker<'s> {
         let Expression::Identifier(callee) = &call.callee else {
             return;
         };
-        let arg = match call.arguments.as_slice() {
-            [Argument::NumericLiteral(lit)] => lit.value,
-            [Argument::StringLiteral(lit)] if self.coerces_strings => match string_to_number(&lit.value) {
-                Some(value) => value,
-                None => return,
-            },
-            _ => return,
+        let Some(arg) = index_literal(call.arguments.as_slice(), self.coerces_strings) else {
+            return;
         };
         let (Some(reference), Some(symbol)) = (callee.reference_id.get(), reference_symbol(self.scoping, callee))
         else {
