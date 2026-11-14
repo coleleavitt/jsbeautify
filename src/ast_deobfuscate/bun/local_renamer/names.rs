@@ -1,6 +1,3 @@
-use oxc_syntax::scope::ScopeId;
-use rustc_hash::{FxHashMap, FxHashSet};
-
 /// A name is a single-character Bun-mangled local: one ASCII letter, `$`, or `_`.
 pub(super) const fn is_single_char_mangled(name: &str) -> bool {
     let b = name.as_bytes();
@@ -126,29 +123,4 @@ where
         }
     }
     None
-}
-
-pub(super) fn is_blocked_name(
-    name: &str,
-    current_name: &str,
-    local: &FxHashSet<String>,
-    subtree_names: Option<&FxHashSet<&str>>,
-    free_names: Option<&FxHashSet<&str>>,
-    ancestor_scopes: &[ScopeId],
-    scope_name_sets: &FxHashMap<ScopeId, FxHashSet<&str>>,
-    assigned: &FxHashMap<ScopeId, FxHashSet<String>>,
-) -> bool {
-    if name == current_name {
-        return local.contains(name);
-    }
-    if local.contains(name)
-        || subtree_names.is_some_and(|names| names.contains(name))
-        || free_names.is_some_and(|names| names.contains(name))
-    {
-        return true;
-    }
-    ancestor_scopes.iter().any(|anc| {
-        scope_name_sets.get(anc).is_some_and(|names| names.contains(name))
-            || assigned.get(anc).is_some_and(|names| names.contains(name))
-    })
 }

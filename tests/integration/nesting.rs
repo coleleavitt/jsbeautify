@@ -159,13 +159,7 @@ fn node_stdout(dir: &std::path::Path, code: &str) -> Option<String> {
 fn deep_indentation_keeps_output_linear() {
     let widest = 4 * jsbeautify::beautifier::MAX_INDENT_DEPTH;
     let blocks = indented_shapes(50_000).swap_remove(0);
-    // Phase 12.5 local renaming is super-linear in nested function scopes
-    // (22 s for 2,000 nested arrows in release), so arrow sequences only
-    // run in `deep_indentation_keeps_behavior`.
-    let shapes = indented_shapes(2_000)
-        .into_iter()
-        .skip(1)
-        .filter(|&(shape, ..)| shape != "arrow sequences");
+    let shapes = indented_shapes(2_000).into_iter().skip(1);
     for (shape, source, _) in std::iter::once(blocks).chain(shapes) {
         for args in [&["-"][..], &["-d", "-"]] {
             let out = jsbeautify(args, &source);
@@ -205,6 +199,62 @@ fn deep_indentation_keeps_behavior() {
                 Some(expected),
                 "{shape} {args:?}"
             );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `depth` nested functions that each take `a` and call it, and a driver that
+/// calls down the chain and prints how many calls it made.
+fn nested_function_scopes(depth: usize) -> [(&'static str, String); 2] {
+    let driver = "var g = f, n = 0;\nwhile (typeof g === 'function') g = g(() => n++);\nconsole.log(n, g);\n";
+    [
+        (
+            "arrows",
+            format!(
+                "var f = {}1{};\n{driver}",
+                "(a) => (a(), a(), ".repeat(depth),
+                ")".repeat(depth)
+            ),
+        ),
+        (
+            "functions",
+            format!(
+                "var f = {}1{};\n{driver}",
+                "function (a) { a(); return a(), (".repeat(depth),
+                ")}".repeat(depth)
+            ),
+        ),
+    ]
+}
+
+/// Phase 12.5 gives each nested scope's `a` the next free slot name. It used
+/// to probe every slot an ancestor took, checking each against every
+/// ancestor: 2,000 nested arrows took 22 s and 20,000 more than 5 minutes.
+#[test]
+fn deep_function_scopes_get_slot_names() {
+    for (shape, source) in nested_function_scopes(20_000) {
+        for args in [&["-d", "-"][..], &["-d", "--isolated", "-"]] {
+            let out = jsbeautify(args, &source);
+            assert!(!out.contains("(a)"), "{shape} {args:?}: a parameter kept its name");
+            assert_reparses(shape, &out);
+        }
+    }
+}
+
+#[test]
+fn deep_function_scopes_keep_behavior() {
+    let dir = std::env::temp_dir().join(format!("jsb-deep-scopes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    for (shape, source) in nested_function_scopes(300) {
+        let Some(input_stdout) = node_stdout(&dir, &source) else {
+            eprintln!("node not found; skipping the behavior comparison");
+            break;
+        };
+        assert_eq!(input_stdout.trim_end(), "600 1", "{shape}");
+        for args in [&["-d", "-"][..], &["-d", "--isolated", "-"]] {
+            let out = jsbeautify(args, &source);
+            assert_eq!(node_stdout(&dir, &out), Some(input_stdout.clone()), "{shape} {args:?}");
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

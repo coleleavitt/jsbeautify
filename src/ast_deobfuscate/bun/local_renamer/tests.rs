@@ -5,8 +5,12 @@ use crate::ast_deobfuscate::{DeobfuscateState, semantic};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
+use oxc_semantic::Scoping;
 use oxc_span::SourceType;
+use oxc_syntax::scope::ScopeId;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
+use rustc_hash::FxHashSet;
 
 fn run(code: &str) -> String {
     let alloc = Allocator::default();
@@ -284,4 +288,222 @@ fn stats_empty_program_plans_nothing() {
     let (plan, stats) = plan_with_stats("");
     assert!(plan.is_empty());
     assert_eq!(stats.planned_symbols, 0);
+}
+
+/// The planner before it was made near-linear: walks every ancestor per
+/// symbol and per probe. Kept as the oracle the fast planner must match.
+fn reference_plan(
+    scoping: &Scoping,
+    exclude: &FxHashSet<SymbolId>,
+    mode: RenameMode,
+    desired: &LocalRenameMap,
+    free_names: &FxHashMap<ScopeId, FxHashSet<String>>,
+) -> LocalRenameMap {
+    let mut scope_names: FxHashMap<ScopeId, Vec<(&str, SymbolId)>> = FxHashMap::default();
+    let mut scope_name_sets: FxHashMap<ScopeId, FxHashSet<&str>> = FxHashMap::default();
+    let mut subtree: FxHashMap<ScopeId, FxHashSet<&str>> = FxHashMap::default();
+    for sym in scoping.symbol_ids() {
+        let scope = scoping.symbol_scope_id(sym);
+        let name = scoping.symbol_name(sym);
+        scope_names.entry(scope).or_default().push((name, sym));
+        scope_name_sets.entry(scope).or_default().insert(name);
+        for anc in scoping.scope_ancestors(scope) {
+            subtree.entry(anc).or_default().insert(name);
+        }
+    }
+    for (&scope, names) in free_names {
+        for anc in scoping.scope_ancestors(scope) {
+            subtree.entry(anc).or_default().extend(names.iter().map(String::as_str));
+        }
+    }
+    let is_candidate = |name: &str, sym: SymbolId| {
+        if exclude.contains(&sym) || desired.get(&sym).map(String::as_str) == Some(name) {
+            return false;
+        }
+        match mode {
+            RenameMode::Slot => names::is_single_char_mangled(name),
+            RenameMode::Readable => {
+                is_likely_generated_alias(name) && (!is_meaningful_short(name) || desired.contains_key(&sym))
+            }
+            RenameMode::Sourcemap => desired.get(&sym).is_some_and(|d| is_usable_base(d)),
+        }
+    };
+    let mut scopes: Vec<(usize, ScopeId)> = scope_names
+        .iter()
+        .filter(|(_, names)| names.iter().any(|(n, s)| is_candidate(n, *s)))
+        .map(|(&sid, _)| (scoping.scope_ancestors(sid).count(), sid))
+        .collect();
+    scopes.sort_by_key(|&(depth, sid)| (depth, sid.index()));
+
+    let mut plan = LocalRenameMap::default();
+    let mut assigned: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    for (_, scope) in scopes {
+        let ancestors: Vec<ScopeId> = scoping.scope_ancestors(scope).skip(1).collect();
+        let mut cands: Vec<(&str, SymbolId)> = scope_names[&scope]
+            .iter()
+            .filter(|(n, s)| is_candidate(n, *s))
+            .copied()
+            .collect();
+        cands.sort_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.index().cmp(&b.1.index())));
+        let mut local: FxHashSet<String> = FxHashSet::default();
+        let mut counter = 0usize;
+        for (cur, sym) in cands {
+            let blocked = |name: &str, local: &FxHashSet<String>| {
+                if name == cur {
+                    return local.contains(name);
+                }
+                local.contains(name)
+                    || subtree.get(&scope).is_some_and(|s| s.contains(name))
+                    || ancestors.iter().any(|anc| {
+                        scope_name_sets.get(anc).is_some_and(|s| s.contains(name))
+                            || assigned.get(anc).is_some_and(|s| s.contains(name))
+                    })
+            };
+            let proposed = (mode != RenameMode::Slot)
+                .then(|| desired.get(&sym))
+                .flatten()
+                .filter(|b| is_usable_base(b))
+                .and_then(|base| names::pick_readable(base, |c| blocked(c, &local)));
+            let cand = match (proposed, mode) {
+                (Some(name), _) => Some(name),
+                (None, RenameMode::Sourcemap) => None,
+                (None, _) => Some(loop {
+                    let c = format!("v{counter}");
+                    counter += 1;
+                    if !blocked(&c, &local) {
+                        break c;
+                    }
+                }),
+            };
+            if let Some(cand) = cand {
+                local.insert(cand.clone());
+                plan.insert(sym, cand);
+            }
+        }
+        if !local.is_empty() {
+            assigned.insert(scope, local);
+        }
+    }
+    plan
+}
+
+/// Free (unresolved) reference names by scope, as Phase 12.5 collects them.
+fn free_names_of(scoping: &Scoping) -> FxHashMap<ScopeId, FxHashSet<String>> {
+    let mut names: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    for (name, references) in scoping.root_unresolved_references() {
+        for &reference in references {
+            let scope = scoping.get_reference(reference).scope_id();
+            names.entry(scope).or_default().insert(name.to_string());
+        }
+    }
+    names
+}
+
+/// Plans `code` in every mode with both planners and asserts the plans match.
+/// The desired names are drawn from a small pool so they collide with slot
+/// names, with each other and with the bindings' own names.
+fn assert_matches_reference(code: &str) {
+    const POOL: &[&str] = &["v0", "v1", "v2", "v10", "a", "b", "x", "v1", "q"];
+    let alloc = Allocator::default();
+    let parsed = Parser::new(&alloc, code, SourceType::mjs()).parse();
+    assert!(parsed.diagnostics.is_empty(), "test input must parse: {code}");
+    let scoping = semantic::scoping(&parsed.program);
+    let free = free_names_of(&scoping);
+    let desired: LocalRenameMap = scoping
+        .symbol_ids()
+        .enumerate()
+        .filter(|(i, _)| i % 4 != 3)
+        .map(|(i, sym)| (sym, POOL[(i * 7) % POOL.len()].to_string()))
+        .collect();
+    let exclude: FxHashSet<SymbolId> = scoping.symbol_ids().step_by(5).collect();
+    for mode in [RenameMode::Slot, RenameMode::Readable, RenameMode::Sourcemap] {
+        for exclude in [&FxHashSet::default(), &exclude] {
+            let fast = plan_local_renames(&scoping, exclude, mode, &desired, &free);
+            let slow = reference_plan(&scoping, exclude, mode, &desired, &free);
+            assert_eq!(fast, slow, "{mode:?} plan differs for {code}");
+        }
+    }
+}
+
+#[test]
+fn planner_matches_reference_on_shadowing_and_slot_name_inputs() {
+    for code in [
+        "function f(H){ return function(){ let v0 = 1; return H + v0; } }",
+        "function f(a, b){ var v1 = a; return function(c){ return v0 + c + b + v1; }; }",
+        "let v0 = 1; function f(a){ return function(b){ return function(c){ return a + b + c + v2; }; }; }",
+        "function f(v0, a){ function g(v1, b){ { let c = v3; } return a + b; } return g; }",
+        "function f(a){ return (b) => (c) => { var v0, v1, v2; return a + b + c + v5 + v10; }; }",
+        "function v1(a, b, c){ try { a() } catch (e) { var d = e; } for (let i = 0; i < b; i++) { c(i) } }",
+        "class K { m(a){ return (b) => a + b + v0 } } function f(x, y){ return K + x + y }",
+        "function f(a){ { let a = 2; { let b = a; } } return a; } function g(a){ return a }",
+    ] {
+        assert_matches_reference(code);
+    }
+}
+
+#[test]
+fn planner_matches_reference_on_generated_nesting() {
+    // Deterministic pseudo-random programs: nested functions and blocks that
+    // declare short names and slot-shaped names and read free ones.
+    const NAMES: &[&str] = &["a", "b", "c", "v0", "v1", "v2", "v3", "v11", "x", "H"];
+    let mut seed = 0x2545_f491_u64;
+    let mut next = |bound: usize| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(seed >> 33).unwrap_or_default() % bound
+    };
+    for _ in 0..60 {
+        let mut parts: Vec<String> = Vec::new();
+        let mut open = 0;
+        for _ in 0..(5 + next(25)) {
+            match next(6) {
+                0 | 1 => {
+                    parts.push(format!("function f{}({}){{", next(100), NAMES[next(NAMES.len())]));
+                    open += 1;
+                }
+                2 => {
+                    parts.push("{".to_string());
+                    open += 1;
+                }
+                3 => parts.push(format!("var {} = 1;", NAMES[next(NAMES.len())])),
+                4 => parts.push(format!("g({});", NAMES[next(NAMES.len())])),
+                _ if open > 0 => {
+                    parts.push("}".to_string());
+                    open -= 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push("}".repeat(open));
+        assert_matches_reference(&parts.concat());
+    }
+}
+
+#[test]
+fn deep_nesting_needs_one_slot_search_per_candidate() {
+    // `(a)=>(a(),` nested 3000 deep: every level picks a slot past all the
+    // slots its ancestors took. The old planner probed each one in turn.
+    let depth = 3000;
+    let code = format!("var chain={}1{};", "(a)=>(a(),".repeat(depth), ")".repeat(depth));
+    let (plan, stats) = crate::stack::run_on_sized_stack(code.len(), || {
+        let alloc = Allocator::default();
+        let parsed = Parser::new(&alloc, &code, SourceType::mjs()).parse();
+        let scoping = semantic::scoping(&parsed.program);
+        plan_local_renames_with_stats(
+            &scoping,
+            &FxHashSet::default(),
+            RenameMode::Slot,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+        )
+    });
+    assert_eq!(plan.len(), depth);
+    assert_eq!(stats.slot_searches, depth);
+    assert_eq!(stats.max_scope_depth, depth + 1);
+    let innermost = plan
+        .values()
+        .filter(|name| name.as_str() == format!("v{}", depth - 1))
+        .count();
+    assert_eq!(innermost, 1, "each level takes the next slot");
 }

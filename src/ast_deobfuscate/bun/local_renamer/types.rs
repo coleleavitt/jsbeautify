@@ -4,19 +4,14 @@ pub struct LocalRenamePlanStats {
     pub references: usize,
     pub scopes: usize,
     pub scope_name_entries: usize,
-    pub subtree_ancestor_visits: usize,
-    pub subtree_name_entries: usize,
     pub free_name_entries: usize,
-    pub free_ancestor_visits: usize,
-    pub free_subtree_entries: usize,
     pub candidate_scopes: usize,
     pub candidate_symbols: usize,
     pub planned_symbols: usize,
     pub skipped_symbols: usize,
+    /// Slot-name lookups; each costs `O(log slots)`.
+    pub slot_searches: usize,
     pub max_scope_depth: usize,
-    pub max_subtree_blocked: usize,
-    pub max_free_blocked: usize,
-    pub max_blocked_names: usize,
     pub max_candidates_in_scope: usize,
 }
 
