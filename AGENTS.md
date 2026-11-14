@@ -1,3 +1,76 @@
+# jsbeautify — agent guide
+
+A JavaScript beautifier and AST deobfuscator built on Oxc. The CLI binary is
+`jsbeautify` (`src/bin/jsbeautify.rs`); the crate also exposes library APIs for
+beautification, deobfuscation, bundle splitting/alignment, and static VM
+analysis. `jsbeautify --help` lists the subcommands and flags.
+
+This file is the shared guide for every coding agent. `CLAUDE.md` imports it
+and adds only Claude Code specifics.
+
+## Build / test / lint
+
+- The project has no `rust-toolchain.toml` and no package `rust-version` pin.
+  Use a current Rust toolchain compatible with the pinned Oxc revision.
+  `rustfmt.toml` sets `style_edition = "2024"`.
+- `oxc_*` crates are pinned to one Git revision in `Cargo.toml`. Do not describe
+  them as floating on `main`; update the revision and migration code together.
+- Gate, in order: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  then `cargo test --all-targets`. Clippy runs `pedantic` and `nursery`; fix
+  lints rather than adding `#[allow]`, and scope any allow narrowly.
+- Integration tests use one declared aggregator target at
+  `tests/integration/main.rs`; target it with `cargo test --test integration`.
+  Add new integration files as modules there, not as new `tests/*.rs` targets.
+  Input fixtures live under `tests/fixtures/<bundler>/`.
+- Heap profiling: `cargo build --profile profiling --features dhat-heap`.
+
+## Repository layout
+
+- `src/ast_deobfuscate/engine/` owns the ordered pipeline. Its structural,
+  cosmetic-A, and cosmetic-B arenas are separated by Phase 12.6 and 15.6
+  codegen/re-parse checkpoints.
+- `src/ast_deobfuscate/` owns the individual Oxc passes. Bundler-specific passes live in per-bundler
+  folders (`webpack/`, `turbopack/`, `angular/`, `akamai/`, `bun/`). `bun/`
+  holds the runtime helpers esbuild and Bun share (detection, the bundler they
+  identify, renaming, annotation), CJS flattening, module handles,
+  export/local renamers, and the alphabet.
+- `src/beautifier/` owns plain beautification and js-beautify-compatible
+  output layout. `src/options.rs` holds the formatting and parse options.
+- `src/project/` owns `--project` mode: deobfuscating every file of a
+  code-split build together with cross-file names.
+- `src/vm_analysis/` performs bounded static JavaScript/Wasm inspection. It must
+  never execute JavaScript or instantiate WebAssembly.
+- `src/inspect/` backs the `ast`, `scope`, and `cfg` subcommands.
+- `src/bin/jsbeautify_app/` owns CLI argument parsing and command runners.
+- `src/cross_version/`, `src/sourcemap.rs`, `src/chunk_detector.rs`,
+  `src/chunk_splitter.rs`, `src/turbopack_extract.rs`,
+  `src/webpack_module_extractor/`, and `src/bun_extract.rs` own alignment and
+  bundle/source reconstruction.
+- `src/llm.rs` is the OpenAI-compatible client for `--rename-llm`.
+- `src/stack.rs` runs parsing and AST work on a thread whose stack is sized
+  from the input (`run_on_sized_stack`), so deep nesting cannot overflow the
+  stack. Run new parse or traversal entry points through it.
+- `docs/` holds design notes, reviews, and research write-ups. They are
+  historical; the code is the authority when they disagree.
+- `research/` holds per-target analysis scripts and findings.
+- `frontend/` is a separate Firefox DevTools extension (Node/JS) that dumps a
+  page's scripts, source maps, and assets.
+
+## Correctness bar
+
+Deobfuscation must preserve runtime behavior. Review transforms for resolved
+symbol identity, shadowing, evaluation order, coercion, dynamic access/`eval`,
+and `this` behavior. Every codegen/string-annotation boundary must continue to
+reject invalid JavaScript rather than return it as success.
+
+Inputs are hostile: obfuscated or malicious JavaScript must not make the tool
+panic, hang, or exhaust memory.
+
+## Code navigation
+
+Prefer CodeGraph for symbol definitions, call relationships, and impact. Use
+literal search only for strings, comments, and log text.
+
 <!-- CODEGRAPH_START -->
 ## CodeGraph
 
