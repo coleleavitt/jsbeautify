@@ -9,10 +9,10 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 use crate::ast_deobfuscate::function_context::this_free_functions;
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 
 use super::Ctx;
 use super::types::TrampolineInfo;
@@ -177,7 +177,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineCollector {
     }
 
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        let shadowed = annex_b_shadowed_symbols(program, ctx.scoping());
+        let shadowed = redirectable_symbols(program, ctx.scoping());
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, candidate) in candidates {
             let Some(candidate) = candidate else {

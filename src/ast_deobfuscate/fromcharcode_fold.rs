@@ -14,6 +14,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -33,7 +34,7 @@ fn is_string_from_charcode(expr: &Expression<'_>, ctx: &Ctx<'_>) -> bool {
     let Expression::Identifier(obj) = &sme.object else {
         return false;
     };
-    obj.name.as_str() == "String" && ctx.scoping().get_reference(obj.reference_id()).symbol_id().is_none()
+    obj.name.as_str() == "String" && is_global_reference(ctx, "String")
 }
 
 fn extract_codepoint(expr: &Expression<'_>) -> Option<u32> {

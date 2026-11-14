@@ -44,6 +44,14 @@
 //!    or class is assigned to (`var f = () => {}`, `f = function () {}`,
 //!    `{ f = class {} }`, a parameter default).
 //!
+//! 6. **`with` bodies** — inside `with (obj) { … }` a reference `x` first reads
+//!    `obj.x` when the object has that property, and only otherwise the
+//!    binding `x` that scoping resolves it to. Renaming that binding would
+//!    let the property win where the binding won before (or the other way
+//!    round), so every binding a `with`-body reference resolves to past the
+//!    `with` keeps its name, as does every `var` the body declares. See
+//!    [`with_observed_symbols`].
+//!
 //! [`RenameGuardCollector`] runs one traversal and, via
 //! [`RenameGuardCollector::into_guarded`], returns the set of [`SymbolId`]s that
 //! every rename plan must exclude. Excluded symbols keep their original name, so
@@ -68,6 +76,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::ast_deobfuscate::bun::export_renamer::names::{is_reserved_word, is_valid_identifier};
 use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::with_observed_symbols;
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -200,8 +209,8 @@ pub struct RenameGuardCollector {
     /// Direct evals whose code is a single identifier, such as `eval("require")`,
     /// with the scope they run in. Such an eval reads only that one name.
     identifier_evals: Vec<(ScopeId, String)>,
-    /// Bindings whose name is observable as a public ES module export, or
-    /// through Annex B block-function hoisting.
+    /// Bindings whose name is observable as a public ES module export,
+    /// through Annex B block-function hoisting, or from a `with` body.
     preserved: FxHashSet<SymbolId>,
     /// Bindings exported by an `export { local as name }` specifier.
     specifier_exports: FxHashSet<SymbolId>,
@@ -275,8 +284,9 @@ impl RenameGuardCollector {
 
     /// Resolve the collected signals into the set of [`SymbolId`]s that must
     /// never be renamed: every native-export binding, every classic-script
-    /// global, every Annex B block function, plus every symbol visible to a direct `eval` (the eval's own
-    /// scope and all of its ancestors).
+    /// global, every Annex B block function, every binding a `with` body
+    /// reads past its object, plus every symbol visible to a direct `eval`
+    /// (the eval's own scope and all of its ancestors).
     ///
     /// `scoping` must describe the same (unmodified) program the collector
     /// traversed; `SymbolId`/`ScopeId` assignment is deterministic across
@@ -374,6 +384,10 @@ pub fn guards_with<'a>(
 impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
     fn enter_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
         self.source_type = program.source_type;
+    }
+
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.preserved.extend(with_observed_symbols(program, ctx.scoping()));
     }
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
@@ -611,6 +625,13 @@ mod tests {
         // not observable and remain renamable.
         let names = guarded_names("function f(H){ return (0,eval)('H') }");
         assert!(!names.contains("H"), "indirect eval must not guard locals: {names:?}");
+    }
+
+    #[test]
+    fn flags_bindings_a_with_body_reads_past_its_object() {
+        let code = "function g(o) { function D() {} var k, z; with (o) { D(); var z = 1; let b; b; } return k; }";
+        let names = guarded_names_as(code, SourceType::cjs());
+        assert_eq!(names, FxHashSet::from_iter(["D".to_string(), "z".to_string()]));
     }
 
     #[test]

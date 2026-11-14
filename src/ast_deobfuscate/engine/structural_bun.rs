@@ -107,8 +107,9 @@ impl AstDeobfuscator {
         eprintln!("[DEOBFUSCATE] Phase 0.98: Heuristic parameter renaming");
         let scoping = {
             let scoping = semantic::reuse_or_build(program, scoping);
+            let (guards, scoping) = rename_guards::guards_with(allocator, program, scoping, self.keep_fn_names);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-            let mut param_renamer = ParamHeuristicRenamer::new().keep_fn_names(self.keep_fn_names);
+            let mut param_renamer = ParamHeuristicRenamer::new().keep(guards.symbols);
             traverse_mut_with_ctx(&mut param_renamer, program, &mut ctx);
             eprintln!(
                 "[DEOBFUSCATE] Phase 0.98: Renamed {} parameters",

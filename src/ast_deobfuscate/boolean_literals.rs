@@ -3,6 +3,7 @@ use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -72,18 +73,12 @@ fn js_truthiness(expr: &Expression<'_>, ctx: &Ctx<'_>) -> Option<bool> {
         Expression::StringLiteral(s) => Some(!s.value.is_empty()),
         Expression::BooleanLiteral(b) => Some(b.value),
         Expression::NullLiteral(_) => Some(false),
-        Expression::Identifier(id)
-            if id
-                .reference_id
-                .get()
-                .is_some_and(|reference| ctx.scoping().get_reference(reference).symbol_id().is_none()) =>
-        {
-            match id.name.as_str() {
-                "undefined" | "NaN" => Some(false),
-                "Infinity" => Some(true),
-                _ => None,
-            }
+        Expression::Identifier(id) => match id.name.as_str() {
+            "undefined" | "NaN" => Some(false),
+            "Infinity" => Some(true),
+            _ => None,
         }
+        .filter(|_| is_global_reference(ctx, id.name.as_str())),
         Expression::ArrayExpression(a) if a.elements.is_empty() => Some(true),
         Expression::ObjectExpression(o) if o.properties.is_empty() => Some(true),
         Expression::ParenthesizedExpression(p) => js_truthiness(&p.expression, ctx),

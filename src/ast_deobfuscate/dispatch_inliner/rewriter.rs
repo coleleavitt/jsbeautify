@@ -1,9 +1,11 @@
-use oxc_ast::ast::{Expression, Str};
+use oxc_ast::ast::{Expression, Program, Str};
 use oxc_span::SPAN;
+use oxc_syntax::scope::ScopeId;
 use oxc_traverse::Traverse;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::scopes_in_with_bodies;
 
 use super::Ctx;
 use super::eval::try_eval_as_usize;
@@ -11,15 +13,18 @@ use super::eval::try_eval_as_usize;
 pub struct DispatchInlinerRewriter {
     factories: FxHashMap<String, Vec<String>>,
     constants: FxHashMap<String, usize>,
+    /// Calls here may reach a `with` object's property instead of the factory.
+    with_body_scopes: FxHashSet<ScopeId>,
     inlined: usize,
 }
 
 impl DispatchInlinerRewriter {
     #[must_use]
-    pub const fn new(factories: FxHashMap<String, Vec<String>>, constants: FxHashMap<String, usize>) -> Self {
+    pub fn new(factories: FxHashMap<String, Vec<String>>, constants: FxHashMap<String, usize>) -> Self {
         Self {
             factories,
             constants,
+            with_body_scopes: FxHashSet::default(),
             inlined: 0,
         }
     }
@@ -35,10 +40,17 @@ impl DispatchInlinerRewriter {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerRewriter {
+    fn enter_program(&mut self, _program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.with_body_scopes = scopes_in_with_bodies(ctx.scoping());
+    }
+
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
         let Expression::ComputedMemberExpression(cme) = expr else {
             return;
         };
+        if self.with_body_scopes.contains(&ctx.current_scope_id()) {
+            return;
+        }
         let Expression::CallExpression(call) = &cme.object else {
             return;
         };

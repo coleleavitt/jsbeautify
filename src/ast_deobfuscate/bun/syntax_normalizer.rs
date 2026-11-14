@@ -6,6 +6,7 @@ use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -90,20 +91,21 @@ fn normalize_numeric_idiom<'a>(binary: &BinaryExpression<'a>, ctx: &Ctx<'a>) -> 
         return None;
     }
 
-    match numeric_value(&binary.left)? {
-        1.0 => Some(Expression::new_identifier(SPAN, "Infinity", ctx)),
-        -1.0 => {
-            let infinity = Expression::new_identifier(SPAN, "Infinity", ctx);
-            Some(Expression::new_unary_expression(
-                SPAN,
-                UnaryOperator::UnaryNegation,
-                infinity,
-                ctx,
-            ))
-        }
-        0.0 => Some(Expression::new_identifier(SPAN, "NaN", ctx)),
-        _ => None,
+    let (name, negate) = match numeric_value(&binary.left)? {
+        1.0 => ("Infinity", false),
+        -1.0 => ("Infinity", true),
+        0.0 => ("NaN", false),
+        _ => return None,
+    };
+    if !is_global_reference(ctx, name) {
+        return None;
     }
+    let value = Expression::new_identifier(SPAN, name, ctx);
+    Some(if negate {
+        Expression::new_unary_expression(SPAN, UnaryOperator::UnaryNegation, value, ctx)
+    } else {
+        value
+    })
 }
 
 fn is_positive_zero_literal(expr: &Expression<'_>) -> bool {

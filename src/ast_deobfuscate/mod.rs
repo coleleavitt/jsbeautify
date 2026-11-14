@@ -135,6 +135,7 @@ pub(crate) mod variable_rename;
 pub(crate) mod void_replacer;
 pub(crate) mod webpack;
 pub(crate) mod window_alias_propagator;
+pub(crate) mod with_scope;
 
 pub use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,

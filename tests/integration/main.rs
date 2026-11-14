@@ -24,3 +24,4 @@ mod project;
 mod script_mode;
 mod turbopack;
 mod webpack_modules;
+mod with_statements;

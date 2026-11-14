@@ -3,6 +3,7 @@ use oxc_span::SPAN;
 use oxc_traverse::Traverse;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 use super::Ctx;
 
@@ -38,6 +39,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for UndefinedPatternNormalizer {
         if let Expression::ComputedMemberExpression(cme) = expr
             && is_empty_array(&cme.object)
             && is_empty_array(&cme.expression)
+            && is_global_reference(ctx, "undefined")
         {
             if self.replaced < 10 {
                 deob_trace!("[AKAMAI/undef-pat] [][[]] -> undefined");

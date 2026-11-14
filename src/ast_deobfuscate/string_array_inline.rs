@@ -7,20 +7,35 @@
 //! ```
 
 use oxc_allocator::GetAllocator;
-use oxc_ast::ast::{ComputedMemberExpression, Expression};
+use oxc_ast::ast::{ComputedMemberExpression, Expression, Program};
 use oxc_span::SPAN;
+use oxc_syntax::scope::ScopeId;
 use oxc_traverse::{Traverse, TraverseCtx};
+use rustc_hash::FxHashSet;
 
-use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::scopes_in_with_bodies;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
+#[derive(Default)]
 pub struct StringArrayInliner {
+    /// Accesses here may read a `with` object's property instead of the array.
+    with_body_scopes: FxHashSet<ScopeId>,
     rewrites: usize,
 }
 
 impl StringArrayInliner {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub const fn rewrites(&self) -> usize {
+        self.rewrites
+    }
+
     fn try_inline_array_access<'a>(
         &mut self,
         member: &ComputedMemberExpression<'a>,
@@ -69,11 +84,14 @@ impl StringArrayInliner {
     }
 }
 
-counter_pass!(StringArrayInliner, rewrites, rewrites);
-
 impl<'a> Traverse<'a, DeobfuscateState> for StringArrayInliner {
+    fn enter_program(&mut self, _program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.with_body_scopes = scopes_in_with_bodies(ctx.scoping());
+    }
+
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
         if let Expression::ComputedMemberExpression(member) = expr
+            && !self.with_body_scopes.contains(&ctx.current_scope_id())
             && let Some(new_expr) = self.try_inline_array_access(member, ctx)
         {
             *expr = new_expr;

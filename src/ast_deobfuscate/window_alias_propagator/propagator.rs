@@ -1,10 +1,11 @@
-use oxc_ast::ast::{Expression, Ident};
+use oxc_ast::ast::Expression;
 use oxc_span::SPAN;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 use super::Ctx;
 use super::utils::{GlobalObject, is_always_defined_global, is_delete_operand, is_reserved_word};
@@ -85,12 +86,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasPropagator {
         // Capture hazard: `alias.foo` → bare `foo` only stays equivalent to the
         // global property read if NO binding named `foo` is in scope here. If a
         // local/param/import `foo` is visible, the bare identifier would resolve
-        // to *that* instead of `window.foo` — a silent miscompile. Skip those.
-        if ctx
-            .scoping()
-            .find_binding(ctx.current_scope_id(), Ident::from_str_in(prop_name, ctx))
-            .is_some()
-        {
+        // to *that* instead of `window.foo` — a silent miscompile. Skip those,
+        // and every site in a `with` body, whose object may own a `foo`.
+        if !is_global_reference(ctx, prop_name) {
             return;
         }
         self.rewrites += 1;

@@ -8,8 +8,8 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
-use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 
 use super::Ctx;
 use super::types::{BinaryOp, InlinableFunction, MAX_PARAMS, ReturnExpr, UnaryOp};
@@ -30,8 +30,8 @@ struct CallSite {
 /// whose arguments are literals or reads of never-reassigned bindings, so they
 /// can be duplicated, dropped or reordered, and where every free identifier of
 /// `<expr>` resolves to the same binding as inside `f`. A function declared
-/// more than once, or one an Annex B block function may replace at runtime
-/// ([`annex_b_shadowed_symbols`]), is never inlined.
+/// more than once, or one an Annex B block function or a `with` object may
+/// stand in for at runtime ([`redirectable_symbols`]), is never inlined.
 pub struct FunctionCollector {
     candidates: FxHashMap<SymbolId, InlinableFunction>,
     call_sites: FxHashMap<SymbolId, CallSite>,
@@ -235,7 +235,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionCollector {
     }
 
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        let shadowed = annex_b_shadowed_symbols(program, ctx.scoping());
+        let shadowed = redirectable_symbols(program, ctx.scoping());
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, func) in candidates {
             if !shadowed.contains(&symbol) && self.is_inlinable(symbol, &func, ctx.scoping()) {

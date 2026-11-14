@@ -1,9 +1,10 @@
-use oxc_ast::ast::{Expression, Ident, UnaryOperator};
+use oxc_ast::ast::{Expression, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -24,11 +25,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for VoidReplacer {
         if !is_pure_operand(&unary.argument) {
             return;
         }
-        if ctx
-            .scoping()
-            .find_binding(ctx.current_scope_id(), Ident::from_str_in("undefined", ctx))
-            .is_some()
-        {
+        if !is_global_reference(ctx, "undefined") {
             return;
         }
         deob_trace!("[AST] Converting void <pure-expr> -> undefined");

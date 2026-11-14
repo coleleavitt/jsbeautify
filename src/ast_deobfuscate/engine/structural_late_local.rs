@@ -28,7 +28,8 @@ impl AstDeobfuscator {
         let ((desired, free_names), scoping) = if self.readable_names {
             Self::collect_readable_name_inputs(allocator, program, scoping)
         } else {
-            (Default::default(), scoping)
+            let free_names = free_reference_names(&scoping);
+            ((FxHashMap::default(), free_names), scoping)
         };
         let mode = if self.readable_names {
             bun::local_renamer::RenameMode::Readable
@@ -96,4 +97,20 @@ impl AstDeobfuscator {
             guarded_len
         );
     }
+}
+
+/// The names of unresolved references, by the scope they occur in, so no
+/// slot name captures a free reference (`with (o) { v0 = 5; }` assigns a
+/// global `v0` unless `o` has one, and must keep doing so).
+fn free_reference_names(scoping: &Scoping) -> FxHashMap<ScopeId, FxHashSet<String>> {
+    let mut names: FxHashMap<ScopeId, FxHashSet<String>> = FxHashMap::default();
+    for (name, references) in scoping.root_unresolved_references() {
+        for &reference in references {
+            names
+                .entry(scoping.get_reference(reference).scope_id())
+                .or_default()
+                .insert(name.to_string());
+        }
+    }
+    names
 }

@@ -7,11 +7,13 @@
 //! console.log(_0xdec(291)); // Inlined to: console.log("hello");
 //! ```
 
-use oxc_ast::ast::{Expression, Statement};
+use oxc_ast::ast::{Expression, Program, Statement};
+use oxc_syntax::scope::ScopeId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::{DecoderInfo, DeobfuscateState};
+use crate::ast_deobfuscate::with_scope::scopes_in_with_bodies;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -22,6 +24,8 @@ mod inline;
 
 pub struct DecoderInliner {
     detected_decoders: FxHashMap<String, DecoderInfo>,
+    /// Calls here may reach a `with` object's property instead of the decoder.
+    with_body_scopes: FxHashSet<ScopeId>,
     rewrites: usize,
 }
 
@@ -30,6 +34,7 @@ impl DecoderInliner {
     pub fn new() -> Self {
         Self {
             detected_decoders: FxHashMap::default(),
+            with_body_scopes: FxHashSet::default(),
             rewrites: 0,
         }
     }
@@ -51,6 +56,10 @@ impl Default for DecoderInliner {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for DecoderInliner {
+    fn enter_program(&mut self, _program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        self.with_body_scopes = scopes_in_with_bodies(ctx.scoping());
+    }
+
     fn enter_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
         if let Statement::FunctionDeclaration(func_decl) = stmt {
             let func_name = func_decl.id.as_ref().map_or("", |id| id.name.as_str());
@@ -72,6 +81,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DecoderInliner {
 
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
         if let Expression::CallExpression(call) = expr
+            && !self.with_body_scopes.contains(&ctx.current_scope_id())
             && let Some(new_expr) = self.try_inline_decoder_call(call, ctx)
         {
             *expr = new_expr;

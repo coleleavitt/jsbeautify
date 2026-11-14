@@ -11,7 +11,8 @@
 //! Only renames params that match Bun's slot pattern (H, $, q, K, _, A, z, Y, f, O, M, w).
 
 use oxc_allocator::GetAllocator;
-use oxc_ast::ast::{BindingPattern, Expression, Function, FunctionBody, IdentifierReference};
+use oxc_ast::ast::{BindingIdentifier, BindingPattern, Function, FunctionBody, IdentifierReference};
+use oxc_ast_visit::Visit;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -28,9 +29,8 @@ const BUN_PARAM_NAMES: &[&str] = &[
 pub struct ParamHeuristicRenamer {
     renamed: usize,
     renames: FxHashMap<SymbolId, String>,
-    /// Keep parameters whose default is an anonymous function or class,
-    /// which takes the parameter's name as its `.name`.
-    keep_fn_names: bool,
+    /// Parameters that keep their name ([`crate::ast_deobfuscate::rename_guards`]).
+    kept: FxHashSet<SymbolId>,
 }
 
 impl ParamHeuristicRenamer {
@@ -39,13 +39,15 @@ impl ParamHeuristicRenamer {
         Self {
             renamed: 0,
             renames: FxHashMap::default(),
-            keep_fn_names: false,
+            kept: FxHashSet::default(),
         }
     }
 
+    /// Never rename `symbols`, which must be ids of the program the next
+    /// traversal visits.
     #[must_use]
-    pub const fn keep_fn_names(mut self, keep: bool) -> Self {
-        self.keep_fn_names = keep;
+    pub fn keep(mut self, symbols: FxHashSet<SymbolId>) -> Self {
+        self.kept = symbols;
         self
     }
 
@@ -84,18 +86,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, p)| {
-                !(self.keep_fn_names
-                    && p.initializer
-                        .as_deref()
-                        .is_some_and(Expression::is_anonymous_function_definition))
-            })
             .filter_map(|(i, p)| {
                 if let BindingPattern::BindingIdentifier(b) = &p.pattern {
                     let name = b.name.as_str();
                     if Self::is_bun_param(name) {
                         let symbol_id = b.symbol_id.get()?;
-                        return Some((i, name.to_string(), symbol_id));
+                        return (!self.kept.contains(&symbol_id)).then(|| (i, name.to_string(), symbol_id));
                     }
                 }
                 None
@@ -108,7 +104,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
 
         // For each Bun param, try to infer a better name from usage
         let mut renames: Vec<(usize, SymbolId, String)> = Vec::new();
-        let mut used_names = collect_function_bound_names(func, ctx);
+        let mut used_names = collect_function_names(func);
 
         for (idx, param_name, symbol_id) in &bun_params {
             let inferred = infer_param_name(param_name, *idx, body, func.params.items.len());
@@ -143,31 +139,29 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
     }
 }
 
-fn collect_function_bound_names(func: &Function<'_>, ctx: &Ctx<'_>) -> FxHashSet<String> {
-    let mut names = FxHashSet::default();
+/// Every name a function binds or reads, in its parameters and body. A
+/// parameter renamed to one of them would collide with a binding or capture a
+/// reference to an outer binding or a global.
+fn collect_function_names(func: &Function<'_>) -> FxHashSet<String> {
+    #[derive(Default)]
+    struct Names(FxHashSet<String>);
 
-    for param in &func.params.items {
-        if let BindingPattern::BindingIdentifier(binding) = &param.pattern {
-            names.insert(binding.name.to_string());
+    impl<'a> Visit<'a> for Names {
+        fn visit_binding_identifier(&mut self, it: &BindingIdentifier<'a>) {
+            self.0.insert(it.name.to_string());
+        }
+
+        fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+            self.0.insert(it.name.to_string());
         }
     }
 
-    let Some(function_scope_id) = func.scope_id.get() else {
-        return names;
-    };
-
-    let scoping = ctx.scoping();
-    for symbol_id in scoping.symbol_ids() {
-        let symbol_scope_id = scoping.symbol_scope_id(symbol_id);
-        if scoping
-            .scope_ancestors(symbol_scope_id)
-            .any(|scope_id| scope_id == function_scope_id)
-        {
-            names.insert(scoping.symbol_name(symbol_id).to_string());
-        }
+    let mut names = Names::default();
+    names.visit_formal_parameters(&func.params);
+    if let Some(body) = &func.body {
+        names.visit_function_body(body);
     }
-
-    names
+    names.0
 }
 
 /// Infer a better name for a parameter based on position and function context.
@@ -244,5 +238,13 @@ mod tests {
             out.contains("return H + key") || out.contains("return H+key"),
             "got: {out}"
         );
+    }
+
+    #[test]
+    fn skips_parameter_rename_that_would_capture_an_outer_or_free_name() {
+        let out = run("var value = 1; function processData(H, q) { return value + q + H; }");
+        assert!(out.contains("function processData(key, q)"), "got: {out}");
+        let out = run("function processData(H) { return input + H; }");
+        assert!(out.contains("function processData(H)"), "got: {out}");
     }
 }

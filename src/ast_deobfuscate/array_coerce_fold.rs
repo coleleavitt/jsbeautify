@@ -11,6 +11,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -18,8 +19,8 @@ fn is_empty_array(expr: &Expression<'_>) -> bool {
     matches!(expr, Expression::ArrayExpression(a) if a.elements.is_empty())
 }
 
-fn is_undefined(expr: &Expression<'_>) -> bool {
-    matches!(expr, Expression::Identifier(id) if id.name.as_str() == "undefined")
+fn is_undefined(expr: &Expression<'_>, ctx: &Ctx<'_>) -> bool {
+    matches!(expr, Expression::Identifier(id) if id.name.as_str() == "undefined" && is_global_reference(ctx, "undefined"))
 }
 
 pub struct ArrayCoerceFold {
@@ -39,8 +40,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for ArrayCoerceFold {
 
         let replacement = if is_empty_array(&bin.left) && is_empty_array(&bin.right) {
             ""
-        } else if (is_empty_array(&bin.left) && is_undefined(&bin.right))
-            || (is_undefined(&bin.left) && is_empty_array(&bin.right))
+        } else if (is_empty_array(&bin.left) && is_undefined(&bin.right, ctx))
+            || (is_undefined(&bin.left, ctx) && is_empty_array(&bin.right))
         {
             "undefined"
         } else {

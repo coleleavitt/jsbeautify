@@ -20,6 +20,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::pass::counter_pass;
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::is_global_reference;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -31,13 +32,7 @@ counter_pass!(ApplyCallSimplifier, rewrites, rewrites);
 
 fn is_undefined(expr: &Expression<'_>, ctx: &Ctx<'_>) -> bool {
     match expr {
-        Expression::Identifier(id) => {
-            id.name.as_str() == "undefined"
-                && id
-                    .reference_id
-                    .get()
-                    .is_some_and(|reference| ctx.scoping().get_reference(reference).symbol_id().is_none())
-        }
+        Expression::Identifier(id) => id.name.as_str() == "undefined" && is_global_reference(ctx, "undefined"),
         Expression::UnaryExpression(u) if u.operator == UnaryOperator::Void => u.argument.is_literal(),
         _ => false,
     }
