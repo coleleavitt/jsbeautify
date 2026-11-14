@@ -98,6 +98,10 @@ const CASES: &[(&str, &str)] = &[
         r"(function(){var value='outer'; function hello(H, q){ return [value, H, q].join() } console.log(hello('a','b'))})();",
         "outer,a,b",
     ),
+    (
+        r"function _0xarr() { const a = ['a', '1', '2']; _0xarr = function () { return a; }; return _0xarr(); } function _0xdec(i, k) { i = i - 0x100; const s = _0xarr(); let v = s[i]; return v; } (function (g, t) { const d = _0xdec, a = g(); while (!![]) { try { const c = parseInt(d(0x100)); if (c === t) break; else a['push'](a['shift']()); } catch (e) { a['push'](a['shift']()); } } }(_0xarr, 1)); (function () { const t = _0xdec; const o = { _0xdec: function () { return 'o'; }, t: function () { return 'ot'; } }; with (o) { console.log(t(0x101), _0xdec(0x102)); var w = _0xdec; } console.log(w(0x100), t(0x100)); })();",
+        "ot o\no 1",
+    ),
 ];
 
 #[test]

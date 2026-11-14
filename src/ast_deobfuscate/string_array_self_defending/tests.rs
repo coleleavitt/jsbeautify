@@ -135,6 +135,24 @@ fn keeps_calls_it_cannot_prove_and_then_the_rotation() {
 }
 
 #[test]
+fn keeps_calls_and_aliases_a_with_object_may_redirect() {
+    // In the `with` body `t` and `_0xdec` may read `o`'s properties, and `w`
+    // may hold `o._0xdec`, so only the last call is decoded.
+    let (output, pass) = run_with_prelude(
+        "
+        const t = _0xdec;
+        with (o) { t(0x101); (function () { return _0xdec(0x102); })(); var w = _0xdec; }
+        console.log(w(0x100), t(0x100));
+        ",
+    );
+    assert_eq!(pass.inlined(), 1, "{output}");
+    assert_eq!(pass.removed_rotations(), 0, "{output}");
+    assert!(output.contains("with(o){t(257);"), "{output}");
+    assert!(output.contains("return_0xdec(258)"), "{output}");
+    assert!(output.contains(r#"console.log(w(256),"1")"#), "{output}");
+}
+
+#[test]
 fn keeps_an_alias_that_may_be_read_before_its_declaration() {
     let (output, pass) = run_with_prelude(
         "
