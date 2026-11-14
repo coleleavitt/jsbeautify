@@ -13,7 +13,7 @@ This index documents the complete deliverables from the **Exhaustive JavaScript 
 ## 📦 Primary Deliverables
 
 ### 1. **OBFUSCATION_TECHNIQUES.md** (918 lines)
-**Location**: `/home/cole/RustProjects/active/jsbeautify/OBFUSCATION_TECHNIQUES.md`
+**Location**: `/home/cole/RustProjects/active/jsbeautify/docs/OBFUSCATION_TECHNIQUES.md`
 
 **Contents**:
 - 35 JavaScript obfuscation techniques with complete documentation
@@ -71,7 +71,7 @@ This index documents the complete deliverables from the **Exhaustive JavaScript 
 ---
 
 ### 2. **RESEARCH_VALIDATION.md** (313 lines)
-**Location**: `/home/cole/RustProjects/active/jsbeautify/RESEARCH_VALIDATION.md`
+**Location**: `/home/cole/RustProjects/active/jsbeautify/docs/RESEARCH_VALIDATION.md`
 
 **Contents**:
 - Executive summary of research completion

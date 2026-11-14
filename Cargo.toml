@@ -15,12 +15,7 @@ keywords = ["javascript", "beautifier", "deobfuscator", "webpack", "oxc"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [
     "research/",
-    "instructions.md",
-    "SESSION_SUMMARY.md",
-    "PHASE6_PROGRESS.md",
-    "QUICK_REFERENCE.md",
-    "IMPROVEMENTS.md",
-    "AST_ARCHITECTURE.md",
+    "docs/",
     "tests/",
     "examples/",
     ".idea/",
