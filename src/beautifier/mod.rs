@@ -3,7 +3,7 @@ mod codegen_indent;
 mod layout;
 
 pub use codegen_indent::MAX_INDENT_DEPTH;
-pub(crate) use codegen_indent::{layout_codegen_options, unindented_codegen_options};
+pub(crate) use codegen_indent::{layout_codegen_options, unindented_code};
 pub use layout::Layout;
 
 use crate::ast_deobfuscate::AstDeobfuscator;

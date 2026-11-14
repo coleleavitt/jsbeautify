@@ -1,6 +1,5 @@
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_codegen::Codegen;
 use oxc_parser::Parser;
 use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
@@ -92,7 +91,7 @@ fn validate_and_commit<'a>(
     forced_dead_vars: Option<FxHashSet<SymbolId>>,
 ) -> DeadVarSweepResult {
     let source_type = program.source_type;
-    let original_source = Codegen::new().build(program).code;
+    let original_source = crate::beautifier::unindented_code(program);
 
     let candidate_allocator = Allocator::default();
     let parsed = Parser::new(&candidate_allocator, &original_source, source_type).parse();
@@ -136,7 +135,7 @@ fn validate_and_commit<'a>(
         return rejected(candidate_symbols);
     }
 
-    let accepted_source = Codegen::new().build(&candidate).code;
+    let accepted_source = crate::beautifier::unindented_code(&candidate);
     let verification_allocator = Allocator::default();
     let verified = Parser::new(&verification_allocator, &accepted_source, source_type).parse();
     let verified_semantic = semantic::build(&verified.program);

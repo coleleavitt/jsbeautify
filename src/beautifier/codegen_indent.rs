@@ -38,6 +38,15 @@ pub fn unindented_codegen_options() -> CodegenOptions {
     }
 }
 
+/// Codegen text of `program` that is only re-parsed. Indentation would make
+/// it grow with the square of the nesting depth, so it has none.
+pub fn unindented_code(program: &Program<'_>) -> String {
+    oxc_codegen::Codegen::new()
+        .with_options(unindented_codegen_options())
+        .build(program)
+        .code
+}
+
 /// Upper bound on the indentation levels codegen emits: every node that can
 /// open an indented line counts one level. Chains that codegen prints at one
 /// level (`else if`, call and member chains, operators) do not count.
@@ -196,10 +205,7 @@ mod tests {
         )
         .parse()
         .program;
-        let code = oxc_codegen::Codegen::new()
-            .with_options(unindented_codegen_options())
-            .build(&program)
-            .code;
+        let code = unindented_code(&program);
         assert!(code.lines().count() > 3, "{code}");
         assert!(code.lines().all(|line| !line.starts_with([' ', '\t'])), "{code}");
     }

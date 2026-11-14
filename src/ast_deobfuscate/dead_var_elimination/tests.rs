@@ -62,6 +62,18 @@ fn counts_only_declarators_actually_removed_from_mixed_declaration() {
 }
 
 #[test]
+fn removes_dead_declarators_beside_live_ones_at_every_nesting_level() {
+    let result = run_elimination(
+        "export function f() { var d = 0, k = function () { var d = 0, k = function () { var d = 0, k = 1; return k; }; return k; }; return k; }",
+    );
+    assert_eq!(
+        result.output,
+        "export function f() {\n\tvar k = function() {\n\t\tvar k = function() {\n\t\t\tvar k = 1;\n\t\t\treturn k;\n\t\t};\n\t\treturn k;\n\t};\n\treturn k;\n}\n"
+    );
+    assert_eq!(result.removed_declarators, 3);
+}
+
+#[test]
 fn repeated_var_symbol_reports_one_candidate_and_two_declarators() {
     let result = run_elimination("var repeated = 1; var repeated;");
     assert!(!result.output.contains("repeated"), "got: {}", result.output);

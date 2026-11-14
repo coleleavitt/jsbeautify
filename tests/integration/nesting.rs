@@ -259,3 +259,48 @@ fn deep_function_scopes_keep_behavior() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `depth` nested functions, each declaring a dead `var` and a dead
+/// declarator beside the live one that holds the next level, around an
+/// innermost function with `inner_vars` dead declarations. The driver calls down
+/// the chain and prints how many calls it made.
+fn nested_dead_vars(depth: usize, inner_vars: usize) -> String {
+    let inner = "var x = 7; ".repeat(inner_vars);
+    format!(
+        "var f = {}function (a) {{ {inner}a(); return 1; }}{};\n\
+         var g = f, n = 0;\nwhile (typeof g === 'function') g = g(() => n++);\nconsole.log(n, g);\n",
+        "function (a) { var v = 7; var w = 7, g = ".repeat(depth),
+        "; a(); return a(), g; }".repeat(depth)
+    )
+}
+
+/// Every level used to deep-clone what it kept, so each copied all the levels
+/// below it. The dead-var sweep cloned the live declarator beside a removed
+/// one, and Phase 13 every statement of a list it removed an empty statement
+/// from: 4,000 levels took 3 s and 4 GB per pass, 8,000 levels 12 s and 17 GB.
+#[test]
+fn deep_dead_declarations_are_removed_in_place() {
+    let out = jsbeautify(&["-d", "-"], &nested_dead_vars(4_000, 4_000));
+    assert!(!out.contains("= 7"), "a dead declaration survived");
+    assert!(
+        out.lines().all(|line| line.trim() != ";"),
+        "an empty statement survived"
+    );
+    assert_reparses("nested dead vars", &out);
+}
+
+#[test]
+fn deep_dead_declarations_keep_behavior() {
+    let dir = std::env::temp_dir().join(format!("jsb-deep-dead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let source = nested_dead_vars(300, 300);
+    if let Some(input_stdout) = node_stdout(&dir, &source) {
+        assert_eq!(input_stdout.trim_end(), "601 1");
+        let out = jsbeautify(&["-d", "-"], &source);
+        assert!(!out.contains("= 7"), "a dead declaration survived");
+        assert_eq!(node_stdout(&dir, &out), Some(input_stdout));
+    } else {
+        eprintln!("node not found; skipping the behavior comparison");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

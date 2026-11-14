@@ -4,7 +4,7 @@
 //! These are left behind by other deobfuscation passes that replace removed
 //! statements (proxy functions, dead code, etc.) with `EmptyStatement`.
 
-use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_allocator::ArenaVec;
 use oxc_ast::ast::{BlockStatement, FunctionBody, Program, Statement};
 use oxc_traverse::{Traverse, TraverseCtx};
 
@@ -19,80 +19,35 @@ pub struct EmptyStatementCleanup {
 
 counter_pass!(EmptyStatementCleanup, removed_count, removed_count);
 
-impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
-    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        let before = program.body.len();
-        let mut new_body = ArenaVec::new_in(ctx);
-        for stmt in &program.body {
-            if matches!(stmt, Statement::EmptyStatement(_)) {
-                self.removed_count += 1;
-            } else {
-                new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
-            }
-        }
-        let after = new_body.len();
-        if before != after {
+impl EmptyStatementCleanup {
+    /// Drops `;` statements from `body` in place. The kept statements are moved,
+    /// not cloned, so the cost is linear in `body.len()` and independent of how
+    /// deep the subtrees below them are.
+    fn remove_empty(&mut self, body: &mut ArenaVec<'_, Statement<'_>>, kind: &str) {
+        let before = body.len();
+        body.retain(|stmt| !matches!(stmt, Statement::EmptyStatement(_)));
+        let removed = before - body.len();
+        if removed > 0 {
+            self.removed_count += removed;
             deob_trace!(
-                "[EMPTY_CLEANUP] Removed {} empty statements from program body ({} -> {})",
-                before - after,
-                before,
-                after
+                "[EMPTY_CLEANUP] Removed {removed} empty statements from {kind} ({before} -> {})",
+                body.len()
             );
-            program.body = new_body;
         }
     }
+}
 
-    fn exit_block_statement(&mut self, block: &mut BlockStatement<'a>, ctx: &mut Ctx<'a>) {
-        let has_empty = block.body.iter().any(|s| matches!(s, Statement::EmptyStatement(_)));
-        if !has_empty {
-            return;
-        }
-
-        let before = block.body.len();
-        let mut new_body = ArenaVec::new_in(ctx);
-        for stmt in &block.body {
-            if matches!(stmt, Statement::EmptyStatement(_)) {
-                self.removed_count += 1;
-            } else {
-                new_body.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
-            }
-        }
-        let after = new_body.len();
-        deob_trace!(
-            "[EMPTY_CLEANUP] Removed {} empty statements from block ({} -> {})",
-            before - after,
-            before,
-            after
-        );
-        block.body = new_body;
+impl<'a> Traverse<'a, DeobfuscateState> for EmptyStatementCleanup {
+    fn exit_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
+        self.remove_empty(&mut program.body, "program body");
     }
 
-    fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut Ctx<'a>) {
-        let has_empty = body
-            .statements
-            .iter()
-            .any(|s| matches!(s, Statement::EmptyStatement(_)));
-        if !has_empty {
-            return;
-        }
+    fn exit_block_statement(&mut self, block: &mut BlockStatement<'a>, _ctx: &mut Ctx<'a>) {
+        self.remove_empty(&mut block.body, "block");
+    }
 
-        let before = body.statements.len();
-        let mut new_stmts = ArenaVec::new_in(ctx);
-        for stmt in &body.statements {
-            if matches!(stmt, Statement::EmptyStatement(_)) {
-                self.removed_count += 1;
-            } else {
-                new_stmts.push(stmt.clone_in_with_semantic_ids(ctx.allocator()));
-            }
-        }
-        let after = new_stmts.len();
-        deob_trace!(
-            "[EMPTY_CLEANUP] Removed {} empty statements from function body ({} -> {})",
-            before - after,
-            before,
-            after
-        );
-        body.statements = new_stmts;
+    fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, _ctx: &mut Ctx<'a>) {
+        self.remove_empty(&mut body.statements, "function body");
     }
 }
 
@@ -153,6 +108,24 @@ mod tests {
             output.contains('x') && output.contains('y'),
             "Should preserve non-empty statements, got: {output}"
         );
+    }
+
+    #[test]
+    fn removes_empty_statements_at_every_nesting_level() {
+        let (output, count) =
+            run_cleanup("function f() { ; return function g() { ; { ; } return function h() { ; return 1; }; }; }");
+        assert_eq!(count, 4, "{output}");
+        assert_eq!(
+            output,
+            "function f() {\n\treturn function g() {\n\t\t{}\n\t\treturn function h() {\n\t\t\treturn 1;\n\t\t};\n\t};\n}\n"
+        );
+    }
+
+    #[test]
+    fn keeps_empty_statements_that_are_a_whole_body() {
+        let (output, count) = run_cleanup("if (a) ; else ; while (b) ; label: ;");
+        assert_eq!(count, 0, "{output}");
+        assert_eq!(output, "if (a);\nelse;\nwhile (b);\nlabel:;\n");
     }
 
     #[test]

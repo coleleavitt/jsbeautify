@@ -1,4 +1,3 @@
-use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
 use oxc_ast::ast::{
     ArrayExpressionElement, BindingPattern, Expression, Function, ObjectPropertyKind, Statement, UnaryOperator,
     VariableDeclarator,
@@ -138,38 +137,20 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeadVarEliminator {
                 return;
             }
 
-            let has_dead = var_decl.declarations.iter().any(|d| self.should_remove_declarator(d));
-            if has_dead {
-                let mut new_declarations = ArenaVec::new_in(ctx);
-                for decl in &var_decl.declarations {
-                    if !self.should_remove_declarator(decl) {
-                        new_declarations.push(Self::clone_declarator(decl, ctx));
-                    } else if let BindingPattern::BindingIdentifier(ident) = &decl.id {
-                        if crate::ast_deobfuscate::ast_trace_enabled() {
-                            deob_trace!("[AST] Eliminating dead variable: {}", ident.name);
-                        }
-                        self.removed_declarators += 1;
-                    }
+            // Drop the dead declarators in place: cloning the survivors would
+            // copy every declaration nested in their initializers.
+            let before = var_decl.declarations.len();
+            var_decl.declarations.retain(|decl| {
+                let remove = self.should_remove_declarator(decl);
+                if remove
+                    && crate::ast_deobfuscate::ast_trace_enabled()
+                    && let BindingPattern::BindingIdentifier(ident) = &decl.id
+                {
+                    deob_trace!("[AST] Eliminating dead variable: {}", ident.name);
                 }
-
-                if new_declarations.is_empty() {
-                    *stmt = Statement::new_empty_statement(SPAN, ctx);
-                } else {
-                    *stmt = Statement::new_variable_declaration(
-                        SPAN,
-                        var_decl.kind,
-                        new_declarations,
-                        var_decl.declare,
-                        ctx,
-                    );
-                }
-            }
+                !remove
+            });
+            self.removed_declarators += before - var_decl.declarations.len();
         }
-    }
-}
-
-impl DeadVarEliminator {
-    fn clone_declarator<'a>(decl: &VariableDeclarator<'a>, ctx: &mut Ctx<'a>) -> VariableDeclarator<'a> {
-        decl.clone_in_with_semantic_ids(ctx.allocator())
     }
 }

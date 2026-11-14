@@ -1,20 +1,15 @@
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_codegen::Codegen;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_parser::{Parser, ParserReturn};
 use oxc_span::SourceType;
 
 use crate::ast_deobfuscate::semantic;
 
-/// Codegen text of a checkpoint (Phases 12.6 and 15.6). It is only re-parsed,
-/// so it carries no indentation, which would grow quadratically with nesting
-/// depth.
+/// Codegen text of a checkpoint (Phases 12.6 and 15.6), which is only
+/// re-parsed.
 pub(super) fn checkpoint_code(program: &Program<'_>) -> String {
-    Codegen::new()
-        .with_options(crate::beautifier::unindented_codegen_options())
-        .build(program)
-        .code
+    crate::beautifier::unindented_code(program)
 }
 
 /// Builds a human-readable context window around the first parse error of a
