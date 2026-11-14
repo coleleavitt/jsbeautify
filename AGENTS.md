@@ -11,7 +11,9 @@ and adds only Claude Code specifics.
 ## Build / test / lint
 
 - The project has no `rust-toolchain.toml` and no package `rust-version` pin.
-  Use a current Rust toolchain compatible with the pinned Oxc revision.
+  Oxc 0.149 needs Rust 1.96 or newer. CI (`.github/workflows/ci.yml`) runs
+  clippy and tests on stable and `cargo fmt --check` on nightly, because
+  `rustfmt.toml` uses the nightly-only `imports_granularity`.
   `rustfmt.toml` sets `style_edition = "2024"`.
 - `oxc_*` crates come from crates.io, all on one release (see `Cargo.toml`).
   Bump every `oxc_*` crate together, with the migration code, in one commit.
