@@ -15,8 +15,6 @@ use super::shape::reference_symbol;
 const MAX_OPS: usize = 4_096;
 /// Upper bound on the checksum's nesting depth.
 const MAX_DEPTH: usize = 256;
-/// Upper bound on `ops × array length`, the work of a full search.
-const MAX_WORK: usize = 50_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
@@ -59,11 +57,13 @@ impl Checksum {
 
     /// The number of `push(shift())` steps after which the checksum first
     /// equals `target`, or `None` when no rotation matches (the IIFE would
-    /// loop forever), the search is too large, or a term cannot be evaluated
+    /// loop forever), a full search would exceed `work_budget` (operations
+    /// evaluated, shared by the program), or a term cannot be evaluated
     /// exactly.
-    pub(super) fn solve(&self, strings: &[String], offset: f64, target: f64) -> Option<usize> {
+    pub(super) fn solve(&self, strings: &[String], offset: f64, target: f64, work_budget: &mut usize) -> Option<usize> {
         let len = strings.len();
-        if len == 0 || self.ops.len().saturating_mul(len) > MAX_WORK {
+        *work_budget = work_budget.checked_sub(self.ops.len().saturating_mul(len))?;
+        if len == 0 {
             return None;
         }
         let parsed: Vec<Option<f64>> = strings.iter().map(|s| parse_int(s)).collect();

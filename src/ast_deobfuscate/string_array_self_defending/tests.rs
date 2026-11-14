@@ -246,6 +246,13 @@ fn decoder_variable_after_running_code_bails() {
 }
 
 #[test]
+fn countdown_too_long_to_finish_bails() {
+    let code = LEGACY.replace("_0xr(++_0xn)", "_0xr(0x100000001)");
+    let (output, pass) = run(&format!("{code}g(_0x4a2b('0x0'));"));
+    assert!(!pass.changed(), "{output}");
+}
+
+#[test]
 fn endless_countdown_bails() {
     let code = LEGACY.replace("_0xr(++_0xn)", "_0xr(0)");
     let (output, pass) = run(&format!("{code}g(_0x4a2b('0x0'));"));

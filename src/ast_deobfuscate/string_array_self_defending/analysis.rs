@@ -24,6 +24,8 @@ use super::shape::{
 const GLOBAL_OBJECT_NAMES: [&str; 7] = ["globalThis", "window", "self", "global", "frames", "parent", "top"];
 /// Upper bound on the string arrays analysed per program; each costs one walk.
 const MAX_ARRAYS: usize = 8;
+/// Checksum operations evaluated per program while solving rotations.
+const MAX_ROTATION_WORK: usize = 50_000_000;
 /// Inlined bytes allowed per source byte, so that inlining one long string
 /// at many call sites cannot exhaust memory.
 const INLINE_BYTES_PER_SOURCE_BYTE: usize = 4;
@@ -38,6 +40,14 @@ pub(super) struct Plan {
     pub(super) rotations: Vec<usize>,
     /// Decoder aliases whose every reference is replaced.
     pub(super) dead_aliases: FxHashSet<SymbolId>,
+}
+
+/// Work shared by every string array of a program.
+struct Budget {
+    /// Bytes still allowed to be inlined.
+    inline_bytes: usize,
+    /// Checksum operations still allowed while solving rotations.
+    rotation_work: usize,
 }
 
 pub(super) fn address<T>(node: &T) -> usize {
@@ -66,13 +76,17 @@ pub(super) fn analyze(program: &Program<'_>, scoping: &Scoping) -> Plan {
         .enumerate()
         .filter_map(|(index, stmt)| decoder_candidate(stmt, index))
         .collect();
-    let mut inline_budget = program
+    let inline_budget = program
         .source_text
         .len()
         .saturating_mul(INLINE_BYTES_PER_SOURCE_BYTE)
         .max(MIN_INLINE_BYTES);
+    let mut budget = Budget {
+        inline_bytes: inline_budget,
+        rotation_work: MAX_ROTATION_WORK,
+    };
     for array in arrays.take(MAX_ARRAYS) {
-        analyze_array(program, scoping, &decoders, &array, &mut inline_budget, &mut plan);
+        analyze_array(program, scoping, &decoders, &array, &mut budget, &mut plan);
     }
     plan
 }
@@ -82,7 +96,7 @@ fn analyze_array(
     scoping: &Scoping,
     candidates: &[DecoderCandidate<'_, '_>],
     array: &StringArray,
-    inline_budget: &mut usize,
+    budget: &mut Budget,
     plan: &mut Plan,
 ) -> Option<()> {
     let decoders: Vec<Decoder> = candidates
@@ -117,7 +131,7 @@ fn analyze_array(
     let rotation = match rotations.as_slice() {
         [] => None,
         [(index, stmt, rotation)] => {
-            let steps = rotation.steps(&strings, decoder.offset)?;
+            let steps = rotation.steps(&strings, decoder.offset, &mut budget.rotation_work)?;
             strings.rotate_left(steps);
             array_uses.push(rotation.array_ref);
             Some((*index, *stmt, matches!(rotation.kind, RotationKind::Checksum { .. })))
@@ -178,9 +192,9 @@ fn analyze_array(
         early_declarations,
     );
     walker.script = program.source_type.is_script();
-    walker.inline_budget = *inline_budget;
+    walker.inline_budget = budget.inline_bytes;
     walker.visit_program(program);
-    *inline_budget = walker.inline_budget;
+    budget.inline_bytes = walker.inline_budget;
     walker.finish(rotation_stmt, plan);
     Some(())
 }

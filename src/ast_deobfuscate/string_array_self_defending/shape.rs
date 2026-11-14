@@ -60,13 +60,15 @@ pub(super) enum RotationKind {
 
 impl Rotation {
     /// The number of `push(shift())` steps it performs before returning.
-    pub(super) fn steps(&self, strings: &[String], offset: f64) -> Option<usize> {
+    /// A checksum search spends `work_budget`.
+    pub(super) fn steps(&self, strings: &[String], offset: f64, work_budget: &mut usize) -> Option<usize> {
         match &self.kind {
-            RotationKind::Checksum { checksum, target } => checksum.solve(strings, offset, *target),
+            RotationKind::Checksum { checksum, target } => checksum.solve(strings, offset, *target, work_budget),
             // `while (--k)` runs `k - 1` times, and forever unless `k` is a
-            // positive integer.
+            // positive integer. A count past `MAX_COUNTDOWN` would keep the
+            // input spinning for so long that the output must spin too.
             RotationKind::Countdown(start) => {
-                if start.fract() != 0.0 || *start < 1.0 || *start > MAX_SAFE_INTEGER {
+                if start.fract() != 0.0 || *start < 1.0 || *start > MAX_COUNTDOWN {
                     return None;
                 }
                 let len = u64::try_from(strings.len()).ok().filter(|&len| len > 0)?;
@@ -76,8 +78,8 @@ impl Rotation {
     }
 }
 
-/// 2^53, past which the counter no longer decrements exactly.
-const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0;
+/// The largest countdown solved: 2^32 steps.
+const MAX_COUNTDOWN: f64 = 4_294_967_296.0;
 
 pub(super) fn reference_symbol(scoping: &Scoping, ident: &IdentifierReference<'_>) -> Option<SymbolId> {
     scoping.get_reference(ident.reference_id.get()?).symbol_id()

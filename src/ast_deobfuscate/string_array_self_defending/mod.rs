@@ -19,11 +19,14 @@
 //! no reference to the decoder is left, the rotation IIFE, whose only effect
 //! is the array order, is removed, along with the aliases it no longer needs.
 //! The wrapper and decoder declarations are left to dead-code elimination.
+//! In a classic script those are globals other scripts can see, so the
+//! rotation IIFE and the top-level aliases stay; only the calls are inlined.
 //!
 //! The analysis bails on anything it cannot prove: a direct `eval`, a
 //! reassigned or redeclared decoder, wrapper or alias (including a block
 //! function of the same name, which Annex B may hoist), any other use of the
-//! wrapper, code that could run before the rotation, a checksum it cannot
+//! wrapper, code that could run before the rotation, in a script a global
+//! `eval`/`Function` or a write through the global object, a checksum it cannot
 //! evaluate exactly or that never matches, calls inside `with`, and indexes
 //! out of range. It assumes the standard `parseInt`, `Array.prototype.push`
 //! and `shift`, and that nothing outside the program writes the decoder
