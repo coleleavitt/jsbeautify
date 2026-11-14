@@ -26,13 +26,11 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
-  # Same toolchain as the local gate: stable clippy counts too_many_lines and
-  # too_many_arguments differently and fails on code nightly accepts.
   clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2

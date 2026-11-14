@@ -11,10 +11,12 @@ and adds only Claude Code specifics.
 ## Build / test / lint
 
 - The project has no `rust-toolchain.toml` and no package `rust-version` pin.
-  Oxc 0.149 needs Rust 1.96 or newer. The gate runs on nightly: `rustfmt.toml`
-  uses the nightly-only `imports_granularity`, and stable clippy reports size
-  lints that nightly does not. CI (`.github/workflows/ci.yml`) runs fmt and
-  clippy on nightly and the tests on stable.
+  Oxc 0.149 needs Rust 1.96 or newer. CI (`.github/workflows/ci.yml`) runs
+  `cargo fmt --check` on nightly, because `rustfmt.toml` uses the nightly-only
+  `imports_granularity`, and clippy and the tests on stable.
+- Clippy reads the repo's `clippy.toml` only when `CLIPPY_CONF_DIR` is unset.
+  Run the gate with `env -u CLIPPY_CONF_DIR` if your shell sets it, or local
+  results will not match CI.
   `rustfmt.toml` sets `style_edition = "2024"`.
 - `oxc_*` crates come from crates.io, all on one release (see `Cargo.toml`).
   Bump every `oxc_*` crate together, with the migration code, in one commit.

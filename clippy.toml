@@ -1,2 +1,4 @@
 allow-print-in-tests = true
 allow-dbg-in-tests = true
+too-many-lines-threshold = 150
+too-many-arguments-threshold = 10
