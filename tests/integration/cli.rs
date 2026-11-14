@@ -163,6 +163,33 @@ fn deobfuscate_file(name: &str, code: &str, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("stdout is utf8")
 }
 
+/// javascript-obfuscator's dispatch loop (`while (!![]) { switch (o[i++]) ... }`)
+/// is replaced only together with the `o` and `i` it reads, and its steps run
+/// in sequence order. A classic script keeps its top-level globals and loop.
+#[test]
+fn control_flow_dispatch_loop_keeps_what_it_reads() {
+    let body = r#"var a=[];var o="1|0".split("|");var i=0;while(!![]){switch(o[i++]){case"0":a.push("x");continue;case"1":a.push("y");continue;}break;}"#;
+    let assert_unflattened = |out: &str| {
+        assert!(!out.contains("switch") && !out.contains("split"), "{out}");
+        let y = out.find(r#".push("y")"#).expect(out);
+        let x = out.find(r#".push("x")"#).expect(out);
+        assert!(y < x, "{out}");
+    };
+
+    let top_level = format!(r#"{body}console.log(a.join(","));"#);
+    assert_unflattened(&deobfuscate_file("cff.js", &top_level, &["--isolated"]));
+    let script = deobfuscate_file("cff.js", &top_level, &[]);
+    assert!(
+        script.contains("switch") && script.contains(r#""1|0".split("|")"#) && script.contains("= 0"),
+        "{script}"
+    );
+
+    let in_function = format!(r#"function f(){{{body}return a;}}console.log(f().join(","));"#);
+    for args in [&[][..], &["--isolated"]] {
+        assert_unflattened(&deobfuscate_file("cff_fn.js", &in_function, args));
+    }
+}
+
 /// javascript-obfuscator's default string array (`_0x533c`) is reached from its
 /// decoder before its declaration; every reference must follow the rename, or
 /// the rotation IIFE's `try`/`catch` loops forever on the `ReferenceError`.
