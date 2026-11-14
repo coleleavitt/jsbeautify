@@ -435,3 +435,25 @@ mod layout {
         assert!(out.contains("\n{\n  if"), "{out}");
     }
 }
+
+/// Output nested past `MAX_INDENT_DEPTH` stays linear in the input: no line
+/// is indented deeper than that.
+#[test]
+fn deep_nesting_caps_the_indentation() {
+    let depth = 4 * MAX_INDENT_DEPTH;
+    let options = Options::default();
+    let widest = options.indent_size * MAX_INDENT_DEPTH;
+    for code in [
+        format!("{}x();{}", "{".repeat(depth), "}".repeat(depth)),
+        format!("x = {}0{};", "{a: ".repeat(depth), "}".repeat(depth)),
+        format!("{}x();{}", "function f() {".repeat(depth), "}".repeat(depth)),
+    ] {
+        let out = beautify(&code, &options).unwrap();
+        let indent = out
+            .lines()
+            .map(|line| line.len() - line.trim_start().len())
+            .max()
+            .unwrap_or(0);
+        assert!(indent <= widest, "indent {indent} for {}", &code[..20]);
+    }
+}

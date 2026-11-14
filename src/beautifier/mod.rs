@@ -1,6 +1,9 @@
 mod blank_lines;
+mod codegen_indent;
 mod layout;
 
+pub use codegen_indent::MAX_INDENT_DEPTH;
+pub(crate) use codegen_indent::{layout_codegen_options, unindented_codegen_options};
 pub use layout::Layout;
 
 use crate::ast_deobfuscate::AstDeobfuscator;
@@ -34,7 +37,7 @@ fn oxc_beautify(code: &str, options: &Options) -> Result<String> {
     let preserve = options.preserve_newlines && options.max_preserve_newlines != 1 && has_blank_line(code);
     let codegen_options = CodegenOptions {
         source_map_path: preserve.then(|| "input.js".into()),
-        ..CodegenOptions::default()
+        ..layout_codegen_options(&parse_result.program)
     };
     let generated = Codegen::new()
         .with_options(codegen_options)

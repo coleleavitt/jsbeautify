@@ -15,7 +15,10 @@ impl AstDeobfuscator {
     ) -> Result<String> {
         mem_ck("before codegen (peak structural)");
         eprintln!("[DEOBFUSCATE] Generating output code");
-        let output = Codegen::new().build(program).code;
+        let output = Codegen::new()
+            .with_options(crate::beautifier::layout_codegen_options(program))
+            .build(program)
+            .code;
         eprintln!("[DEOBFUSCATE] Output generated, {} bytes", output.len());
         // A cleanly parsed program may legitimately deobfuscate to nothing; an
         // unparseable input that recovers to nothing has no result to report.

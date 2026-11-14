@@ -9,69 +9,77 @@ pub(super) const fn is_arrow_body_delimiter(bytes: &[u8], i: usize) -> bool {
     i >= bytes.len() || matches!(bytes[i], b';' | b',' | b')' | b']' | b'}')
 }
 
-pub(super) fn find_arrow_outside_syntax(s: &str, start: usize) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut i = start;
-    while i + 1 < bytes.len() {
-        match bytes[i] {
-            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
-            b'`' => i = skip_template(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
-            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
-            b'=' if bytes[i + 1] == b'>' => return Some(i),
-            _ => i += 1,
-        }
-    }
-    None
+/// Offsets in a text outside strings, comments, templates and regex
+/// literals, found by one scan so that each lookup is cheap however deeply
+/// the text nests.
+pub(super) struct SyntaxIndex {
+    /// Offsets of `=>`.
+    pub(super) arrows: Vec<usize>,
+    /// Sorted offsets of `{`.
+    block_opens: Vec<usize>,
+    /// `(open, close)` of each matched paren pair, sorted by `open`.
+    parens: Vec<(usize, usize)>,
 }
 
-pub(super) fn contains_block_open_outside_syntax(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
-            b'`' => i = skip_template(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
-            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
-            b'{' => return true,
-            _ => i += 1,
+impl SyntaxIndex {
+    pub(super) fn new(s: &str) -> Self {
+        let bytes = s.as_bytes();
+        let mut index = Self {
+            arrows: Vec::new(),
+            block_opens: Vec::new(),
+            parens: Vec::new(),
+        };
+        let mut open_parens = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+                b'`' => i = skip_template(bytes, i),
+                b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
+                b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+                b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
+                b'=' if bytes.get(i + 1) == Some(&b'>') => {
+                    index.arrows.push(i);
+                    i += 2;
+                }
+                b'{' => {
+                    index.block_opens.push(i);
+                    i += 1;
+                }
+                b'(' => {
+                    open_parens.push(i);
+                    i += 1;
+                }
+                b')' => {
+                    if let Some(open) = open_parens.pop() {
+                        index.parens.push((open, i));
+                    }
+                    i += 1;
+                }
+                _ => i += 1,
+            }
         }
+        index.parens.sort_unstable();
+        index
     }
-    false
-}
 
-pub(super) fn find_matching_paren(s: &str, open: usize) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut depth = 0i32;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
-            b'`' => i = skip_template(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
-            b'/' if is_regex_literal_start(bytes, i) => i = skip_regex_literal(bytes, i),
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-                if depth < 0 {
-                    return None;
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
+    /// The `)` closing the `(` at `open`.
+    pub(super) fn matching_paren(&self, open: usize) -> Option<usize> {
+        self.parens
+            .binary_search_by_key(&open, |&(start, _)| start)
+            .ok()
+            .map(|at| self.parens[at].1)
     }
-    None
+
+    /// Whether `start..end` holds an `=>` or a `{`.
+    pub(super) fn has_arrow_or_block_open(&self, start: usize, end: usize) -> bool {
+        let within = |offsets: &[usize]| {
+            offsets
+                .get(offsets.partition_point(|&at| at < start))
+                .is_some_and(|&at| at < end)
+        };
+        within(&self.arrows) || within(&self.block_opens)
+    }
 }
 
 /// Split a string on top-level commas (respecting nesting and string syntax).

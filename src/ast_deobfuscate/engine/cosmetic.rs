@@ -1,7 +1,7 @@
 use super::{
-    Allocator, AstDeobfuscator, BunRuntimeCollector, BundleRuntime, Codegen, DeobfuscateState, LetToConst,
+    Allocator, AstDeobfuscator, BunRuntimeCollector, BundleRuntime, DeobfuscateState, LetToConst,
     MinifierIdiomReverser, Parser, Program, Result, ReturnSequenceSplitter, ReusableTraverseCtx, SemanticBaseline,
-    SourceType, StatementSplitNormalizer, checkpoint_error_context, mem_ck, traverse_mut_with_ctx,
+    SourceType, StatementSplitNormalizer, checkpoint_code, checkpoint_error_context, mem_ck, traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::semantic;
 use oxc_semantic::Scoping;
@@ -91,7 +91,7 @@ impl AstDeobfuscator {
             // freed at the closing brace, reclaiming the split-expansion AST.
             mem_ck("Phase 15.6: cosmetic-A checkpoint codegen");
             eprintln!("[DEOBFUSCATE] Phase 15.6: cosmetic-A checkpoint (codegen + arena reset)");
-            Codegen::new().build(&program).code
+            checkpoint_code(&program)
         };
         Ok(intermediate2)
     }

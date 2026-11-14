@@ -1,9 +1,21 @@
 use oxc_allocator::Allocator;
+use oxc_ast::ast::Program;
+use oxc_codegen::Codegen;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_parser::{Parser, ParserReturn};
 use oxc_span::SourceType;
 
 use crate::ast_deobfuscate::semantic;
+
+/// Codegen text of a checkpoint (Phases 12.6 and 15.6). It is only re-parsed,
+/// so it carries no indentation, which would grow quadratically with nesting
+/// depth.
+pub(super) fn checkpoint_code(program: &Program<'_>) -> String {
+    Codegen::new()
+        .with_options(crate::beautifier::unindented_codegen_options())
+        .build(program)
+        .code
+}
 
 /// Builds a human-readable context window around the first parse error of a
 /// failed checkpoint re-parse. The byte offset is read from the diagnostic's
@@ -114,14 +126,13 @@ pub(super) fn log_parsed_validity(label: &str, parse_result: &ParserReturn<'_>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxc_codegen::Codegen;
 
-    /// Parse `src` and codegen it back to a string with the same `Codegen`
-    /// configuration the deobfuscation checkpoints use.
+    /// Parse `src` and codegen it back to a string the way the
+    /// deobfuscation checkpoints do.
     fn roundtrip(src: &str) -> String {
         let allocator = Allocator::default();
         let program = Parser::new(&allocator, src, SourceType::mjs()).parse().program;
-        Codegen::new().build(&program).code
+        checkpoint_code(&program)
     }
 
     /// The arena-split checkpoints (Phases 12.6 / 15.6) codegen the program,

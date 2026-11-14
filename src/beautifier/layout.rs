@@ -7,6 +7,9 @@
 //! multi-line strings or JSX text are copied verbatim; every other change
 //! touches only whitespace between tokens.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BlockStatement, ClassBody, CommentKind, DoWhileStatement, ExportNamedDeclaration, Function, FunctionBody,
@@ -20,6 +23,7 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
+use super::MAX_INDENT_DEPTH;
 use crate::options::{BraceStyle, Options};
 use crate::{BeautifyError, Result};
 
@@ -148,7 +152,8 @@ impl Layout {
             depth: Depth {
                 ranges: &ranges,
                 next: 0,
-                open: Vec::new(),
+                open: BinaryHeap::new(),
+                sum: 0,
             },
         }
         .write();
@@ -472,7 +477,9 @@ impl<'a> Visit<'a> for Scan<'_> {
 struct Depth<'r> {
     ranges: &'r [(usize, usize, isize)],
     next: usize,
-    open: Vec<(usize, isize)>,
+    /// `(close, delta)` of the ranges opened so far, earliest close first.
+    open: BinaryHeap<Reverse<(usize, isize)>>,
+    sum: isize,
 }
 
 impl Depth<'_> {
@@ -480,11 +487,17 @@ impl Depth<'_> {
         while let Some(&(open, close, delta)) = self.ranges.get(self.next)
             && open < offset
         {
-            self.open.push((close, delta));
+            self.open.push(Reverse((close, delta)));
+            self.sum += delta;
             self.next += 1;
         }
-        self.open.retain(|&(close, _)| close > offset);
-        self.open.iter().map(|&(_, delta)| delta).sum()
+        while let Some(&Reverse((close, delta))) = self.open.peek()
+            && close <= offset
+        {
+            self.open.pop();
+            self.sum -= delta;
+        }
+        self.sum
     }
 }
 
@@ -501,7 +514,7 @@ struct Writer<'w> {
 impl Writer<'_> {
     fn push_indent(&self, out: &mut String, level: isize) {
         out.push_str(&self.layout.base);
-        for _ in 0..level.max(0) {
+        for _ in 0..level.clamp(0, MAX_INDENT_DEPTH.cast_signed()) {
             out.push_str(&self.layout.indent);
         }
     }

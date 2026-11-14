@@ -79,3 +79,21 @@ fn ignores_arrow_text_inside_nested_template_literal() {
     assert_eq!(count, 0);
     assert_eq!(out, code);
 }
+
+#[test]
+fn expands_only_the_innermost_of_nested_arrow_sequences() {
+    let depth = 10_000;
+    let outer = "(a) => (a(), a(), ".repeat(depth - 1);
+    let code = format!("f = {outer}(a) => (a(), a(), 1){};", ")".repeat(depth - 1));
+    let expected = format!(
+        "f = {outer}(a) => {{\n\t\ta();\n\t\ta();\n\t\treturn 1;\n\t}}{};",
+        ")".repeat(depth - 1)
+    );
+    assert_eq!(expand_arrow_sequences(&code), (expected, 1));
+}
+
+#[test]
+fn skips_a_sequence_whose_paren_is_unmatched() {
+    let code = "f = (a) => (a(), a(), a();";
+    assert_eq!(expand_arrow_sequences(code), (code.to_string(), 0));
+}

@@ -1,4 +1,4 @@
-use super::{Allocator, AstDeobfuscator, BundleRuntime, Codegen, Parser, SourceType, mem_ck};
+use super::{Allocator, AstDeobfuscator, BundleRuntime, Parser, SourceType, checkpoint_code, mem_ck};
 
 impl AstDeobfuscator {
     /// Returns the structural checkpoint output, the bundler runtime, and the
@@ -82,7 +82,7 @@ impl AstDeobfuscator {
         // dead intermediate AST accumulated by Phases 0–12.5.
         mem_ck("Phase 12.6: structural checkpoint codegen");
         eprintln!("[DEOBFUSCATE] Phase 12.6: structural checkpoint (codegen + arena reset)");
-        (Codegen::new().build(&program).code, runtime, program.source_type)
+        (checkpoint_code(&program), runtime, program.source_type)
     }
 
     fn parse_with_source_type_fallback<'a>(

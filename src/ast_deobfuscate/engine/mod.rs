@@ -44,7 +44,8 @@ use super::{
 };
 use annotations::annotate_webpack_modules;
 use checkpoint::{
-    SemanticBaseline, checkpoint_error_context, log_output_validity, log_parsed_validity, semantic_baseline,
+    SemanticBaseline, checkpoint_code, checkpoint_error_context, log_output_validity, log_parsed_validity,
+    semantic_baseline,
 };
 use trace::{TraceSpan, mem_ck};
 
