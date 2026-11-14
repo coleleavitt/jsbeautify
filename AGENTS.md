@@ -14,10 +14,10 @@ and adds only Claude Code specifics.
   Oxc 0.149 needs Rust 1.96 or newer. CI (`.github/workflows/ci.yml`) runs
   `cargo fmt --check` on nightly, because `rustfmt.toml` uses the nightly-only
   `imports_granularity`, and clippy and the tests on stable.
+  `rustfmt.toml` sets `style_edition = "2024"`.
 - Clippy reads the repo's `clippy.toml` only when `CLIPPY_CONF_DIR` is unset.
   Run the gate with `env -u CLIPPY_CONF_DIR` if your shell sets it, or local
   results will not match CI.
-  `rustfmt.toml` sets `style_edition = "2024"`.
 - `oxc_*` crates come from crates.io, all on one release (see `Cargo.toml`).
   Bump every `oxc_*` crate together, with the migration code, in one commit.
   Git or path dependencies cannot be published, so do not commit them.

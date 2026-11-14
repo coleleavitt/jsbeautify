@@ -1,11 +1,47 @@
 # jsbeautify
 
+[![CI](https://github.com/coleleavitt/jsbeautify/actions/workflows/ci.yml/badge.svg)](https://github.com/coleleavitt/jsbeautify/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/jsbeautify.svg)](https://crates.io/crates/jsbeautify)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 
 A fast JavaScript beautifier and deobfuscator written in Rust, powered by [oxc](https://github.com/oxc-project/oxc).
 
 Takes minified, obfuscated webpack/esbuild/Bun bundles and produces readable JavaScript.
 Handles real-world production bundles — tested against 11MB+ builds.
+
+## Before / after
+
+Input in the style of javascript-obfuscator (string array with an offset
+decoder, hex literals, bracket access, and a flattened `switch` dispatcher):
+
+```js
+var _0x1a2b=["Hello","log","world","join"];function _0xdec(_0x3c4d){_0x3c4d=_0x3c4d-0x64;return _0x1a2b[_0x3c4d];}var _0x9c=[];var _0x7a="2|0|1".split("|");var _0x8b=0x0;while(!![]){switch(_0x7a[_0x8b++]){case"0":_0x9c["push"](_0xdec(0x66));continue;case"1":console[_0xdec(0x65)](_0x9c[_0xdec(0x67)]("\x20"),!0x0);continue;case"2":_0x9c["push"](_0xdec(0x64));continue;}break;}
+```
+
+`jsbeautify -d --isolated input.js`:
+
+```js
+var var_1 = [
+    "Hello",
+    "log",
+    "world",
+    "join"
+];
+
+function func_1(var_2) {
+    var_2 = var_2 - 100;
+    return var_1[var_2];
+}
+var var_3 = [];
+var_3.push("Hello");
+var_3.push("world");
+console.log(var_3.join(" "), true);
+```
+
+Strings are decoded, the dispatcher loop becomes straight-line code, and
+`!0x0` and `["push"]` become `true` and `.push`. `--isolated` tells jsbeautify
+that no other script reads this file's globals, so top-level names may be
+renamed.
 
 ## What it does
 
@@ -15,6 +51,14 @@ source-tree reconstruction from source maps, and cross-version alignment are
 exposed as subcommands (see the CLI reference below).
 
 ## Installation
+
+Requires Rust 1.96 or newer.
+
+```bash
+cargo install jsbeautify --locked
+```
+
+Or install the latest commit:
 
 ```bash
 cargo install --git https://github.com/coleleavitt/jsbeautify --locked
