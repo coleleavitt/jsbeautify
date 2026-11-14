@@ -140,3 +140,41 @@ fn keeps_nested_jumps_that_target_inner_statements() {
     let (out, rewrites) = run(&code);
     assert_eq!(rewrites, 1, "{out}");
 }
+
+#[test]
+fn keeps_loops_whose_skipped_cases_declare_vars() {
+    let skipped = |case: &str| {
+        format!(
+            r#"function f() {{ var S = "0".split("|"), I = 0; while (true) {{ switch (S[I++]) {{ case "0": console.log(typeof x, x); continue; case "1": {case} continue; }} break; }} }}"#
+        )
+    };
+    for case in [
+        "var x = 5;",
+        "if (g()) { var x = 5; }",
+        "for (var x of g()) {}",
+        "{ function x() {} }",
+    ] {
+        assert_kept(&skipped(case));
+    }
+    let (out, rewrites) = run(&skipped("g(function () { var y; }, () => { var z; });"));
+    assert_eq!(rewrites, 1, "{out}");
+
+    let after_break = LOOP.replace("console.log(\"second\");", "console.log(\"second\"); var t;");
+    assert_eq!(run(&after_break).1, 1);
+    assert_kept(&after_break.replace("\"2|0|1\"", "\"2|1|0\""));
+}
+
+#[test]
+fn keeps_loops_that_repeat_a_step() {
+    assert_kept(&LOOP.replace("\"2|0|1\"", "\"2|0|0|1\""));
+}
+
+#[test]
+fn keeps_script_globals_declared_in_a_top_level_block() {
+    let block = format!("{{{LOOP}}}");
+    let (out, rewrites) = run_with(&block, SourceType::script());
+    assert_eq!(rewrites, 0, "{out}");
+    let lexical = block.replace("var _flow", "let _flow").replace("var _i", "let _i");
+    let (out, rewrites) = run_with(&lexical, SourceType::script());
+    assert_eq!(rewrites, 1, "{out}");
+}

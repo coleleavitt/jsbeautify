@@ -2,13 +2,14 @@ use oxc_allocator::{Allocator, CloneIn, GetAllocator, Vec as OxcVec};
 use oxc_ast::ast::{
     Argument, BindingPattern, BreakStatement, ContinueStatement, DoWhileStatement, Expression, ForInStatement,
     ForOfStatement, ForStatement, Function, SimpleAssignmentTarget, Statement, StaticBlock, SwitchStatement,
-    UnaryOperator, UpdateOperator, VariableDeclarationKind, VariableDeclarator, WhileStatement,
+    UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind, VariableDeclarator, WhileStatement,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
 use oxc_syntax::reference::ReferenceId;
 use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
+use rustc_hash::FxHashSet;
 
 use super::Ctx;
 
@@ -24,13 +25,20 @@ pub(super) struct Plan<'a> {
 /// `while (<truthy literal>)` or `for (;;)` whose body is exactly
 /// `{ switch (S[I++]) { ... } break; }`, where
 /// - `S` and `I` are declared earlier in `stmts` as `S = "a|b".split("|")` and
-///   `var`/`let` `I = 0`, and the discriminant is the only reference to each;
-/// - every case test is a string literal (no `default`), and no case
-///   declares anything but `var`;
+///   `var`/`let` `I = 0`, the discriminant is the only reference to each, and
+///   neither is a global of a classic `script`;
+/// - no step repeats, so each case is emitted at most once;
+/// - every case test is a string literal (no `default`), no case declares
+///   anything but `var`, and no case the sequence skips declares a `var`;
 /// - each case the sequence reaches ends in an unlabeled `continue` (next
 ///   step) or `break` (leave the loop) and has no other jump to the switch or
 ///   the loop.
-pub(super) fn plan_loop<'a>(stmts: &[Statement<'a>], loop_index: usize, ctx: &Ctx<'a>) -> Option<Plan<'a>> {
+pub(super) fn plan_loop<'a>(
+    stmts: &[Statement<'a>],
+    loop_index: usize,
+    script: bool,
+    ctx: &Ctx<'a>,
+) -> Option<Plan<'a>> {
     let body = match &stmts[loop_index] {
         Statement::WhileStatement(w) if is_truthy_literal(&w.test) == Some(true) => &w.body,
         Statement::ForStatement(f) if f.init.is_none() && f.test.is_none() && f.update.is_none() => &f.body,
@@ -56,6 +64,14 @@ pub(super) fn plan_loop<'a>(stmts: &[Statement<'a>], loop_index: usize, ctx: &Ct
     }
     let sequence_symbol = sole_reference_symbol(scoping, sequence_ref)?;
     let index_symbol = sole_reference_symbol(scoping, index_ref)?;
+    // A classic script's top-level bindings are globals other scripts can read.
+    if script
+        && [sequence_symbol, index_symbol]
+            .iter()
+            .any(|&symbol| scoping.symbol_scope_id(symbol) == scoping.root_scope_id())
+    {
+        return None;
+    }
 
     let earlier = &stmts[..loop_index];
     let (sequence_at, _, sequence_decl) = find_declarator(earlier, sequence_symbol)?;
@@ -167,6 +183,10 @@ fn run_sequence<'a>(
     sequence: &[String],
     allocator: &'a Allocator,
 ) -> Option<OxcVec<'a, Statement<'a>>> {
+    let mut steps = FxHashSet::default();
+    if !sequence.iter().all(|step| steps.insert(step.as_str())) {
+        return None;
+    }
     let mut labels = Vec::with_capacity(switch.cases.len());
     for case in &switch.cases {
         let Some(Expression::StringLiteral(test)) = &case.test else {
@@ -178,11 +198,14 @@ fn run_sequence<'a>(
         labels.push(test.value.as_str());
     }
 
+    let mut ran = vec![false; switch.cases.len()];
     let mut out = OxcVec::new_in(&allocator);
     for step in sequence {
-        let Some(case) = labels.iter().position(|label| label == step).map(|i| &switch.cases[i]) else {
+        let Some(index) = labels.iter().position(|label| label == step) else {
             break;
         };
+        ran[index] = true;
+        let case = &switch.cases[index];
         let (last, run) = case.consequent.split_last()?;
         let next = match last {
             Statement::ContinueStatement(c) if c.label.is_none() => true,
@@ -197,6 +220,11 @@ fn run_sequence<'a>(
             break;
         }
     }
+    // A skipped case's `var` still binds its name in the enclosing function.
+    let skipped = switch.cases.iter().zip(ran).filter(|(_, ran)| !ran);
+    if skipped.flat_map(|(case, _)| &case.consequent).any(declares_var) {
+        return None;
+    }
     Some(out)
 }
 
@@ -206,6 +234,34 @@ fn declares_in_switch_scope(stmt: &Statement<'_>) -> bool {
         Statement::VariableDeclaration(decl) => !matches!(decl.kind, VariableDeclarationKind::Var),
         _ => stmt.is_declaration(),
     }
+}
+
+/// Whether `stmt` declares a `var`, or a block-level function that sloppy
+/// code also binds as a `var`, outside nested functions.
+fn declares_var(stmt: &Statement<'_>) -> bool {
+    let mut finder = VarFinder::default();
+    finder.visit_statement(stmt);
+    finder.found
+}
+
+#[derive(Default)]
+struct VarFinder {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for VarFinder {
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        self.found |= it.kind == VariableDeclarationKind::Var;
+        walk::walk_variable_declaration(self, it);
+    }
+
+    fn visit_function(&mut self, it: &Function<'a>, _flags: ScopeFlags) {
+        self.found |= it.is_declaration();
+    }
+
+    fn visit_arrow_function_expression(&mut self, _it: &oxc_ast::ast::ArrowFunctionExpression<'a>) {}
+
+    fn visit_static_block(&mut self, _it: &StaticBlock<'a>) {}
 }
 
 /// Whether `stmt` has an unlabeled `break` or `continue` that targets the

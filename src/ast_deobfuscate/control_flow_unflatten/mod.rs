@@ -28,7 +28,7 @@
 
 use oxc_allocator::Vec as OxcVec;
 use oxc_ast::ast::{Program, Statement};
-use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
+use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -74,12 +74,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
     }
 
     fn exit_statements(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
-        // A classic script's top-level bindings are globals other scripts can read.
-        if self.script && matches!(ctx.parent(), Ancestor::ProgramBody(_)) {
-            return;
-        }
         let plans: Vec<_> = (0..stmts.len())
-            .filter_map(|index| analysis::plan_loop(stmts, index, ctx))
+            .filter_map(|index| analysis::plan_loop(stmts, index, self.script, ctx))
             .collect();
         if plans.is_empty() {
             return;
