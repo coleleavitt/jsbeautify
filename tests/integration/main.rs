@@ -19,6 +19,7 @@ mod fixtures;
 mod format_cli;
 mod inspect;
 mod nesting;
+mod obfuscator;
 mod project;
 mod script_mode;
 mod turbopack;

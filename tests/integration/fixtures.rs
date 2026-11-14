@@ -13,6 +13,12 @@ pub fn obfuscated(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
 }
 
+/// Read a javascript-obfuscator output fixture by file name.
+pub fn obfuscator(name: &str) -> String {
+    let path = fixtures_dir().join("obfuscator").join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
+}
+
 /// Read a real webpack build fixture by file name (e.g. `"webpack5_prod_main.js"`).
 pub fn webpack(name: &str) -> String {
     let path = fixtures_dir().join("webpack").join(name);

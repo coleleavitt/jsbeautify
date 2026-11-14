@@ -20,17 +20,29 @@ impl AstDeobfuscator {
         self.run_dead_var_and_cff(allocator, program)
     }
 
-    /// Phases 1–3. Returns the scoping of the program they leave; the
-    /// string-array phases only detect, so they share Phase 1's scoping.
+    /// Phases 0.999–3. Returns the scoping of the program they leave; the
+    /// legacy string-array phases only detect, so they share Phase 1's scoping.
     fn run_string_array_and_decoder_phases<'a>(
         &mut self,
         allocator: &'a Allocator,
         program: &mut Program<'a>,
         scoping: Option<Scoping>,
     ) -> Scoping {
+        // Decoding first lets Phase 1 see the `'1|0|2'.split('|')` sequences
+        // that the obfuscator stores in its string array.
+        eprintln!("[DEOBFUSCATE] Phase 0.999: javascript-obfuscator string array");
+        let scoping = semantic::reuse_or_build(program, scoping);
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+        traverse_mut_with_ctx(&mut self.self_defending_string_array, program, &mut ctx);
+        eprintln!(
+            "[DEOBFUSCATE] Phase 0.999: Inlined {} decoder calls, removed {} rotation IIFEs",
+            self.self_defending_string_array.inlined(),
+            self.self_defending_string_array.removed_rotations()
+        );
+
         mem_ck("enter Phase 1 (control-flow unflatten)");
         eprintln!("[DEOBFUSCATE] Phase 1: SemanticBuilder for control_flow_unflattener");
-        let scoping = semantic::reuse_or_build(program, scoping);
+        let scoping = semantic::refresh(program, ctx.into_scoping(), self.self_defending_string_array.changed());
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
         eprintln!("[DEOBFUSCATE] Phase 1: Running control_flow_unflattener");
@@ -53,17 +65,6 @@ impl AstDeobfuscator {
 
         let (mut state, scoping) = ctx.into_state_and_scoping();
         self.string_array_rotation.finalize(&mut state);
-
-        eprintln!("[DEOBFUSCATE] Phase 2.5: Self-defending string array (javascript-obfuscator modern)");
-        let mut ctx = ReusableTraverseCtx::new(state, scoping, allocator);
-        traverse_mut_with_ctx(&mut self.self_defending_string_array, program, &mut ctx);
-        let (mut state, scoping) = ctx.into_state_and_scoping();
-        self.self_defending_string_array.finalize(&mut state);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 2.5: Found {} string arrays, {} decoders",
-            state.string_arrays.len(),
-            state.decoders.len()
-        );
 
         mem_ck("enter Phase 3 (decoder/string-array)");
         eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for decoder/string_array/dispatcher");
