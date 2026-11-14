@@ -3,8 +3,8 @@
 
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, AssignmentOperator, AssignmentTarget, BinaryOperator, BindingPattern,
-    CallExpression, Expression, ExpressionStatement, Function, IdentifierReference, Statement, UnaryOperator,
-    VariableDeclaration, WhileStatement,
+    CallExpression, Expression, ExpressionStatement, Function, IdentifierReference, SimpleAssignmentTarget, Statement,
+    UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind, WhileStatement,
 };
 use oxc_semantic::Scoping;
 use oxc_syntax::reference::ReferenceId;
@@ -13,32 +13,71 @@ use oxc_syntax::symbol::SymbolId;
 use super::checksum::Checksum;
 use crate::ast_deobfuscate::webpack::shapes::simple_params;
 
-/// `function W() { const a = [...strings]; W = function () { return a; }; return W(); }`
-pub(super) struct Wrapper {
+/// The string array: a self-replacing wrapper function, `function W() {
+/// const a = [...]; W = function () { return a; }; return W(); }`, or a
+/// top-level `var a = [...]`.
+pub(super) struct StringArray {
     pub(super) symbol: SymbolId,
     pub(super) strings: Vec<String>,
-    /// The self-assignment and the `W()` call inside the body.
-    pub(super) own_refs: [ReferenceId; 2],
+    /// The wrapper's self-assignment and self-call.
+    pub(super) own_refs: Vec<ReferenceId>,
+    /// The program-body index of a variable's declaration; `None` for a
+    /// wrapper function, which is hoisted.
+    pub(super) declared_at: Option<usize>,
 }
 
-/// `function D(i, k) { i = i - OFFSET; const s = W(); let v = s[i]; return v; }`
-/// (or `return s[i];`).
+/// `function D(i, k) { i = i - OFFSET; const s = W(); let v = s[i]; return v; }`,
+/// or `var D = function (i) { i = i - OFFSET; var v = a[i]; return v; }`; the
+/// offset is optional, and `return s[i];` may replace the temporary.
 pub(super) struct Decoder {
     pub(super) symbol: SymbolId,
-    /// The `W()` reference in the body.
-    pub(super) wrapper_ref: ReferenceId,
+    /// The reference to the array (or its wrapper) in the body.
+    pub(super) array_ref: ReferenceId,
     /// Added to a call's argument to get the array index.
     pub(super) offset: f64,
+    /// `i = i - OFFSET` converts a string argument to a number.
+    pub(super) coerces_strings: bool,
+    /// The program-body index of a variable's declaration; `None` for a
+    /// function declaration.
+    pub(super) declared_at: Option<usize>,
 }
 
-/// `(function (getArray, target) { const d = D, a = getArray(); while (!![]) {
-/// try { const c = CHECKSUM; if (c === target) break; else a.push(a.shift()); }
-/// catch (e) { a.push(a.shift()); } } }(W, TARGET));`
 pub(super) struct Rotation {
-    pub(super) wrapper_ref: ReferenceId,
-    pub(super) target: f64,
-    pub(super) checksum: Checksum,
+    /// The array (or wrapper) passed to the IIFE.
+    pub(super) array_ref: ReferenceId,
+    pub(super) kind: RotationKind,
 }
+
+pub(super) enum RotationKind {
+    /// `(function (getArray, target) { const d = D, a = getArray(); while (!![]) {
+    /// try { const c = CHECKSUM; if (c === target) break; else a.push(a.shift()); }
+    /// catch (e) { a.push(a.shift()); } } }(W, TARGET));`
+    Checksum { checksum: Checksum, target: f64 },
+    /// `(function (a, n) { var f = function (k) { while (--k) { a.push(a.shift()); } };
+    /// f(++n); }(A, N));`, with the counter `f` starts from.
+    Countdown(f64),
+}
+
+impl Rotation {
+    /// The number of `push(shift())` steps it performs before returning.
+    pub(super) fn steps(&self, strings: &[String], offset: f64) -> Option<usize> {
+        match &self.kind {
+            RotationKind::Checksum { checksum, target } => checksum.solve(strings, offset, *target),
+            // `while (--k)` runs `k - 1` times, and forever unless `k` is a
+            // positive integer.
+            RotationKind::Countdown(start) => {
+                if start.fract() != 0.0 || *start < 1.0 || *start > MAX_SAFE_INTEGER {
+                    return None;
+                }
+                let len = u64::try_from(strings.len()).ok().filter(|&len| len > 0)?;
+                usize::try_from((*start as u64 - 1) % len).ok()
+            }
+        }
+    }
+}
+
+/// 2^53, past which the counter no longer decrements exactly.
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0;
 
 pub(super) fn reference_symbol(scoping: &Scoping, ident: &IdentifierReference<'_>) -> Option<SymbolId> {
     scoping.get_reference(ident.reference_id.get()?).symbol_id()
@@ -80,7 +119,23 @@ fn single_declarator<'d, 'a>(decl: &'d VariableDeclaration<'a>) -> Option<(Symbo
     Some((binding_symbol(&declarator.id)?, declarator.init.as_ref()?))
 }
 
-pub(super) fn match_wrapper(func: &Function<'_>, scoping: &Scoping) -> Option<Wrapper> {
+/// The strings of an array literal holding only string literals.
+fn string_elements(init: &Expression<'_>) -> Option<Vec<String>> {
+    let Expression::ArrayExpression(elements) = init else {
+        return None;
+    };
+    let strings = elements
+        .elements
+        .iter()
+        .map(|element| match element {
+            ArrayExpressionElement::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.to_string()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!strings.is_empty()).then_some(strings)
+}
+
+pub(super) fn match_wrapper(func: &Function<'_>, scoping: &Scoping) -> Option<StringArray> {
     let symbol = func.id.as_ref()?.symbol_id.get()?;
     if !is_plain(func) || !simple_params(&func.params)?.is_empty() {
         return None;
@@ -95,18 +150,8 @@ pub(super) fn match_wrapper(func: &Function<'_>, scoping: &Scoping) -> Option<Wr
     };
 
     let (array, init) = single_declarator(array_decl)?;
-    let Expression::ArrayExpression(elements) = init else {
-        return None;
-    };
-    let strings = elements
-        .elements
-        .iter()
-        .map(|element| match element {
-            ArrayExpressionElement::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.to_string()),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    if strings.is_empty() || scoping.get_resolved_reference_ids(array).len() != 1 {
+    let strings = string_elements(init)?;
+    if scoping.get_resolved_reference_ids(array).len() != 1 {
         return None;
     }
 
@@ -138,63 +183,140 @@ pub(super) fn match_wrapper(func: &Function<'_>, scoping: &Scoping) -> Option<Wr
     }
 
     let self_call = call_without_args_of(ret.argument.as_ref()?, scoping, symbol)?;
-    Some(Wrapper {
+    Some(StringArray {
         symbol,
         strings,
-        own_refs: [target.reference_id.get()?, self_call],
+        own_refs: vec![target.reference_id.get()?, self_call],
+        declared_at: None,
     })
 }
 
-pub(super) fn match_decoder(func: &Function<'_>, scoping: &Scoping, wrapper: SymbolId) -> Option<Decoder> {
-    let symbol = func.id.as_ref()?.symbol_id.get()?;
+/// `var a = [...strings]` (or `let`/`const`) at program-body index `index`.
+pub(super) fn match_array_variable(decl: &VariableDeclaration<'_>, index: usize) -> Option<StringArray> {
+    if !matches!(
+        decl.kind,
+        VariableDeclarationKind::Var | VariableDeclarationKind::Let | VariableDeclarationKind::Const
+    ) {
+        return None;
+    }
+    let (symbol, init) = single_declarator(decl)?;
+    Some(StringArray {
+        symbol,
+        strings: string_elements(init)?,
+        own_refs: Vec::new(),
+        declared_at: Some(index),
+    })
+}
+
+/// A function that may be a decoder: a function declaration, or the only
+/// declarator of a variable declaration initialised to a function expression.
+pub(super) struct DecoderCandidate<'p, 'a> {
+    pub(super) symbol: SymbolId,
+    pub(super) func: &'p Function<'a>,
+    pub(super) declared_at: Option<usize>,
+}
+
+pub(super) fn decoder_candidate<'p, 'a>(stmt: &'p Statement<'a>, index: usize) -> Option<DecoderCandidate<'p, 'a>> {
+    match stmt {
+        Statement::FunctionDeclaration(func) => Some(DecoderCandidate {
+            symbol: func.id.as_ref()?.symbol_id.get()?,
+            func,
+            declared_at: None,
+        }),
+        Statement::VariableDeclaration(decl)
+            if matches!(
+                decl.kind,
+                VariableDeclarationKind::Var | VariableDeclarationKind::Let | VariableDeclarationKind::Const
+            ) =>
+        {
+            let (symbol, Expression::FunctionExpression(func)) = single_declarator(decl)? else {
+                return None;
+            };
+            Some(DecoderCandidate {
+                symbol,
+                func,
+                declared_at: Some(index),
+            })
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn match_decoder(
+    candidate: &DecoderCandidate<'_, '_>,
+    scoping: &Scoping,
+    array: &StringArray,
+) -> Option<Decoder> {
+    let func = candidate.func;
     let params = simple_params(&func.params)?;
     if !is_plain(func) || !(1..=2).contains(&params.len()) {
         return None;
     }
     let index = params[0];
-    let statements = func.body.as_ref()?.statements.as_slice();
-    let [
-        Statement::ExpressionStatement(shift),
-        Statement::VariableDeclaration(array_decl),
-        tail @ ..,
-    ] = statements
-    else {
-        return None;
+    let mut statements = func.body.as_ref()?.statements.as_slice();
+
+    let (offset, coerces_strings) = match statements {
+        [Statement::ExpressionStatement(shift), rest @ ..] => {
+            statements = rest;
+            match_offset(&shift.expression, scoping, index)?
+        }
+        _ => (0.0, false),
+    };
+    // A wrapper is called into a local; a variable is read directly.
+    let (source, wrapper_call) = if array.declared_at.is_none() {
+        let [Statement::VariableDeclaration(array_decl), rest @ ..] = statements else {
+            return None;
+        };
+        statements = rest;
+        let (local, init) = single_declarator(array_decl)?;
+        (local, Some(call_without_args_of(init, scoping, array.symbol)?))
+    } else {
+        (array.symbol, None)
     };
 
-    let offset = match_offset(&shift.expression, scoping, index)?;
-    let (array, init) = single_declarator(array_decl)?;
-    let wrapper_ref = call_without_args_of(init, scoping, wrapper)?;
-
-    let is_read = |expr: &Expression<'_>| {
-        matches!(expr, Expression::ComputedMemberExpression(member)
-            if !member.optional
-                && is_identifier_of(&member.object, scoping, array)
-                && is_identifier_of(&member.expression, scoping, index))
+    let read_ref = |expr: &Expression<'_>| match expr {
+        Expression::ComputedMemberExpression(member)
+            if !member.optional && is_identifier_of(&member.expression, scoping, index) =>
+        {
+            match &member.object {
+                Expression::Identifier(object) if reference_symbol(scoping, object) == Some(source) => {
+                    object.reference_id.get()
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     };
-    let reads_element = match tail {
-        [Statement::ReturnStatement(ret)] => ret.argument.as_ref().is_some_and(is_read),
+    let read = match statements {
+        [Statement::ReturnStatement(ret)] => read_ref(ret.argument.as_ref()?)?,
         [
             Statement::VariableDeclaration(value_decl),
             Statement::ReturnStatement(ret),
-        ] => single_declarator(value_decl).is_some_and(|(value, init)| {
-            is_read(init)
-                && ret
-                    .argument
-                    .as_ref()
-                    .is_some_and(|arg| is_identifier_of(arg, scoping, value))
-        }),
-        _ => false,
+        ] => {
+            let (value, init) = single_declarator(value_decl)?;
+            if !ret
+                .argument
+                .as_ref()
+                .is_some_and(|arg| is_identifier_of(arg, scoping, value))
+            {
+                return None;
+            }
+            read_ref(init)?
+        }
+        _ => return None,
     };
-    reads_element.then_some(Decoder {
-        symbol,
-        wrapper_ref,
+    Some(Decoder {
+        symbol: candidate.symbol,
+        array_ref: wrapper_call.unwrap_or(read),
         offset,
+        coerces_strings,
+        declared_at: candidate.declared_at,
     })
 }
 
-/// `i = i - N` or `i = i + N`, as the signed amount added to `i`.
-fn match_offset(expr: &Expression<'_>, scoping: &Scoping, index: SymbolId) -> Option<f64> {
+/// `i = i - N` or `i = i + N`, as the signed amount added to `i` and whether
+/// the operation converts a string `i` to a number.
+fn match_offset(expr: &Expression<'_>, scoping: &Scoping, index: SymbolId) -> Option<(f64, bool)> {
     let Expression::AssignmentExpression(assign) = expr else {
         return None;
     };
@@ -214,8 +336,8 @@ fn match_offset(expr: &Expression<'_>, scoping: &Scoping, index: SymbolId) -> Op
         return None;
     }
     match binary.operator {
-        BinaryOperator::Subtraction => Some(-amount.value),
-        BinaryOperator::Addition => Some(amount.value),
+        BinaryOperator::Subtraction => Some((-amount.value, true)),
+        BinaryOperator::Addition => Some((amount.value, false)),
         _ => None,
     }
 }
@@ -223,7 +345,7 @@ fn match_offset(expr: &Expression<'_>, scoping: &Scoping, index: SymbolId) -> Op
 pub(super) fn match_rotation(
     stmt: &ExpressionStatement<'_>,
     scoping: &Scoping,
-    wrapper: SymbolId,
+    array: &StringArray,
     decoder: SymbolId,
 ) -> Option<Rotation> {
     let Expression::CallExpression(call) = stmt.expression.without_parentheses() else {
@@ -232,18 +354,38 @@ pub(super) fn match_rotation(
     let Expression::FunctionExpression(func) = call.callee.without_parentheses() else {
         return None;
     };
-    let [Argument::Identifier(wrapper_arg), Argument::NumericLiteral(target)] = call.arguments.as_slice() else {
+    let [Argument::Identifier(array_arg), Argument::NumericLiteral(number)] = call.arguments.as_slice() else {
         return None;
     };
     let params = simple_params(&func.params)?;
-    let [get_array, target_param] = params.as_slice() else {
+    let [array_param, number_param] = params.as_slice() else {
         return None;
     };
-    if call.optional || !is_plain(func) || reference_symbol(scoping, wrapper_arg) != Some(wrapper) {
+    if call.optional || !is_plain(func) || reference_symbol(scoping, array_arg) != Some(array.symbol) {
         return None;
     }
-
     let statements = func.body.as_ref()?.statements.as_slice();
+    let kind = if array.declared_at.is_none() {
+        match_checksum_body(statements, scoping, *array_param, *number_param, number.value, decoder)?
+    } else {
+        match_countdown_body(statements, scoping, *array_param, *number_param, number.value)?
+    };
+    Some(Rotation {
+        array_ref: array_arg.reference_id.get()?,
+        kind,
+    })
+}
+
+/// `const d = D, a = getArray(); while (...) {...}`: the checksum loop over
+/// the array the wrapper returns.
+fn match_checksum_body(
+    statements: &[Statement<'_>],
+    scoping: &Scoping,
+    get_array: SymbolId,
+    target_param: SymbolId,
+    target: f64,
+    decoder: SymbolId,
+) -> Option<RotationKind> {
     let [prelude @ .., Statement::WhileStatement(while_stmt)] = statements else {
         return None;
     };
@@ -258,20 +400,78 @@ pub(super) fn match_rotation(
             let init = declarator.init.as_ref()?;
             if is_identifier_of(init, scoping, decoder) {
                 decoders.push(symbol);
-            } else if array.is_none() && call_without_args_of(init, scoping, *get_array).is_some() {
+            } else if array.is_none() && call_without_args_of(init, scoping, get_array).is_some() {
                 array = Some(symbol);
             } else {
                 return None;
             }
         }
     }
-    let checksum = match_rotation_loop(while_stmt, scoping, array?, *target_param)?;
-
-    Some(Rotation {
-        wrapper_ref: wrapper_arg.reference_id.get()?,
-        target: target.value,
+    let checksum = match_rotation_loop(while_stmt, scoping, array?, target_param)?;
+    Some(RotationKind::Checksum {
         checksum: Checksum::compile(checksum, scoping, &decoders)?,
+        target,
     })
+}
+
+/// `var f = function (k) { while (--k) { a.push(a.shift()); } }; f(++n);`,
+/// or `f(<number literal>)`, with `n` bound to `number`.
+fn match_countdown_body(
+    statements: &[Statement<'_>],
+    scoping: &Scoping,
+    array: SymbolId,
+    counter_param: SymbolId,
+    number: f64,
+) -> Option<RotationKind> {
+    let [
+        Statement::VariableDeclaration(decl),
+        Statement::ExpressionStatement(run),
+    ] = statements
+    else {
+        return None;
+    };
+    let (rotate, Expression::FunctionExpression(func)) = single_declarator(decl)? else {
+        return None;
+    };
+    let params = simple_params(&func.params)?;
+    let [counter] = params.as_slice() else {
+        return None;
+    };
+    let [Statement::WhileStatement(while_stmt)] = func.body.as_ref()?.statements.as_slice() else {
+        return None;
+    };
+    let decrements_counter = matches!(&while_stmt.test, Expression::UpdateExpression(update)
+        if update.prefix
+            && update.operator == UpdateOperator::Decrement
+            && matches!(&update.argument, SimpleAssignmentTarget::AssignmentTargetIdentifier(id)
+                if reference_symbol(scoping, id) == Some(*counter)));
+    if !is_plain(func) || !decrements_counter || !is_rotate_step(std::slice::from_ref(&while_stmt.body), scoping, array)
+    {
+        return None;
+    }
+
+    let Expression::CallExpression(call) = &run.expression else {
+        return None;
+    };
+    let [arg] = call.arguments.as_slice() else {
+        return None;
+    };
+    if call.optional || !is_identifier_of(&call.callee, scoping, rotate) {
+        return None;
+    }
+    let start = match arg {
+        Argument::NumericLiteral(lit) => lit.value,
+        Argument::UpdateExpression(update)
+            if update.prefix
+                && update.operator == UpdateOperator::Increment
+                && matches!(&update.argument, SimpleAssignmentTarget::AssignmentTargetIdentifier(id)
+                    if reference_symbol(scoping, id) == Some(counter_param)) =>
+        {
+            number + 1.0
+        }
+        _ => return None,
+    };
+    Some(RotationKind::Countdown(start))
 }
 
 /// The checksum expression of `while (!![]) { try { const c = CHECKSUM; if (c

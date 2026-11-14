@@ -4,7 +4,7 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 
 use super::SelfDefendingStringArray;
-use super::checksum::parse_int;
+use super::checksum::{parse_int, string_to_number};
 use crate::ast_deobfuscate::{DeobfuscateState, semantic};
 
 /// `code` without whitespace, so assertions do not depend on the layout.
@@ -174,6 +174,72 @@ fn block_function_can_overwrite_a_var_alias() {
 }
 
 #[test]
+fn decodes_a_variable_array_rotated_by_a_countdown() {
+    let code = include_str!("../../../tests/fixtures/obfuscated/simple_string_array.js");
+    let (output, pass) = run(code);
+    assert_eq!(pass.inlined(), 3, "{output}");
+    assert_eq!(pass.removed_rotations(), 1, "{output}");
+    assert!(
+        output.contains(r#"console.log("World");console.log("Test");console.log("Message");"#),
+        "{output}"
+    );
+}
+
+/// The older obfuscator layout: a variable array, a countdown rotation by
+/// `++n`, and a decoder variable declared after it that takes hex strings.
+const LEGACY: &str = r"
+var _0x2e3c = ['second', 'third', 'log', 'Hello World!'];
+(function (_0xa, _0xn) {
+    var _0xr = function (_0xk) { while (--_0xk) { _0xa['push'](_0xa['shift']()); } };
+    _0xr(++_0xn);
+}(_0x2e3c, 0x6));
+var _0x4a2b = function (_0xi, _0xj) { _0xi = _0xi - 0x0; var _0xv = _0x2e3c[_0xi]; return _0xv; };
+";
+
+#[test]
+fn decodes_the_legacy_layout_with_string_indexes() {
+    let (output, pass) = run(&format!(
+        "{LEGACY}console[_0x4a2b('0x0')](_0x4a2b('0x1'), _0x4a2b(' 3 '));"
+    ));
+    assert_eq!(pass.inlined(), 3, "{output}");
+    assert_eq!(pass.removed_rotations(), 1, "{output}");
+    // `squash` drops the space in "Hello World!".
+    assert!(output.contains(r#"console["log"]("HelloWorld!","third");"#), "{output}");
+}
+
+#[test]
+fn keeps_string_indexes_it_cannot_convert() {
+    let (output, pass) = run(&format!("{LEGACY}f(_0x4a2b('1e0'), _0x4a2b('-0x1'), _0x4a2b('0x1'));"));
+    assert_eq!(pass.inlined(), 1, "{output}");
+    assert_eq!(pass.removed_rotations(), 0, "{output}");
+}
+
+#[test]
+fn string_index_without_subtraction_is_not_converted() {
+    let (output, pass) = run("
+        var _0xa = ['x', 'y'];
+        function _0xd(i) { return _0xa[i]; }
+        f(_0xd('1'), _0xd(1));
+    ");
+    assert_eq!(pass.inlined(), 1, "{output}");
+    assert!(output.contains(r#"f(_0xd("1"),"y")"#), "{output}");
+}
+
+#[test]
+fn decoder_variable_after_running_code_bails() {
+    let code = LEGACY.replace("var _0x4a2b", "f(); var _0x4a2b");
+    let (output, pass) = run(&format!("{code}g(_0x4a2b('0x0'));"));
+    assert!(!pass.changed(), "{output}");
+}
+
+#[test]
+fn endless_countdown_bails() {
+    let code = LEGACY.replace("_0xr(++_0xn)", "_0xr(0)");
+    let (output, pass) = run(&format!("{code}g(_0x4a2b('0x0'));"));
+    assert!(!pass.changed(), "{output}");
+}
+
+#[test]
 fn reassigned_decoder_bails() {
     assert_untouched("_0xdec = function () { return 'z'; }; console.log(_0xdec(0x100));");
 }
@@ -234,4 +300,14 @@ fn parse_int_follows_javascript() {
     assert!(parse_int("-0").is_some_and(|v| v == 0.0 && v.is_sign_negative()));
     assert_eq!(parse_int("0x20000000000001"), None);
     assert_eq!(parse_int("123456789012345678901"), None);
+}
+
+#[test]
+fn string_to_number_follows_javascript() {
+    assert_eq!(string_to_number("0x1f"), Some(31.0));
+    assert_eq!(string_to_number(" 010\n"), Some(10.0));
+    assert_eq!(string_to_number(""), Some(0.0));
+    assert_eq!(string_to_number("1e3"), None);
+    assert_eq!(string_to_number("-1"), None);
+    assert_eq!(string_to_number("0x"), None);
 }

@@ -2,9 +2,9 @@
 //! decoder calls read a known string, and plans the rewrite.
 
 use oxc_ast::ast::{
-    Argument, ArrowFunctionExpression, BindingPattern, CallExpression, ChainElement, Expression, ExpressionStatement,
-    Function, FunctionBody, IdentifierReference, Program, Statement, SwitchCase, VariableDeclaration,
-    VariableDeclarationKind, VariableDeclarator, WithStatement,
+    Argument, ArrayExpressionElement, ArrowFunctionExpression, BindingPattern, CallExpression, ChainElement,
+    Expression, ExpressionStatement, Function, FunctionBody, IdentifierReference, Program, Statement, SwitchCase,
+    VariableDeclaration, VariableDeclarationKind, VariableDeclarator, WithStatement,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
@@ -13,8 +13,11 @@ use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::checksum::array_index;
-use super::shape::{Decoder, Wrapper, match_decoder, match_rotation, match_wrapper, reference_symbol};
+use super::checksum::{array_index, string_to_number};
+use super::shape::{
+    Decoder, DecoderCandidate, RotationKind, StringArray, decoder_candidate, match_array_variable, match_decoder,
+    match_rotation, match_wrapper, reference_symbol,
+};
 
 /// Upper bound on the string arrays analysed per program; each costs one walk.
 const MAX_ARRAYS: usize = 8;
@@ -43,22 +46,24 @@ pub(super) fn analyze(program: &Program<'_>, scoping: &Scoping) -> Plan {
     if scoping.root_scope_flags().contains_direct_eval() {
         return plan;
     }
-    let functions: Vec<&Function<'_>> = program
+    let arrays = program.body.iter().enumerate().filter_map(|(index, stmt)| match stmt {
+        Statement::FunctionDeclaration(func) => match_wrapper(func, scoping),
+        Statement::VariableDeclaration(decl) => match_array_variable(decl, index),
+        _ => None,
+    });
+    let decoders: Vec<DecoderCandidate<'_, '_>> = program
         .body
         .iter()
-        .filter_map(|stmt| match stmt {
-            Statement::FunctionDeclaration(func) => Some(&**func),
-            _ => None,
-        })
+        .enumerate()
+        .filter_map(|(index, stmt)| decoder_candidate(stmt, index))
         .collect();
     let mut inline_budget = program
         .source_text
         .len()
         .saturating_mul(INLINE_BYTES_PER_SOURCE_BYTE)
         .max(MIN_INLINE_BYTES);
-    let wrappers = functions.iter().filter_map(|func| match_wrapper(func, scoping));
-    for wrapper in wrappers.take(MAX_ARRAYS) {
-        analyze_array(program, scoping, &functions, &wrapper, &mut inline_budget, &mut plan);
+    for array in arrays.take(MAX_ARRAYS) {
+        analyze_array(program, scoping, &decoders, &array, &mut inline_budget, &mut plan);
     }
     plan
 }
@@ -66,20 +71,20 @@ pub(super) fn analyze(program: &Program<'_>, scoping: &Scoping) -> Plan {
 fn analyze_array(
     program: &Program<'_>,
     scoping: &Scoping,
-    functions: &[&Function<'_>],
-    wrapper: &Wrapper,
+    candidates: &[DecoderCandidate<'_, '_>],
+    array: &StringArray,
     inline_budget: &mut usize,
     plan: &mut Plan,
 ) -> Option<()> {
-    let decoders: Vec<Decoder> = functions
+    let decoders: Vec<Decoder> = candidates
         .iter()
-        .filter_map(|func| match_decoder(func, scoping, wrapper.symbol))
+        .filter_map(|candidate| match_decoder(candidate, scoping, array))
         .collect();
     let [decoder] = decoders.as_slice() else {
         return None;
     };
     let decoder_refs = scoping.get_resolved_reference_ids(decoder.symbol);
-    if !scoping.symbol_redeclarations(wrapper.symbol).is_empty()
+    if !scoping.symbol_redeclarations(array.symbol).is_empty()
         || !scoping.symbol_redeclarations(decoder.symbol).is_empty()
         || decoder_refs.iter().any(|&id| scoping.get_reference(id).is_write())
     {
@@ -92,56 +97,73 @@ fn analyze_array(
         .enumerate()
         .filter_map(|(index, stmt)| match stmt {
             Statement::ExpressionStatement(expr) => {
-                match_rotation(expr, scoping, wrapper.symbol, decoder.symbol).map(|rotation| (index, &**expr, rotation))
+                match_rotation(expr, scoping, array, decoder.symbol).map(|rotation| (index, &**expr, rotation))
             }
             _ => None,
         })
         .collect();
-    let mut wrapper_uses = vec![wrapper.own_refs[0], wrapper.own_refs[1], decoder.wrapper_ref];
-    let mut strings = wrapper.strings.clone();
-    let rotation_stmt = match rotations.as_slice() {
+    let mut array_uses = array.own_refs.clone();
+    array_uses.push(decoder.array_ref);
+    let mut strings = array.strings.clone();
+    let rotation = match rotations.as_slice() {
         [] => None,
         [(index, stmt, rotation)] => {
-            // Decoder calls must all run after the rotation: nothing before it
-            // may run code, and no imported module may call in first.
-            let has_imports = program
-                .body
-                .iter()
-                .any(|stmt| matches!(stmt, Statement::ImportDeclaration(_)));
-            if has_imports || !program.body[..*index].iter().all(|stmt| is_inert(stmt, scoping)) {
-                return None;
-            }
-            let steps = rotation.checksum.solve(&strings, decoder.offset, rotation.target)?;
+            let steps = rotation.steps(&strings, decoder.offset)?;
             strings.rotate_left(steps);
-            wrapper_uses.push(rotation.wrapper_ref);
-            Some(*stmt)
+            array_uses.push(rotation.array_ref);
+            Some((*index, *stmt, matches!(rotation.kind, RotationKind::Checksum { .. })))
         }
         _ => return None,
     };
     // Nothing but the decoder and the rotation may reach the array.
-    let wrapper_refs = scoping.get_resolved_reference_ids(wrapper.symbol);
-    if wrapper_refs.len() != wrapper_uses.len() || !wrapper_refs.iter().all(|id| wrapper_uses.contains(id)) {
+    let array_refs = scoping.get_resolved_reference_ids(array.symbol);
+    if array_refs.len() != array_uses.len() || !array_refs.iter().all(|id| array_uses.contains(id)) {
         return None;
     }
 
-    // Aliases declared before any code but the rotation runs hold the
-    // decoder wherever they are read.
-    let early_declarations = program
+    // Statements up to here run no code but the rotation, so variables they
+    // declare are set before any decoder call. A rotation must come after
+    // the array variable it rotates and the decoder variable it calls.
+    let prefix: Vec<&Statement<'_>> = program
         .body
         .iter()
-        .take_while(|stmt| {
-            is_inert(stmt, scoping) || rotation_stmt.is_some_and(|rotation| is_statement(stmt, rotation))
-        })
+        .take_while(|stmt| is_inert(stmt, scoping) || rotation.is_some_and(|(_, rot, _)| is_statement(stmt, rot)))
+        .collect();
+    if let Some((index, _, calls_decoder)) = rotation
+        && (index >= prefix.len()
+            || array.declared_at.is_some_and(|at| at > index)
+            || (calls_decoder && decoder.declared_at.is_some_and(|at| at > index)))
+    {
+        return None;
+    }
+    let declared_late = |at: Option<usize>| at.is_some_and(|at| at >= prefix.len());
+    if declared_late(array.declared_at) || declared_late(decoder.declared_at) {
+        return None;
+    }
+    // An imported module may call into this one before its body runs.
+    let needs_order = rotation.is_some() || array.declared_at.is_some() || decoder.declared_at.is_some();
+    if needs_order
+        && program
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, Statement::ImportDeclaration(_)))
+    {
+        return None;
+    }
+
+    // Aliases declared in that prefix hold the decoder wherever they are read.
+    let early_declarations = prefix
+        .iter()
         .filter_map(|stmt| match stmt {
             Statement::VariableDeclaration(decl) => Some(address(&**decl)),
             _ => None,
         })
         .collect();
-    let rotation_stmt = rotation_stmt.map(address);
+    let rotation_stmt = rotation.map(|(_, stmt, _)| address(stmt));
     let mut walker = Walker::new(
         scoping,
         decoder,
-        wrapper.symbol,
+        array.symbol,
         &strings,
         rotation_stmt,
         early_declarations,
@@ -158,7 +180,8 @@ fn is_statement(stmt: &Statement<'_>, expr: &ExpressionStatement<'_>) -> bool {
 }
 
 /// A top-level statement that runs no code: a function declaration, or a
-/// variable declaration whose initialisers only read top-level functions.
+/// variable declaration whose initialisers only create a function or an
+/// array of string literals, or read a top-level function.
 fn is_inert(stmt: &Statement<'_>, scoping: &Scoping) -> bool {
     match stmt {
         Statement::FunctionDeclaration(_) | Statement::EmptyStatement(_) => true,
@@ -167,7 +190,11 @@ fn is_inert(stmt: &Statement<'_>, scoping: &Scoping) -> bool {
                 decl.kind,
                 VariableDeclarationKind::Var | VariableDeclarationKind::Let | VariableDeclarationKind::Const
             ) && decl.declarations.iter().all(|declarator| match &declarator.init {
-                None => true,
+                None | Some(Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_)) => true,
+                Some(Expression::ArrayExpression(array)) => array
+                    .elements
+                    .iter()
+                    .all(|element| matches!(element, ArrayExpressionElement::StringLiteral(_))),
                 Some(Expression::Identifier(id)) => reference_symbol(scoping, id).is_some_and(|symbol| {
                     scoping.symbol_flags(symbol).is_function()
                         && scoping.symbol_scope_id(symbol) == scoping.root_scope_id()
@@ -196,8 +223,9 @@ struct Walker<'s> {
     scoping: &'s Scoping,
     decoder: SymbolId,
     offset: f64,
+    coerces_strings: bool,
     strings: &'s [String],
-    /// The decoder and the array wrapper.
+    /// The decoder and the array.
     guarded: [SymbolId; 2],
     rotation: Option<usize>,
     in_rotation: bool,
@@ -229,7 +257,7 @@ impl<'s> Walker<'s> {
     fn new(
         scoping: &'s Scoping,
         decoder: &Decoder,
-        wrapper: SymbolId,
+        array: SymbolId,
         strings: &'s [String],
         rotation: Option<usize>,
         early_declarations: FxHashSet<usize>,
@@ -238,8 +266,9 @@ impl<'s> Walker<'s> {
             scoping,
             decoder: decoder.symbol,
             offset: decoder.offset,
+            coerces_strings: decoder.coerces_strings,
             strings,
-            guarded: [decoder.symbol, wrapper],
+            guarded: [decoder.symbol, array],
             rotation,
             in_rotation: false,
             with_depth: 0,
@@ -316,8 +345,13 @@ impl<'s> Walker<'s> {
         let Expression::Identifier(callee) = &call.callee else {
             return;
         };
-        let [Argument::NumericLiteral(arg)] = call.arguments.as_slice() else {
-            return;
+        let arg = match call.arguments.as_slice() {
+            [Argument::NumericLiteral(lit)] => lit.value,
+            [Argument::StringLiteral(lit)] if self.coerces_strings => match string_to_number(&lit.value) {
+                Some(value) => value,
+                None => return,
+            },
+            _ => return,
         };
         let (Some(reference), Some(symbol)) = (callee.reference_id.get(), reference_symbol(self.scoping, callee))
         else {
@@ -326,7 +360,7 @@ impl<'s> Walker<'s> {
         if call.optional || !self.is_tracked(symbol) || !self.can_use(symbol) {
             return;
         }
-        if let Some(index) = array_index(arg.value + self.offset, self.strings.len())
+        if let Some(index) = array_index(arg + self.offset, self.strings.len())
             && let Some(budget) = self.inline_budget.checked_sub(self.strings[index].len())
         {
             self.inline_budget = budget;

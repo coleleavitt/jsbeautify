@@ -48,9 +48,8 @@ fn assert_decoded(name: &str, decoder: &str) {
     let numeric_call = Regex::new(r"\b[\w$]+\((?:0x[0-9a-fA-F]+|\d+)\)").expect("regex");
     assert!(!numeric_call.is_match(&out), "a decoder call is left in {name}:\n{out}");
     assert!(!out.contains("parseInt"), "the rotation IIFE is left in {name}:\n{out}");
-    assert_eq!(
-        out.matches(&format!("{decoder}(")).count(),
-        1,
+    assert!(
+        out.matches(&format!("{decoder}(")).count() <= 1,
         "only the decoder's declaration may name it in {name}:\n{out}"
     );
     assert_same_stdout(name, &src, &out);
@@ -64,6 +63,14 @@ fn decodes_default_obfuscator_string_array() {
 #[test]
 fn decodes_string_array_through_nested_aliases() {
     assert_decoded("string_array_nested_aliases.js", "_0x4285");
+}
+
+#[test]
+fn rotates_a_countdown_string_array_like_node() {
+    let src = fixtures::obfuscated("simple_string_array.js");
+    let out = deobfuscate("simple_string_array.js", &src);
+    assert!(out.matches("_0xdec(").count() <= 1, "{out}");
+    assert_same_stdout("simple_string_array.js", &src, &out);
 }
 
 #[test]

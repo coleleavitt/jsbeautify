@@ -209,6 +209,25 @@ pub(super) fn parse_int(s: &str) -> Option<f64> {
     Some(if negative { -value } else { value })
 }
 
+/// JavaScript's `ToNumber` of a string, for decimal or `0x` hex digits
+/// between optional whitespace (an empty string is 0). `None` for any
+/// other form.
+pub(super) fn string_to_number(s: &str) -> Option<f64> {
+    let s = s.trim_matches(is_js_whitespace);
+    if s.is_empty() {
+        return Some(0.0);
+    }
+    let (radix, digits) = match s.get(..2) {
+        Some("0x" | "0X") => (16, &s[2..]),
+        _ => (10, s),
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    let value = u64::from_str_radix(digits, radix).ok()?;
+    (value <= 1 << 53).then_some(value as f64)
+}
+
 /// ECMAScript `WhiteSpace` and `LineTerminator`, which `parseInt` skips.
 const fn is_js_whitespace(c: char) -> bool {
     matches!(

@@ -2,10 +2,14 @@
 //!
 //! The obfuscator emits three top-level pieces:
 //!
-//! 1. **Array wrapper**: `function W() { const a = [...]; W = function () { return a; }; return W(); }`
-//! 2. **Decoder**: `function D(i, k) { i = i - OFFSET; const s = W(); let v = s[i]; return v; }`
+//! 1. **Array**: a wrapper, `function W() { const a = [...]; W = function () {
+//!    return a; }; return W(); }`, or, in older releases, `var a = [...]`.
+//! 2. **Decoder**: `function D(i, k) { i = i - OFFSET; const s = W(); let v =
+//!    s[i]; return v; }`, or `var D = function (i) { i = i - OFFSET; var v =
+//!    a[i]; return v; }`, which older releases call with hex strings (`D('0x1')`).
 //! 3. **Rotation IIFE** (optional): `push(shift())` on the array until a
-//!    `parseInt(D(N))` checksum equals a target literal.
+//!    `parseInt(D(N))` checksum equals a target literal, or, in older
+//!    releases, `while (--k)` from a counter.
 //!
 //! The pass matches the pieces through oxc symbols, solves the rotation
 //! statically, and replaces each `D(<number literal>)` call, made directly
