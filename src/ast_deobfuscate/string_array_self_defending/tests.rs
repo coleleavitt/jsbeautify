@@ -13,8 +13,12 @@ fn squash(code: &str) -> String {
 }
 
 fn run(code: &str) -> (String, SelfDefendingStringArray) {
+    run_as(code, SourceType::cjs())
+}
+
+fn run_as(code: &str, source_type: SourceType) -> (String, SelfDefendingStringArray) {
     let allocator = Allocator::default();
-    let ret = Parser::new(&allocator, code, SourceType::cjs()).parse();
+    let ret = Parser::new(&allocator, code, source_type).parse();
     assert!(ret.diagnostics.is_empty(), "parse errors: {:?}", ret.diagnostics);
     let mut program = ret.program;
     let scoping = semantic::scoping(&program);
@@ -294,6 +298,55 @@ fn stops_inlining_past_the_size_budget() {
     ));
     // The budget is four times the ~300 kB source.
     assert_eq!(pass.inlined(), 4, "{}", output.len());
+}
+
+#[test]
+fn script_keeps_the_rotation_and_top_level_aliases_other_scripts_see() {
+    let code = include_str!("../../../tests/fixtures/obfuscator/string_array_default.js");
+    let (output, pass) = run_as(code, SourceType::script());
+    assert_eq!(pass.inlined(), 8, "{output}");
+    assert_eq!(pass.removed_rotations(), 0, "{output}");
+    assert!(output.contains("parseInt"), "{output}");
+    assert!(output.contains("const_0x43940f=_0x4079;"), "{output}");
+    // Aliases local to a function are not visible to other scripts.
+    assert!(
+        !output.contains("_0x39a9d7") && !output.contains("_0x5c9b86"),
+        "{output}"
+    );
+}
+
+#[test]
+fn script_global_object_writes_bail() {
+    for body in [
+        "globalThis._0xdec = function () { return 'evil'; };",
+        "this._0xdec = null;",
+        "window['_0x' + 'dec'] = null;",
+        "Object.assign(self, {});",
+        "(0, eval)('_0xdec = null');",
+        "new Function('_0xdec = null')();",
+        "const top_ = _0xdec; window.top_ = null;",
+    ] {
+        let (output, pass) = run_as(
+            &format!("{PRELUDE}{body} console.log(_0xdec(0x100));"),
+            SourceType::script(),
+        );
+        assert!(!pass.changed(), "{body}:\n{output}");
+    }
+}
+
+#[test]
+fn script_harmless_global_object_uses_do_not_bail() {
+    let (output, pass) = run_as(
+        &format!(
+            "{PRELUDE}
+            if (typeof window !== 'undefined') window.onload = null;
+            function f() {{ this._0xdec = 1; }}
+            class C {{ x = this._0xdec; static {{ this._0xdec = 1; }} }}
+            console.log(_0xdec(0x100));"
+        ),
+        SourceType::script(),
+    );
+    assert_eq!(pass.inlined(), 1, "{output}");
 }
 
 #[test]

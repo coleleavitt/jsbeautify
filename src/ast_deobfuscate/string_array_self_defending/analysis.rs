@@ -2,9 +2,10 @@
 //! decoder calls read a known string, and plans the rewrite.
 
 use oxc_ast::ast::{
-    Argument, ArrayExpressionElement, ArrowFunctionExpression, BindingPattern, CallExpression, ChainElement,
-    Expression, ExpressionStatement, Function, FunctionBody, IdentifierReference, Program, Statement, SwitchCase,
-    VariableDeclaration, VariableDeclarationKind, VariableDeclarator, WithStatement,
+    AccessorProperty, Argument, ArrayExpressionElement, ArrowFunctionExpression, BindingPattern, CallExpression,
+    ChainElement, Expression, ExpressionStatement, Function, FunctionBody, IdentifierReference, Program,
+    PropertyDefinition, Statement, StaticBlock, StaticMemberExpression, SwitchCase, ThisExpression, UnaryExpression,
+    UnaryOperator, VariableDeclaration, VariableDeclarationKind, VariableDeclarator, WithStatement,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
@@ -19,6 +20,8 @@ use super::shape::{
     match_rotation, match_wrapper, reference_symbol,
 };
 
+/// Unbound names that refer to the global object in browsers and Node.
+const GLOBAL_OBJECT_NAMES: [&str; 7] = ["globalThis", "window", "self", "global", "frames", "parent", "top"];
 /// Upper bound on the string arrays analysed per program; each costs one walk.
 const MAX_ARRAYS: usize = 8;
 /// Inlined bytes allowed per source byte, so that inlining one long string
@@ -44,6 +47,12 @@ pub(super) fn address<T>(node: &T) -> usize {
 pub(super) fn analyze(program: &Program<'_>, scoping: &Scoping) -> Plan {
     let mut plan = Plan::default();
     if scoping.root_scope_flags().contains_direct_eval() {
+        return plan;
+    }
+    // In a classic script the decoder is a global, which indirect eval or
+    // `Function` code can overwrite by name.
+    let unresolved = scoping.root_unresolved_references();
+    if program.source_type.is_script() && (unresolved.contains_key("eval") || unresolved.contains_key("Function")) {
         return plan;
     }
     let arrays = program.body.iter().enumerate().filter_map(|(index, stmt)| match stmt {
@@ -168,6 +177,7 @@ fn analyze_array(
         rotation_stmt,
         early_declarations,
     );
+    walker.script = program.source_type.is_script();
     walker.inline_budget = *inline_budget;
     walker.visit_program(program);
     *inline_budget = walker.inline_budget;
@@ -217,13 +227,14 @@ struct Alias {
     /// A `var`, which a sloppy-mode block function of the same name could
     /// overwrite (Annex B).
     is_var: bool,
+    /// Declared at the top level of a classic script, where other scripts
+    /// see it.
+    global: bool,
 }
 
 struct Walker<'s> {
     scoping: &'s Scoping,
-    decoder: SymbolId,
-    offset: f64,
-    coerces_strings: bool,
+    decoder: &'s Decoder,
     strings: &'s [String],
     /// The decoder and the array.
     guarded: [SymbolId; 2],
@@ -251,12 +262,21 @@ struct Walker<'s> {
     replacements: Vec<(ReferenceId, SymbolId, String)>,
     /// Bytes still allowed to be inlined.
     inline_budget: usize,
+    /// A classic script, whose top-level bindings are shared with other
+    /// scripts and reachable through the global object.
+    script: bool,
+    /// Enclosing functions and class members, which give `this` a non-global value.
+    this_depth: usize,
+    /// Properties named on the global object (`window.x`, `this.x` at the top level).
+    global_members: FxHashSet<String>,
+    /// The global object is used other than as `typeof` or by a static member.
+    global_object_escapes: bool,
 }
 
 impl<'s> Walker<'s> {
     fn new(
         scoping: &'s Scoping,
-        decoder: &Decoder,
+        decoder: &'s Decoder,
         array: SymbolId,
         strings: &'s [String],
         rotation: Option<usize>,
@@ -264,9 +284,7 @@ impl<'s> Walker<'s> {
     ) -> Self {
         Self {
             scoping,
-            decoder: decoder.symbol,
-            offset: decoder.offset,
-            coerces_strings: decoder.coerces_strings,
+            decoder,
             strings,
             guarded: [decoder.symbol, array],
             rotation,
@@ -283,11 +301,15 @@ impl<'s> Walker<'s> {
             rotation_refs: FxHashMap::default(),
             replacements: Vec::new(),
             inline_budget: 0,
+            script: false,
+            this_depth: 0,
+            global_members: FxHashSet::default(),
+            global_object_escapes: false,
         }
     }
 
     fn is_tracked(&self, symbol: SymbolId) -> bool {
-        symbol == self.decoder || self.aliases.contains_key(&symbol)
+        symbol == self.decoder.symbol || self.aliases.contains_key(&symbol)
     }
 
     /// Whether a reference to `symbol` here runs only after the decoder or
@@ -299,7 +321,7 @@ impl<'s> Walker<'s> {
         if self.in_rotation || self.with_depth > 0 {
             return false;
         }
-        if symbol == self.decoder {
+        if symbol == self.decoder.symbol {
             return true;
         }
         self.aliases.get(&symbol).is_some_and(|alias| {
@@ -311,7 +333,7 @@ impl<'s> Walker<'s> {
         })
     }
 
-    fn register_alias(&mut self, declarator: &VariableDeclarator<'_>, early: bool, is_var: bool) {
+    fn register_alias(&mut self, declarator: &VariableDeclarator<'_>, early: bool, is_var: bool, global: bool) {
         let BindingPattern::BindingIdentifier(binding) = &declarator.id else {
             return;
         };
@@ -335,6 +357,7 @@ impl<'s> Walker<'s> {
                     fn_depth: self.frames.len(),
                     early,
                     is_var,
+                    global,
                 },
             );
             self.alias_order.push(symbol);
@@ -345,7 +368,7 @@ impl<'s> Walker<'s> {
         let Expression::Identifier(callee) = &call.callee else {
             return;
         };
-        let Some(arg) = index_literal(call.arguments.as_slice(), self.coerces_strings) else {
+        let Some(arg) = index_literal(call.arguments.as_slice(), self.decoder.coerces_strings) else {
             return;
         };
         let (Some(reference), Some(symbol)) = (callee.reference_id.get(), reference_symbol(self.scoping, callee))
@@ -355,12 +378,48 @@ impl<'s> Walker<'s> {
         if call.optional || !self.is_tracked(symbol) || !self.can_use(symbol) {
             return;
         }
-        if let Some(index) = array_index(arg + self.offset, self.strings.len())
+        if let Some(index) = array_index(arg + self.decoder.offset, self.strings.len())
             && let Some(budget) = self.inline_budget.checked_sub(self.strings[index].len())
         {
             self.inline_budget = budget;
             self.replacements.push((reference, symbol, self.strings[index].clone()));
         }
+    }
+
+    /// Whether code can overwrite the decoder, the array or a top-level
+    /// alias through the global object.
+    fn global_object_may_overwrite(&self) -> bool {
+        if !self.script {
+            return false;
+        }
+        let global_aliases = self
+            .aliases
+            .iter()
+            .filter(|(_, alias)| alias.global)
+            .map(|(&symbol, _)| symbol);
+        self.global_object_escapes
+            || self
+                .guarded
+                .iter()
+                .copied()
+                .chain(global_aliases)
+                .any(|symbol| self.global_members.contains(self.scoping.symbol_name(symbol)))
+    }
+
+    fn is_global_object(&self, expr: &Expression<'_>) -> bool {
+        match expr.without_parentheses() {
+            Expression::ThisExpression(_) => self.this_depth == 0,
+            Expression::Identifier(id) => self.is_global_object_name(id),
+            _ => false,
+        }
+    }
+
+    fn is_global_object_name(&self, id: &IdentifierReference<'_>) -> bool {
+        GLOBAL_OBJECT_NAMES.contains(&id.name.as_str())
+            && id
+                .reference_id
+                .get()
+                .is_some_and(|reference| self.scoping.get_reference(reference).symbol_id().is_none())
     }
 
     fn finish(self, rotation: Option<usize>, plan: &mut Plan) {
@@ -369,6 +428,7 @@ impl<'s> Walker<'s> {
             .guarded
             .iter()
             .any(|&symbol| names.contains(self.scoping.symbol_name(symbol)))
+            || self.global_object_may_overwrite()
         {
             return;
         }
@@ -395,15 +455,22 @@ impl<'s> Walker<'s> {
         }
         let total = |symbol| self.scoping.get_resolved_reference_ids(symbol).len();
         for &alias in self.alias_order.iter().rev() {
-            if !overwritable.contains(&alias) && accounted.get(&alias).copied().unwrap_or(0) == total(alias) {
+            let info = &self.aliases[&alias];
+            // Other scripts may read a top-level alias, so it stays.
+            if !info.global
+                && !overwritable.contains(&alias)
+                && accounted.get(&alias).copied().unwrap_or(0) == total(alias)
+            {
                 plan.dead_aliases.insert(alias);
-                *accounted.entry(self.aliases[&alias].parent).or_default() += 1;
+                *accounted.entry(info.parent).or_default() += 1;
             }
         }
         // The rotation only reorders the array, so it can go once no decoder
         // reference is left to observe the order.
+        // Other scripts may call the global decoder, so in a script it stays.
         if let Some(rotation) = rotation
-            && accounted.get(&self.decoder).copied().unwrap_or(0) == total(self.decoder)
+            && !self.script
+            && accounted.get(&self.decoder.symbol).copied().unwrap_or(0) == total(self.decoder.symbol)
         {
             plan.rotations.push(rotation);
         }
@@ -449,21 +516,22 @@ impl<'a> Visit<'a> for Walker<'_> {
     }
 
     fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
-        let listed = match self.listed_declaration.take() {
+        let (listed, in_body) = match self.listed_declaration.take() {
             Some((listed, in_body)) if listed == address(decl) => match decl.kind {
-                VariableDeclarationKind::Const | VariableDeclarationKind::Let => true,
+                VariableDeclarationKind::Const | VariableDeclarationKind::Let => (true, in_body),
                 // A `var` in a block may be skipped while later code still sees it.
-                VariableDeclarationKind::Var => in_body,
-                _ => false,
+                VariableDeclarationKind::Var => (in_body, in_body),
+                _ => (false, false),
             },
-            _ => false,
+            _ => (false, false),
         };
         let early = self.early_declarations.contains(&address(decl));
         let is_var = decl.kind == VariableDeclarationKind::Var;
+        let global = self.script && in_body && self.frames.is_empty();
         for declarator in &decl.declarations {
             self.visit_variable_declarator(declarator);
             if listed {
-                self.register_alias(declarator, early, is_var);
+                self.register_alias(declarator, early, is_var, global);
             }
         }
     }
@@ -491,7 +559,56 @@ impl<'a> Visit<'a> for Walker<'_> {
         walk::walk_call_expression(self, call);
     }
 
+    fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
+        if self.script && self.is_global_object(&member.object) {
+            self.global_members.insert(member.property.name.to_string());
+        } else {
+            walk::walk_static_member_expression(self, member);
+        }
+    }
+
+    fn visit_unary_expression(&mut self, unary: &UnaryExpression<'a>) {
+        let is_typeof_global = unary.operator == UnaryOperator::Typeof
+            && matches!(&unary.argument, Expression::Identifier(id) if self.is_global_object_name(id));
+        if !is_typeof_global {
+            walk::walk_unary_expression(self, unary);
+        }
+    }
+
+    fn visit_this_expression(&mut self, _this: &ThisExpression) {
+        if self.script && self.this_depth == 0 {
+            self.global_object_escapes = true;
+        }
+    }
+
+    fn visit_property_definition(&mut self, property: &PropertyDefinition<'a>) {
+        self.visit_property_key(&property.key);
+        self.this_depth += 1;
+        if let Some(value) = &property.value {
+            self.visit_expression(value);
+        }
+        self.this_depth -= 1;
+    }
+
+    fn visit_accessor_property(&mut self, property: &AccessorProperty<'a>) {
+        self.visit_property_key(&property.key);
+        self.this_depth += 1;
+        if let Some(value) = &property.value {
+            self.visit_expression(value);
+        }
+        self.this_depth -= 1;
+    }
+
+    fn visit_static_block(&mut self, block: &StaticBlock<'a>) {
+        self.this_depth += 1;
+        walk::walk_static_block(self, block);
+        self.this_depth -= 1;
+    }
+
     fn visit_identifier_reference(&mut self, ident: &IdentifierReference<'a>) {
+        if self.script && self.is_global_object_name(ident) {
+            self.global_object_escapes = true;
+        }
         if self.in_rotation
             && let Some(symbol) = reference_symbol(self.scoping, ident)
             && self.is_tracked(symbol)
@@ -509,7 +626,9 @@ impl<'a> Visit<'a> for Walker<'_> {
             self.block_function_names.insert(id.name.to_string());
         }
         self.frames.push(func.is_declaration());
+        self.this_depth += 1;
         walk::walk_function(self, func, flags);
+        self.this_depth -= 1;
         self.frames.pop();
     }
 

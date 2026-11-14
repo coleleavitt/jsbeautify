@@ -28,8 +28,11 @@ fn node_stdout(code: &str) -> Option<String> {
     Some(String::from_utf8(output.stdout).expect("utf-8 stdout"))
 }
 
+/// Deobfuscates `src` with `--isolated`, so that its top-level bindings are
+/// private and the rotation IIFE can go.
 fn deobfuscate(name: &str, src: &str) -> String {
     AstDeobfuscator::new()
+        .with_isolated(true)
         .deobfuscate(src)
         .unwrap_or_else(|e| panic!("deobfuscate {name}: {e}"))
 }
@@ -63,6 +66,18 @@ fn decodes_default_obfuscator_string_array() {
 #[test]
 fn decodes_string_array_through_nested_aliases() {
     assert_decoded("string_array_nested_aliases.js", "_0x4285");
+}
+
+#[test]
+fn classic_script_keeps_the_globals_other_scripts_see() {
+    let name = "string_array_default.js";
+    let src = fixtures::obfuscator(name);
+    let out = AstDeobfuscator::new()
+        .deobfuscate(&src)
+        .unwrap_or_else(|e| panic!("deobfuscate {name}: {e}"));
+    assert!(out.contains(r#"console.log(greet("world"), shout("quiet"))"#), "{out}");
+    assert!(out.contains("parseInt") && out.contains("_0x43940f = _0x4079"), "{out}");
+    assert_same_stdout(name, &src, &out);
 }
 
 #[test]
