@@ -155,10 +155,18 @@ fn run_inspect<T>(
     write_output(args.output.as_ref(), render(&inspection.report).trim_end())
 }
 
-/// Known subcommand names to catch typos like "jsbeautify prase-modules file.js".
+/// Subcommand names, to catch inputs like "jsbeautify extract-module file.js".
 const SUBCOMMAND_NAMES: &[&str] = &[
-    "parse-modules", "split-chunks", "split-sources", "reconstruct",
-    "align", "analyze-vm", "ast", "scope", "cfg", "help",
+    "extract-modules",
+    "split-chunks",
+    "split-sources",
+    "reconstruct",
+    "align",
+    "analyze-vm",
+    "ast",
+    "scope",
+    "cfg",
+    "help",
 ];
 
 fn run_beautify(b: &BeautifyArgs) -> Fallible {
@@ -168,17 +176,18 @@ fn run_beautify(b: &BeautifyArgs) -> Fallible {
     if let Some(root) = &b.project {
         return project::run_project(b, root);
     }
-    // Check for inputs that look like misspelled subcommands
     for input in b.inputs.iter().chain(&b.files) {
         if input.contains('-') && !input.contains('/') && !input.contains('.') {
-            // Looks like a subcommand name, not a file
-            let suggestion = SUBCOMMAND_NAMES.iter()
-                .find(|&&cmd| cmd.starts_with(&input[..input.len().min(4)]));
-            if let Some(cmd) = suggestion {
+            let prefix = input
+                .char_indices()
+                .nth(4)
+                .map_or(input.as_str(), |(end, _)| &input[..end]);
+            if let Some(cmd) = SUBCOMMAND_NAMES.iter().find(|cmd| cmd.starts_with(prefix)) {
                 return Err(format!(
-                    "'{input}' looks like a subcommand, not a file. Did you mean '{cmd}'?
+                    "'{input}' looks like a subcommand, not a file. Did you mean '{cmd}'?\n\
                      Run 'jsbeautify help' for available subcommands."
-                ).into());
+                )
+                .into());
             }
         }
     }
