@@ -3,6 +3,7 @@ use oxc_ast::ast::{
     BinaryExpression, BinaryOperator, ComputedMemberExpression, Expression, UnaryExpression, UnaryOperator,
 };
 use oxc_span::SPAN;
+use oxc_traverse::Ancestor;
 
 use super::{Ctx, ExpressionSimplifier};
 
@@ -123,6 +124,9 @@ impl ExpressionSimplifier {
         None
     }
 
+    /// Folds a `+` chain of string literals into one literal. `"a" + "b" + "c"`
+    /// parses as `("a" + "b") + "c"`; the whole left spine is folded once at its
+    /// top, since folding each `+` would allocate every prefix of the result.
     pub(super) fn try_simplify_string_concat<'a>(
         &mut self,
         binary: &BinaryExpression<'a>,
@@ -131,28 +135,46 @@ impl ExpressionSimplifier {
         if binary.operator != BinaryOperator::Addition {
             return None;
         }
-
-        if let (Expression::StringLiteral(left), Expression::StringLiteral(right)) = (&binary.left, &binary.right)
-            && !left.lone_surrogates
-            && !right.lone_surrogates
+        if let Ancestor::BinaryExpressionLeft(parent) = ctx.parent()
+            && *parent.operator() == BinaryOperator::Addition
+            && foldable_string(parent.right()).is_some()
         {
-            let combined = format!("{}{}", left.value.as_str(), right.value.as_str());
-            deob_trace!(
-                "[AST] Concatenating \"{}\" + \"{}\" = \"{}\"",
-                left.value.as_str(),
-                right.value.as_str(),
-                combined
-            );
-            self.rewrites += 1;
-
-            return Some(Expression::new_string_literal(
-                SPAN,
-                ctx.allocator().alloc_str(&combined),
-                None,
-                ctx,
-            ));
+            return None;
         }
 
-        None
+        let mut rights = Vec::new();
+        let mut node = binary;
+        let first = loop {
+            rights.push(foldable_string(&node.right)?);
+            match &node.left {
+                Expression::BinaryExpression(inner) if inner.operator == BinaryOperator::Addition => node = inner,
+                left => break foldable_string(left)?,
+            }
+        };
+        let mut combined = String::with_capacity(first.len() + rights.iter().map(|s| s.len()).sum::<usize>());
+        combined.push_str(first);
+        for right in rights.iter().rev() {
+            combined.push_str(right);
+        }
+        deob_trace!(
+            "[AST] Concatenating {} string literals = \"{}\"",
+            rights.len() + 1,
+            combined
+        );
+        self.rewrites += rights.len();
+
+        Some(Expression::new_string_literal(
+            SPAN,
+            ctx.allocator().alloc_str(&combined),
+            None,
+            ctx,
+        ))
+    }
+}
+
+fn foldable_string<'b>(expr: &'b Expression<'_>) -> Option<&'b str> {
+    match expr {
+        Expression::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.as_str()),
+        _ => None,
     }
 }

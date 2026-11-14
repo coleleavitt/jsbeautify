@@ -1,28 +1,43 @@
-use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
+use oxc_allocator::{ArenaVec, TakeIn};
 use oxc_ast::ast::{BinaryOperator, Expression, TemplateElement, TemplateLiteral};
 
 use super::literal::{make_string_literal, make_template_element};
 use super::{Ctx, DynConcatResolver, MAX_INLINE_LEN};
 
+/// The string value of a literal, tracked binding or `+` chain of them, when
+/// it is at most `MAX_INLINE_LEN` bytes long.
 pub(super) fn try_resolve_to_string(
     expr: &Expression<'_>,
     resolver: &DynConcatResolver,
     ctx: &Ctx<'_>,
 ) -> Option<String> {
+    let mut value = String::new();
+    append_resolved(expr, resolver, ctx, &mut value).then_some(value)
+}
+
+/// Appends `expr`'s value to `out`, stopping as soon as the value is known or
+/// grows past `MAX_INLINE_LEN`, so a long chain costs linear time.
+fn append_resolved(expr: &Expression<'_>, resolver: &DynConcatResolver, ctx: &Ctx<'_>, out: &mut String) -> bool {
     match expr {
-        Expression::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.as_str().to_string()),
-        Expression::ParenthesizedExpression(p) => try_resolve_to_string(&p.expression, resolver, ctx),
+        Expression::StringLiteral(lit) if !lit.lone_surrogates => out.push_str(&lit.value),
+        Expression::ParenthesizedExpression(p) => return append_resolved(&p.expression, resolver, ctx, out),
         Expression::Identifier(id) => {
-            let symbol_id = ctx.scoping().get_reference(id.reference_id()).symbol_id()?;
-            resolver.lookup_ident(symbol_id, ctx).map(str::to_string)
+            let Some(value) = ctx
+                .scoping()
+                .get_reference(id.reference_id())
+                .symbol_id()
+                .and_then(|symbol_id| resolver.lookup_ident(symbol_id, ctx))
+            else {
+                return false;
+            };
+            out.push_str(value);
         }
         Expression::BinaryExpression(b) if matches!(b.operator, BinaryOperator::Addition) => {
-            let l = try_resolve_to_string(&b.left, resolver, ctx)?;
-            let r = try_resolve_to_string(&b.right, resolver, ctx)?;
-            Some(l + &r)
+            return append_resolved(&b.left, resolver, ctx, out) && append_resolved(&b.right, resolver, ctx, out);
         }
-        _ => None,
+        _ => return false,
     }
+    out.len() <= MAX_INLINE_LEN
 }
 
 pub(super) fn chain_has_string_evidence(expr: &Expression<'_>, resolver: &DynConcatResolver, ctx: &Ctx<'_>) -> bool {
@@ -66,7 +81,12 @@ pub(super) fn substitute_in_chain<'a>(expr: &mut Expression<'a>, resolver: &DynC
     count
 }
 
+/// Folds every `<string> + <string>` in a `+` chain, including chains nested
+/// in parentheses, which the traversal leaves to the outermost chain.
 pub(super) fn fold_adjacent_literals<'a>(expr: &mut Expression<'a>, ctx: &Ctx<'a>) -> bool {
+    if let Expression::ParenthesizedExpression(p) = expr {
+        return fold_adjacent_literals(&mut p.expression, ctx);
+    }
     let Expression::BinaryExpression(b) = expr else {
         return false;
     };
@@ -101,40 +121,48 @@ pub(super) fn substitute_in_template<'a>(
     {
         return 0;
     }
-    let mut count = 0;
-    let mut new_quasis: Vec<TemplateElement<'a>> = Vec::with_capacity(tmpl.quasis.len());
-    let mut rebuilt_expressions: Vec<Expression<'a>> = Vec::new();
-    let mut pending_text = String::new();
+    let values: Vec<Option<&str>> = tmpl
+        .expressions
+        .iter()
+        .map(|interp| match interp {
+            Expression::Identifier(id) => ctx
+                .scoping()
+                .get_reference(id.reference_id())
+                .symbol_id()
+                .and_then(|sid| resolver.lookup_ident(sid, ctx)),
+            _ => None,
+        })
+        .collect();
+    let count = values.iter().flatten().count();
+    if count == 0 {
+        return 0;
+    }
 
-    for (i, quasi) in tmpl.quasis.iter().enumerate() {
+    // Kept interpolations move into the rebuilt template: cloning them would
+    // copy every nested template once per enclosing level.
+    let expressions = tmpl.expressions.take_in(ctx);
+    let mut new_quasis: ArenaVec<'a, TemplateElement<'a>> = ArenaVec::with_capacity_in(tmpl.quasis.len() - count, ctx);
+    let mut kept_expressions = ArenaVec::with_capacity_in(expressions.len() - count, ctx);
+    let mut pending_text = String::new();
+    for ((quasi, interp), value) in tmpl.quasis.iter().zip(expressions).zip(values) {
         pending_text.push_str(quasi.value.cooked.as_ref().expect("checked above").as_str());
-        if i < tmpl.expressions.len() {
-            let interp = &tmpl.expressions[i];
-            let replacement_value = match interp {
-                Expression::Identifier(id) => ctx
-                    .scoping()
-                    .get_reference(id.reference_id())
-                    .symbol_id()
-                    .and_then(|sid| resolver.lookup_ident(sid, ctx))
-                    .map(str::to_string),
-                _ => None,
-            };
-            if let Some(value) = replacement_value {
-                pending_text.push_str(&value);
-                count += 1;
-                continue;
-            }
+        if let Some(value) = value {
+            pending_text.push_str(value);
+        } else {
             new_quasis.push(make_template_element(&pending_text, false, ctx));
-            rebuilt_expressions.push(interp.clone_in_with_semantic_ids(ctx.allocator()));
+            kept_expressions.push(interp);
             pending_text.clear();
         }
     }
-
+    let tail = tmpl
+        .quasis
+        .last()
+        .and_then(|quasi| quasi.value.cooked.as_ref())
+        .expect("checked above");
+    pending_text.push_str(tail.as_str());
     new_quasis.push(make_template_element(&pending_text, true, ctx));
 
-    if count > 0 {
-        tmpl.quasis = ArenaVec::from_iter_in(new_quasis, ctx);
-        tmpl.expressions = ArenaVec::from_iter_in(rebuilt_expressions, ctx);
-    }
+    tmpl.quasis = new_quasis;
+    tmpl.expressions = kept_expressions;
     count
 }

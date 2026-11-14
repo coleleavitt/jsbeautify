@@ -94,6 +94,18 @@ impl DynConcatResolver {
     }
 }
 
+/// Whether the current node, through any parentheses, is an operand of `+`.
+fn is_plus_operand(ctx: &Ctx<'_>) -> bool {
+    let parent = ctx
+        .ancestors()
+        .find(|ancestor| !matches!(ancestor, Ancestor::ParenthesizedExpressionExpression(_)));
+    match parent {
+        Some(Ancestor::BinaryExpressionLeft(p)) => *p.operator() == BinaryOperator::Addition,
+        Some(Ancestor::BinaryExpressionRight(p)) => *p.operator() == BinaryOperator::Addition,
+        _ => false,
+    }
+}
+
 impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
     fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         let scoping = ctx.scoping();
@@ -127,9 +139,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
         if !self.admits_declarator(symbol_id, ctx) {
             return;
         }
-        if let Some(value) = try_resolve_to_string(init, self, ctx)
-            && value.len() <= MAX_INLINE_LEN
-        {
+        if let Some(value) = try_resolve_to_string(init, self, ctx) {
             self.idents.insert(symbol_id, value);
         }
     }
@@ -143,19 +153,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for DynConcatResolver {
                 if !matches!(bin.operator, BinaryOperator::Addition) {
                     return;
                 }
-                // CWE-400 guard: the chain helpers below (chain_has_string_evidence /
-                // substitute_in_chain / fold_adjacent_literals) each recurse the ENTIRE
-                // `+` chain, so process only at the chain ROOT. If this `+` node is
-                // itself an operand of a parent `+` chain, skip it — the root resolves
-                // the whole chain in one O(n) pass. Without this, exit_expression's
-                // per-node recursive scans are O(n²) on a long `a+a+a+...` chain,
-                // a CPU/hang DoS on hostile input.
-                let parent_is_plus_chain = match ctx.parent() {
-                    Ancestor::BinaryExpressionLeft(p) => matches!(*p.operator(), BinaryOperator::Addition),
-                    Ancestor::BinaryExpressionRight(p) => matches!(*p.operator(), BinaryOperator::Addition),
-                    _ => false,
-                };
-                if parent_is_plus_chain {
+                // The chain helpers below recurse through the whole `+` chain,
+                // parentheses included, so only the outermost `+` runs them.
+                // Running them at every `+` would be quadratic on hostile input
+                // such as `a+a+a+...` or `a+(a+(a+...))`.
+                if is_plus_operand(ctx) {
                     return;
                 }
                 let resolver_view: &Self = self;

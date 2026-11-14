@@ -8,6 +8,11 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 fn run_simplify(code: &str) -> String {
+    run_measured(code).0
+}
+
+/// The output, and the arena bytes the pass allocated.
+fn run_measured(code: &str) -> (String, usize) {
     let allocator = Allocator::default();
     let source_type = SourceType::mjs();
     let ret = Parser::new(&allocator, code, source_type).parse();
@@ -18,9 +23,11 @@ fn run_simplify(code: &str) -> String {
     let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
 
+    let before = allocator.used_bytes();
     traverse_mut_with_ctx(&mut simplifier, &mut program, &mut ctx);
+    let growth = allocator.used_bytes() - before;
 
-    Codegen::new().build(&program).code
+    (Codegen::new().build(&program).code, growth)
 }
 
 #[test]
@@ -101,4 +108,39 @@ fn test_remove_debugger() {
 fn test_string_concat_keeps_lone_surrogate() {
     let output = run_simplify("x = '\\ud800' + 'y';");
     assert!(output.contains("\\ud800"), "lone surrogate must survive, got: {output}");
+}
+
+#[test]
+fn folds_a_string_chain_into_one_literal() {
+    assert_eq!(run_simplify(r#"x = "a" + "b" + "c" + "d";"#), "x = \"abcd\";\n");
+}
+
+#[test]
+fn folds_only_the_literal_prefix_of_a_chain() {
+    assert_eq!(
+        run_simplify(r#"x = "a" + "b" + y + "c" + "d"; z = y + "a" + "b";"#),
+        "x = \"ab\" + y + \"c\" + \"d\";\nz = y + \"a\" + \"b\";\n"
+    );
+}
+
+#[test]
+fn folds_parenthesized_string_chains_separately() {
+    assert_eq!(
+        run_simplify(r#"x = ("a" + "b") + "c"; y = "a" + ("b" + "c");"#),
+        "x = \"ab\" + \"c\";\ny = \"a\" + \"bc\";\n"
+    );
+}
+
+/// Folding each `+` of `"a" + "a" + ...` allocated every prefix of the result:
+/// 32,000 operands took 500 MB.
+#[test]
+fn long_string_chain_allocates_linearly() {
+    let code = format!("x = \"a\"{};", " + \"a\"".repeat(10_000));
+    let (out, growth) = crate::stack::run_on_sized_stack(code.len(), || run_measured(&code));
+    assert!(
+        growth <= 4 * code.len(),
+        "{growth} bytes for {} source bytes",
+        code.len()
+    );
+    assert_eq!(out, format!("x = \"{}\";\n", "a".repeat(10_001)));
 }

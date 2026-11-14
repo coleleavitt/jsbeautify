@@ -15,6 +15,11 @@ fn run_script(code: &str) -> String {
 }
 
 fn run_with(code: &str, source_type: SourceType) -> String {
+    run_measured(code, source_type).0
+}
+
+/// The output, and the arena bytes the pass allocated.
+fn run_measured(code: &str, source_type: SourceType) -> (String, usize) {
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, code, source_type).parse();
     assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
@@ -22,8 +27,10 @@ fn run_with(code: &str, source_type: SourceType) -> String {
     let mut pass = DynConcatResolver::new();
     let scoping = semantic::scoping(&program);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    let before = allocator.used_bytes();
     traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
-    Codegen::new().build(&program).code
+    let growth = allocator.used_bytes() - before;
+    (Codegen::new().build(&program).code, growth)
 }
 
 #[test]
@@ -255,4 +262,67 @@ fn folding_adjacent_literals_counts_as_a_change_without_a_rewrite() {
     assert_eq!(pass.rewrites(), 0);
     assert!(pass.changed());
     assert!(Codegen::new().build(&program).code.contains("\"ab\""));
+}
+
+/// Arena bytes the pass allocates on `code`.
+fn arena_growth(code: &str) -> usize {
+    crate::stack::run_on_sized_stack(code.len(), || run_measured(code, SourceType::mjs()).1)
+}
+
+#[test]
+fn inlines_into_every_level_of_nested_templates() {
+    let out = run("const a = \"x\";\nf(`1${a}${`2${a}${`3${a}${e}`}`}`);\n");
+    assert_eq!(out, "const a = \"x\";\nf(`1x${`2x${`3x${e}`}`}`);\n");
+}
+
+/// Each template used to clone its kept interpolations, so every nested
+/// template was copied once per enclosing level: 5,000 levels took 2.2 GB.
+#[test]
+fn nested_templates_allocate_linearly() {
+    let depth = 2_000;
+    let untouched = format!("f({}e{});\n", "`a${".repeat(depth), "}`".repeat(depth));
+    assert_eq!(arena_growth(&untouched), 0);
+    let inlined = format!(
+        "const a = \"x\";\nf({}e{});\n",
+        "`${a}${".repeat(depth),
+        "}`".repeat(depth)
+    );
+    let growth = arena_growth(&inlined);
+    assert!(
+        growth <= 64 * inlined.len(),
+        "{growth} bytes for {} source bytes",
+        inlined.len()
+    );
+}
+
+#[test]
+fn folds_literals_in_parenthesized_operands() {
+    let out = run("const a = \"x\";\nf(e + (\"a\" + \"b\") + (a + (\"c\" + e)));\n");
+    assert_eq!(out, "const a = \"x\";\nf(e + \"ab\" + (\"x\" + (\"c\" + e)));\n");
+}
+
+#[test]
+fn inlines_through_deeply_parenthesized_chains() {
+    let depth = 5_000;
+    let code = format!(
+        "const a = \"x\";\nf({}e{});\n",
+        "a + (".repeat(depth),
+        ")".repeat(depth)
+    );
+    let out = crate::stack::run_on_sized_stack(code.len(), || run(&code));
+    assert_eq!(out.matches("\"x\"").count(), depth + 1, "every `a` is inlined");
+}
+
+#[test]
+fn tracks_bindings_up_to_the_inline_limit() {
+    let at_limit = "\"x\" + ".repeat(MAX_INLINE_LEN - 1) + "\"x\"";
+    let out = run(&format!("const a = {at_limit};\nf(a + e);\n"));
+    assert!(
+        out.contains(&format!("\"{}\" + e", "x".repeat(MAX_INLINE_LEN))),
+        "{out}"
+    );
+
+    let past_limit = format!("{at_limit} + \"x\"");
+    let out = run(&format!("const a = {past_limit};\nf(a + e);\n"));
+    assert!(out.contains("f(a + e)"), "{out}");
 }
