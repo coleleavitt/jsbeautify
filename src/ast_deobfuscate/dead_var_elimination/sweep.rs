@@ -10,7 +10,6 @@ use rustc_hash::FxHashSet;
 use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
-use super::eliminator::removes_any;
 use super::{DeadVarCollector, DeadVarEliminator};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -51,10 +50,7 @@ pub fn eliminate_dead_vars<'a>(
     program: &mut Program<'a>,
     scoping: Scoping,
 ) -> (DeadVarSweepResult, Option<Scoping>) {
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut collector = DeadVarCollector::new();
-    traverse_mut_with_ctx(&mut collector, program, &mut ctx);
-    let scoping = ctx.into_scoping();
+    let collector = DeadVarCollector::collect(program, &scoping);
     let dead_vars = collector.get_dead_vars();
     let candidate_symbols = dead_vars.len();
     if dead_vars.is_empty() {
@@ -62,7 +58,7 @@ pub fn eliminate_dead_vars<'a>(
     }
     // Validation re-prints and re-parses the whole program; skip it when no
     // candidate is removable anyway.
-    if !removes_any(program, &dead_vars) {
+    if !collector.removes_any(&dead_vars) {
         let result = DeadVarSweepResult {
             candidate_symbols,
             removed_declarators: 0,
@@ -105,7 +101,7 @@ fn validate_and_commit<'a>(
     }
     let mut candidate = parsed.program;
 
-    let (before_collector, before_error_count) = collect_semantic_state(&candidate_allocator, &mut candidate);
+    let (before_collector, before_error_count) = collect_semantic_state(&candidate);
     if before_collector.resolution_failed() {
         return rejected(candidate_symbols);
     }
@@ -132,7 +128,7 @@ fn validate_and_commit<'a>(
         };
     }
 
-    let (after_collector, after_error_count) = collect_semantic_state(&candidate_allocator, &mut candidate);
+    let (after_collector, after_error_count) = collect_semantic_state(&candidate);
     let introduced_unresolved = !after_collector.unresolved_references().is_subset(&before_unresolved);
     let invalid_resolution = after_collector.resolution_failed();
     let introduced_errors = after_error_count > before_error_count;
@@ -172,12 +168,9 @@ const fn rejected(candidate_symbols: usize) -> DeadVarSweepResult {
     }
 }
 
-fn collect_semantic_state<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> (DeadVarCollector, usize) {
+fn collect_semantic_state<'a>(program: &'a Program<'a>) -> (DeadVarCollector, usize) {
     let semantic = semantic::build(program);
     let error_count = semantic.diagnostics.len();
-    let scoping = semantic.semantic.into_scoping();
-    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut collector = DeadVarCollector::new();
-    traverse_mut_with_ctx(&mut collector, program, &mut ctx);
+    let collector = DeadVarCollector::collect(program, semantic.semantic.scoping());
     (collector, error_count)
 }

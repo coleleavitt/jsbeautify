@@ -21,27 +21,17 @@ var _0x1a2b=["Hello","log","world","join"];function _0xdec(_0x3c4d){_0x3c4d=_0x3
 `jsbeautify -d --isolated input.js`:
 
 ```js
-var var_1 = [
-    "Hello",
-    "log",
-    "world",
-    "join"
-];
-
-function func_1(var_2) {
-    var_2 = var_2 - 100;
-    return var_1[var_2];
-}
-var var_3 = [];
-var_3.push("Hello");
-var_3.push("world");
-console.log(var_3.join(" "), true);
+var var_1 = [];
+var_1.push("Hello");
+var_1.push("world");
+console.log(var_1.join(" "), true);
 ```
 
 Strings are decoded, the dispatcher loop becomes straight-line code, and
-`!0x0` and `["push"]` become `true` and `.push`. `--isolated` tells jsbeautify
+`!0x0` and `["push"]` become `true` and `.push`. The decoder and its string
+array are no longer used, so they are removed. `--isolated` tells jsbeautify
 that no other script reads this file's globals, so top-level names may be
-renamed.
+renamed or removed.
 
 ## What it does
 

@@ -411,3 +411,162 @@ fn commonjs_sweeps_unused_top_level() {
     let result = run_elimination_as("var g = 1; return;", SourceType::cjs());
     assert!(!result.output.contains("var g"), "got: {}", result.output);
 }
+
+fn run_cjs(code: &str) -> EliminationResult {
+    run_elimination_as(code, SourceType::cjs())
+}
+
+#[test]
+fn removes_uncalled_decoder_together_with_its_string_array() {
+    let result = run_elimination(
+        r#"var strings = ["Hello", "log"]; function decode(i) { i = i - 100; return strings[i]; } console.log("Hello");"#,
+    );
+    assert!(!result.output.contains("strings"), "got: {}", result.output);
+    assert!(!result.output.contains("decode"), "got: {}", result.output);
+    assert!(
+        result.output.contains(r#"console.log("Hello")"#),
+        "got: {}",
+        result.output
+    );
+    assert_eq!(result.candidate_symbols, 2);
+    assert_eq!(result.removed_declarators, 2);
+}
+
+#[test]
+fn keeps_decoder_and_array_reached_from_live_code() {
+    let code =
+        "var strings = ['a']; function decode(i) { return strings[i]; } function main() { return decode(0); } main();";
+    let result = run_elimination(code);
+    for kept in ["strings = [", "function decode", "function main"] {
+        assert!(result.output.contains(kept), "{kept}: {}", result.output);
+    }
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn removes_mutually_recursive_dead_functions() {
+    let result = run_elimination("function a() { return b(); } function b() { return a(); } console.log(1);");
+    assert!(!result.output.contains("function"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 2);
+}
+
+#[test]
+fn self_reassignment_inside_its_own_body_does_not_keep_a_function() {
+    let result = run_cjs(
+        "function lazy() { const a = ['x']; lazy = function () { return a; }; return lazy(); } console.log(1);",
+    );
+    assert!(!result.output.contains("lazy"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 2);
+}
+
+#[test]
+fn reassignment_from_outside_keeps_a_function() {
+    let result = run_cjs("function f() {} f = 1;");
+    assert!(result.output.contains("function f()"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn script_keeps_top_level_functions_but_sweeps_nested_ones() {
+    let result = run_elimination_as(
+        "var strings = ['a']; function decode() { return strings[0]; } function outer() { function inner() {} return 1; } outer();",
+        SourceType::script(),
+    );
+    for kept in ["var strings", "function decode", "function outer"] {
+        assert!(result.output.contains(kept), "{kept} is a global: {}", result.output);
+    }
+    assert!(!result.output.contains("inner"), "got: {}", result.output);
+}
+
+#[test]
+fn with_statement_disables_elimination() {
+    let result = run_cjs("var unused = 1; function dead() {} with (o) { y; }");
+    assert!(result.output.contains("var unused = 1"), "got: {}", result.output);
+    assert!(result.output.contains("function dead"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn keeps_declarations_that_rebind_a_parameter() {
+    let result = run_cjs(
+        "function g(p, q) { function p() {} var q = 2; return arguments[0] + arguments[1]; } console.log(g(1, 1));",
+    );
+    assert!(result.output.contains("function p()"), "got: {}", result.output);
+    assert!(result.output.contains("var q = 2"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn keeps_annex_b_block_functions() {
+    let result = run_cjs("function g() { { function h() {} } } g();");
+    assert!(result.output.contains("function h()"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn keeps_exported_functions() {
+    for code in [
+        "export function f() {}",
+        "function f() {} export { f };",
+        "function f() {} export default f;",
+        "export default function f() {}",
+    ] {
+        let result = run_elimination(code);
+        assert!(result.output.contains("function f()"), "{code}: {}", result.output);
+        assert_eq!(result.removed_declarators, 0, "{code}");
+    }
+}
+
+#[test]
+fn removes_side_effect_free_compound_initializers() {
+    let result = run_elimination(
+        "let a = [1, , 'x', [null]], b = { k: 1, 'q': () => g(), m() { return h(); }, get v() { return 1; } }, c = -1, d = `t`, e = /r/g, f = function () { return g(); };",
+    );
+    assert!(!result.output.contains("let"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 6);
+}
+
+#[test]
+fn keeps_initializers_that_can_run_code_or_throw() {
+    for code in [
+        "let unused = { [key]: 1 };",
+        "let unused = [g()];",
+        "let unused = `${value}`;",
+        "let unused = +1n;",
+        "let unused = class { static { g(); } };",
+    ] {
+        let result = run_elimination(code);
+        assert!(result.output.contains("unused"), "{code}: {}", result.output);
+        assert_eq!(result.removed_declarators, 0, "{code}");
+    }
+}
+
+#[test]
+fn keeps_function_reached_from_an_unremovable_initializer() {
+    let result = run_elimination("function helper() {} let unused = effect(helper);");
+    assert!(result.output.contains("function helper"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}
+
+#[test]
+fn keeps_every_declaration_of_an_exported_binding() {
+    for code in [
+        "export var x = 1; var x = function () { return 2; };",
+        "export var x = 1; if (c) { var x = [function () {}]; }",
+    ] {
+        let result = run_elimination(code);
+        assert!(result.output.contains("function"), "{code}: {}", result.output);
+        assert_eq!(result.removed_declarators, 0, "{code}");
+    }
+}
+
+#[test]
+fn keeps_bindings_named_like_a_block_function() {
+    // Annex B does not hoist `f` past the block's `class f`, so `f()` reads the
+    // outer `var f`; `oxc_semantic` resolves it to the block function.
+    let result = run_cjs(
+        "var f = function () { return 'outer'; }; function g() { { class f {} { function f() { return 'inner'; } } } return f(); } console.log(g());",
+    );
+    assert!(result.output.contains("var f = function"), "got: {}", result.output);
+    assert_eq!(result.removed_declarators, 0);
+}

@@ -1,15 +1,21 @@
 use oxc_allocator::{ArenaVec, CloneIn, GetAllocator};
-use oxc_ast::ast::{BindingPattern, Expression, Program, Statement, VariableDeclarator};
-use oxc_ast_visit::{Visit, walk};
+use oxc_ast::ast::{
+    ArrayExpressionElement, BindingPattern, Expression, Function, ObjectPropertyKind, Statement, UnaryOperator,
+    VariableDeclarator,
+};
 use oxc_span::SPAN;
 use oxc_syntax::symbol::SymbolId;
-use oxc_traverse::Traverse;
+use oxc_traverse::{Ancestor, Traverse};
 use rustc_hash::FxHashSet;
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
 
+/// Removes the declarations of dead bindings that [`super::DeadVarCollector`]
+/// treats as removable: declarators of a declaration statement whose
+/// initializer is side-effect free, and function declarations directly in a
+/// program or function body.
 pub struct DeadVarEliminator {
     dead_vars: FxHashSet<SymbolId>,
     removed_declarators: usize,
@@ -29,69 +35,70 @@ impl DeadVarEliminator {
         self.removed_declarators > 0
     }
 
+    /// Removed variable declarators and function declarations.
     #[must_use]
     pub const fn removed_declarators(&self) -> usize {
         self.removed_declarators
     }
 
     fn should_remove_declarator(&self, decl: &VariableDeclarator<'_>) -> bool {
-        is_removable(decl, &self.dead_vars)
+        let BindingPattern::BindingIdentifier(ident) = &decl.id else {
+            return false;
+        };
+        ident
+            .symbol_id
+            .get()
+            .is_some_and(|symbol| self.dead_vars.contains(&symbol))
+            && decl.init.as_ref().is_none_or(is_proven_safe_initializer)
     }
 }
 
-/// Whether [`DeadVarEliminator`] would remove a declarator of `program`:
-/// the same decision, made without changing the program.
-pub(super) fn removes_any(program: &Program<'_>, dead_vars: &FxHashSet<SymbolId>) -> bool {
-    struct Probe<'d> {
-        dead_vars: &'d FxHashSet<SymbolId>,
-        found: bool,
+/// The binding of a function declaration that can be removed when dead: not
+/// an ambient or overload signature. The caller checks that it sits directly
+/// in a program or function body.
+pub(super) fn removable_function_symbol(func: &Function<'_>) -> Option<SymbolId> {
+    if func.declare || func.body.is_none() {
+        return None;
     }
-    impl<'a> Visit<'a> for Probe<'_> {
-        fn visit_statement(&mut self, stmt: &Statement<'a>) {
-            if self.found {
-                return;
-            }
-            if let Statement::VariableDeclaration(var_decl) = stmt
-                && var_decl
-                    .declarations
-                    .iter()
-                    .any(|decl| is_removable(decl, self.dead_vars))
-            {
-                self.found = true;
-                return;
-            }
-            walk::walk_statement(self, stmt);
-        }
-    }
-    let mut probe = Probe {
-        dead_vars,
-        found: false,
-    };
-    probe.visit_program(program);
-    probe.found
-}
-
-fn is_removable(decl: &VariableDeclarator<'_>, dead_vars: &FxHashSet<SymbolId>) -> bool {
-    let BindingPattern::BindingIdentifier(ident) = &decl.id else {
-        return false;
-    };
-    let Some(symbol_id) = ident.symbol_id.get() else {
-        return false;
-    };
-    if !dead_vars.contains(&symbol_id) {
-        return false;
-    }
-    decl.init.as_ref().is_none_or(is_proven_safe_initializer)
+    func.id.as_ref()?.symbol_id.get()
 }
 
 /// Only expressions whose evaluation cannot perform user code, resolve a
 /// binding, access `this`, coerce a value, iterate, or throw are removable.
-fn is_proven_safe_initializer(expr: &Expression<'_>) -> bool {
+/// Function bodies only run when called, so function values qualify.
+pub(super) fn is_proven_safe_initializer(expr: &Expression<'_>) -> bool {
     match expr {
         Expression::NumericLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::BooleanLiteral(_)
-        | Expression::NullLiteral(_) => true,
+        | Expression::NullLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::RegExpLiteral(_)
+        | Expression::FunctionExpression(_)
+        | Expression::ArrowFunctionExpression(_) => true,
+        Expression::TemplateLiteral(template) => template.expressions.is_empty(),
+        // `+1n` throws, so BigInt operands are left out.
+        Expression::UnaryExpression(unary) => {
+            unary.operator != UnaryOperator::Delete
+                && matches!(
+                    unary.argument.without_parentheses(),
+                    Expression::NumericLiteral(_)
+                        | Expression::StringLiteral(_)
+                        | Expression::BooleanLiteral(_)
+                        | Expression::NullLiteral(_)
+                )
+        }
+        Expression::ArrayExpression(array) => array.elements.iter().all(|element| match element {
+            ArrayExpressionElement::SpreadElement(_) => false,
+            ArrayExpressionElement::Elision(_) => true,
+            _ => element.as_expression().is_some_and(is_proven_safe_initializer),
+        }),
+        Expression::ObjectExpression(object) => object.properties.iter().all(|property| match property {
+            ObjectPropertyKind::ObjectProperty(property) => {
+                !property.computed && is_proven_safe_initializer(&property.value)
+            }
+            ObjectPropertyKind::SpreadProperty(_) => false,
+        }),
         Expression::ParenthesizedExpression(paren) => is_proven_safe_initializer(&paren.expression),
         _ => false,
     }
@@ -99,6 +106,22 @@ fn is_proven_safe_initializer(expr: &Expression<'_>) -> bool {
 
 impl<'a> Traverse<'a, DeobfuscateState> for DeadVarEliminator {
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
+        if let Statement::FunctionDeclaration(func) = stmt {
+            let in_body = matches!(
+                ctx.parent(),
+                Ancestor::ProgramBody(_) | Ancestor::FunctionBodyStatements(_)
+            );
+            if in_body && removable_function_symbol(func).is_some_and(|symbol| self.dead_vars.contains(&symbol)) {
+                if crate::ast_deobfuscate::ast_trace_enabled()
+                    && let Some(id) = &func.id
+                {
+                    deob_trace!("[AST] Eliminating dead function: {}", id.name);
+                }
+                self.removed_declarators += 1;
+                *stmt = Statement::new_empty_statement(SPAN, ctx);
+            }
+            return;
+        }
         if let Statement::VariableDeclaration(var_decl) = stmt {
             let all_dead = var_decl.declarations.iter().all(|d| self.should_remove_declarator(d));
 

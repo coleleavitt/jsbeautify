@@ -11,6 +11,7 @@
 mod angular;
 mod beautify;
 mod cli;
+mod dead_declarations;
 mod deobfuscate;
 mod esbuild_bundles;
 mod fixtures;
