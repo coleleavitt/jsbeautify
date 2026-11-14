@@ -39,6 +39,7 @@ pub(crate) mod akamai;
 #[allow(dead_code)]
 pub(crate) mod algebraic_simplify;
 pub(crate) mod angular;
+pub(crate) mod annex_b;
 pub(crate) mod apply_call_simplifier;
 pub(crate) mod array_coerce_fold;
 #[allow(dead_code)]

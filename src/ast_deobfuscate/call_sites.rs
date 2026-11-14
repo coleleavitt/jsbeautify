@@ -6,13 +6,16 @@ use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 
 /// Never-reassigned, file-local bindings whose every reference is the callee of a plain
 /// call `f(a, …)` without spread arguments, with the argument counts used.
 ///
 /// A pass may replace such a binding's calls and delete its declaration
-/// without leaving a dangling reference.
+/// without leaving a dangling reference. Bindings an Annex B block function may
+/// replace at runtime ([`annex_b_shadowed_symbols`]) are left out, since their
+/// calls need not reach their declaration.
 #[must_use]
 pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap<SymbolId, FxHashSet<usize>> {
     let mut calls = PlainCalls {
@@ -20,6 +23,7 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
         calls: FxHashMap::default(),
     };
     calls.visit_program(program);
+    let shadowed = annex_b_shadowed_symbols(program, scoping);
     calls
         .calls
         .into_iter()
@@ -28,7 +32,8 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
             (count == scoping.get_resolved_reference_ids(symbol).len()
                 && !scoping.symbol_is_mutated(symbol)
                 && scoping.symbol_redeclarations(symbol).is_empty()
-                && !is_global_binding(program.source_type, scoping, symbol))
+                && !is_global_binding(program.source_type, scoping, symbol)
+                && !shadowed.contains(&symbol))
             .then_some((symbol, arities))
         })
         .collect()

@@ -390,13 +390,22 @@ impl<'a> Traverse<'a, DeobfuscateState> for RenameGuardCollector {
         let block = ctx.current_scope_id();
         if ctx.scoping().symbol_scope_id(symbol_id) == block {
             // `oxc_semantic` left the block binding apart from the hoisted `var`
-            // because the var scope already binds the name: two symbols name one
-            // variable at runtime.
+            // because an enclosing scope already binds the name: two symbols name
+            // one variable at runtime. Annex B assigns the function to the `var`
+            // of the enclosing function scope even past a `catch (f)` parameter,
+            // so keep every binding of the name up to and including the one that
+            // scope's references resolve to.
             self.preserved.insert(symbol_id);
-            if let Some(parent) = ctx.scoping().scope_parent_id(block)
-                && let Some(outer) = ctx.scoping().find_binding(parent, id.name.as_str().into())
-            {
-                self.preserved.insert(outer);
+            let scoping = ctx.scoping();
+            let mut reached_var_scope = false;
+            for scope in scoping.scope_ancestors(block).skip(1) {
+                reached_var_scope |= scoping.scope_flags(scope).is_var();
+                if let Some(outer) = scoping.get_binding(scope, id.name.as_str().into()) {
+                    self.preserved.insert(outer);
+                    if reached_var_scope {
+                        break;
+                    }
+                }
             }
         } else {
             self.annex_b_hoisted.insert(symbol_id, block);
@@ -711,6 +720,27 @@ mod tests {
             !strict.contains("f"),
             "strict block functions are block-scoped: {strict:?}"
         );
+    }
+
+    #[test]
+    fn guards_the_var_a_block_function_assigns_past_a_catch_parameter() {
+        // Annex B assigns the block `f` to the function's `f`, not the catch
+        // parameter, so `return f()` calls the block function.
+        let code = "function g() { function f() {} try {} catch (f) { { function f() {} } } return f(); }";
+        let allocator = Allocator::default();
+        let mut program = Parser::new(&allocator, code, SourceType::cjs()).parse().program;
+        let scoping = semantic::scoping(&program);
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut collector = RenameGuardCollector::new();
+        traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+        let scoping = ctx.into_scoping();
+        let guarded = collector.into_guarded(&scoping);
+        let unguarded: Vec<_> = scoping
+            .symbol_ids()
+            .filter(|s| scoping.symbol_name(*s) == "f" && !guarded.contains(s))
+            .map(|s| scoping.symbol_span(s).start)
+            .collect();
+        assert!(unguarded.is_empty(), "unguarded `f` at {unguarded:?}");
     }
 
     #[test]

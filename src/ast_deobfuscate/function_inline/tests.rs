@@ -7,8 +7,11 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 fn run_inline(code: &str) -> String {
+    run_inline_as(code, SourceType::mjs())
+}
+
+fn run_inline_as(code: &str, source_type: SourceType) -> String {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs();
     let ret = Parser::new(&allocator, code, source_type).parse();
     let mut program = ret.program;
 
@@ -128,4 +131,35 @@ fn test_unsupported_shapes_block_inline() {
     assert_untouched("function f(...a) { return a; } f(1);");
     assert_untouched("function f(a = 1) { return a; } f(2);");
     assert_untouched("function f(a) { return a; } f(1, 2);");
+}
+
+#[test]
+fn test_function_an_annex_b_block_function_replaces_is_not_inlined() {
+    for code in [
+        "function g() { function f() { return 1; } { function f() { return 2; } } return f(); }",
+        "function g() { function f() { return 1; } if (c) { function f() { return 2; } } return f(); }",
+        "function g() { function f() { return 1; } if (c) function f() { return 2; } return f(); }",
+        "function g(x) { function f() { return 1; } switch (x) { case 1: function f() { return 2; } } return f(); }",
+        "function g() { function f() { return 1; } l: { function f() { return 2; } } return f(); }",
+        "function g(x) { if (x) { function f() { return 2; } } return f(); }",
+    ] {
+        let output = run_inline_as(code, SourceType::cjs());
+        assert!(output.contains("return f()"), "{code}: {output}");
+    }
+}
+
+#[test]
+fn test_strict_block_function_does_not_block_inline() {
+    let output = run_inline_as(
+        "'use strict'; function g() { function f() { return 1; } { function f() { return 2; } } return f(); }",
+        SourceType::cjs(),
+    );
+    assert!(!output.contains("return f()"), "got: {output}");
+}
+
+#[test]
+fn test_redeclared_function_is_not_inlined() {
+    assert_untouched(
+        "function g() { function f() { return 1; } function f() { return arguments.length; } return f(); }",
+    );
 }

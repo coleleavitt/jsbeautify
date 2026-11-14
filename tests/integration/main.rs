@@ -9,6 +9,7 @@
 //! it in the `mod` block below.
 
 mod angular;
+mod annex_b_functions;
 mod beautify;
 mod cli;
 mod dead_declarations;

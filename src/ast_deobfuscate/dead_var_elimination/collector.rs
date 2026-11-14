@@ -9,6 +9,7 @@ use oxc_span::SourceType;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 
 use super::eliminator::{is_proven_safe_initializer, removable_function_symbol};
@@ -26,10 +27,9 @@ use super::types::UnresolvedReference;
 /// itself from its own body.
 ///
 /// Exports, classic-script globals and parameters (which `arguments` aliases
-/// in sloppy mode) are always live, and so is every binding named like a
-/// function declared in a block: `oxc_semantic` hoists such a function to the
-/// enclosing function scope even where Annex B does not, so references to an
-/// outer binding of that name may resolve to the block function instead.
+/// in sloppy mode) are always live, and so is every binding an Annex B block
+/// function may replace ([`annex_b_shadowed_symbols`]): references resolved to
+/// one binding may read another at runtime.
 /// Direct `eval` syntax or a `with` statement anywhere disables elimination.
 pub struct DeadVarCollector {
     declared: FxHashSet<SymbolId>,
@@ -51,19 +51,12 @@ impl DeadVarCollector {
             removable: FxHashSet::default(),
             uses: Vec::new(),
             edges: FxHashMap::default(),
-            block_function_names: FxHashSet::default(),
             unresolved_references: FxHashSet::default(),
             has_dynamic_scope: false,
             resolution_failed: false,
         };
         visitor.visit_program(program);
-        if !visitor.block_function_names.is_empty() {
-            let shadowed = visitor
-                .declared
-                .iter()
-                .filter(|&&symbol| visitor.block_function_names.contains(scoping.symbol_name(symbol)));
-            visitor.uses.extend(shadowed);
-        }
+        visitor.uses.extend(annex_b_shadowed_symbols(program, scoping));
 
         let mut live: FxHashSet<SymbolId> = visitor.uses.into_iter().collect();
         let mut pending: Vec<SymbolId> = live.iter().copied().collect();
@@ -118,9 +111,6 @@ struct Collector<'s> {
     /// Bindings referenced outside every removable declaration, or pinned.
     uses: Vec<SymbolId>,
     edges: FxHashMap<SymbolId, Vec<SymbolId>>,
-    /// Names of plain function declarations outside a program or function
-    /// body's statement list.
-    block_function_names: FxHashSet<String>,
     unresolved_references: FxHashSet<UnresolvedReference>,
     has_dynamic_scope: bool,
     resolution_failed: bool,
@@ -205,15 +195,6 @@ impl<'a> Visit<'a> for Collector<'_> {
                 for declarator in &decl.declarations {
                     self.visit_declarator(declarator, true);
                 }
-            }
-            Statement::FunctionDeclaration(func) => {
-                if !func.r#async
-                    && !func.generator
-                    && let Some(id) = &func.id
-                {
-                    self.block_function_names.insert(id.name.to_string());
-                }
-                walk::walk_statement(self, statement);
             }
             _ => walk::walk_statement(self, statement),
         }

@@ -8,6 +8,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
@@ -28,7 +29,9 @@ struct CallSite {
 /// side-effect-free operators. Its only reference must be a call `f(x, y)`
 /// whose arguments are literals or reads of never-reassigned bindings, so they
 /// can be duplicated, dropped or reordered, and where every free identifier of
-/// `<expr>` resolves to the same binding as inside `f`.
+/// `<expr>` resolves to the same binding as inside `f`. A function declared
+/// more than once, or one an Annex B block function may replace at runtime
+/// ([`annex_b_shadowed_symbols`]), is never inlined.
 pub struct FunctionCollector {
     candidates: FxHashMap<SymbolId, InlinableFunction>,
     call_sites: FxHashMap<SymbolId, CallSite>,
@@ -187,6 +190,7 @@ impl FunctionCollector {
             return false;
         };
         scoping.get_resolved_reference_ids(symbol).len() == 1
+            && scoping.symbol_redeclarations(symbol).is_empty()
             && call.pure_args
             && call.arg_count == func.params
             && Self::free_identifiers_resolve(&func.return_expression, call.scope_id, scoping)
@@ -230,10 +234,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionCollector {
         );
     }
 
-    fn exit_program(&mut self, _program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        let shadowed = annex_b_shadowed_symbols(program, ctx.scoping());
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, func) in candidates {
-            if self.is_inlinable(symbol, &func, ctx.scoping()) {
+            if !shadowed.contains(&symbol) && self.is_inlinable(symbol, &func, ctx.scoping()) {
                 deob_trace!("[AST] Found inlinable function: {} ({} params)", func.name, func.params);
                 self.inlinable.insert(symbol, func);
             }
