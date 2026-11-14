@@ -9,7 +9,7 @@ use oxc_semantic::Scoping;
 use oxc_syntax::reference::ReferenceId;
 use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::Ctx;
 
@@ -36,6 +36,7 @@ pub(super) struct Plan<'a> {
 pub(super) fn plan_loop<'a>(
     stmts: &[Statement<'a>],
     loop_index: usize,
+    declarators: &Declarators,
     script: bool,
     ctx: &Ctx<'a>,
 ) -> Option<Plan<'a>> {
@@ -73,10 +74,9 @@ pub(super) fn plan_loop<'a>(
         return None;
     }
 
-    let earlier = &stmts[..loop_index];
-    let (sequence_at, _, sequence_decl) = find_declarator(earlier, sequence_symbol)?;
+    let (sequence_at, _, sequence_decl) = declarator_before(stmts, declarators, sequence_symbol, loop_index)?;
     let sequence = split_sequence(sequence_decl.init.as_ref()?)?;
-    let (index_at, index_kind, index_decl) = find_declarator(earlier, index_symbol)?;
+    let (index_at, index_kind, index_decl) = declarator_before(stmts, declarators, index_symbol, loop_index)?;
     if !matches!(index_kind, VariableDeclarationKind::Var | VariableDeclarationKind::Let)
         || !matches!(&index_decl.init, Some(Expression::NumericLiteral(n)) if n.value == 0.0)
     {
@@ -123,21 +123,39 @@ fn sole_reference_symbol(scoping: &Scoping, reference: ReferenceId) -> Option<Sy
     sole.then_some(symbol)
 }
 
-fn find_declarator<'s, 'a>(
-    stmts: &'s [Statement<'a>],
-    symbol: SymbolId,
-) -> Option<((usize, usize), VariableDeclarationKind, &'s VariableDeclarator<'a>)> {
-    stmts.iter().enumerate().find_map(|(stmt_index, stmt)| {
+/// Where each identifier bound by a `stmts` variable declaration is declared:
+/// `(statement index, declarator index)`.
+pub(super) type Declarators = FxHashMap<SymbolId, (usize, usize)>;
+
+pub(super) fn declarators(stmts: &[Statement<'_>]) -> Declarators {
+    let mut map = Declarators::default();
+    for (stmt_index, stmt) in stmts.iter().enumerate() {
         let Statement::VariableDeclaration(decl) = stmt else {
-            return None;
+            continue;
         };
-        decl.declarations.iter().enumerate().find_map(|(index, declarator)| {
-            let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-                return None;
-            };
-            (id.symbol_id.get() == Some(symbol)).then_some(((stmt_index, index), decl.kind, declarator))
-        })
-    })
+        for (index, declarator) in decl.declarations.iter().enumerate() {
+            if let BindingPattern::BindingIdentifier(id) = &declarator.id
+                && let Some(symbol) = id.symbol_id.get()
+            {
+                map.insert(symbol, (stmt_index, index));
+            }
+        }
+    }
+    map
+}
+
+/// The declarator of `symbol`, when `stmts` declares it before `loop_index`.
+fn declarator_before<'s, 'a>(
+    stmts: &'s [Statement<'a>],
+    declarators: &Declarators,
+    symbol: SymbolId,
+    loop_index: usize,
+) -> Option<((usize, usize), VariableDeclarationKind, &'s VariableDeclarator<'a>)> {
+    let &(stmt_index, index) = declarators.get(&symbol)?;
+    let Statement::VariableDeclaration(decl) = stmts.get(stmt_index).filter(|_| stmt_index < loop_index)? else {
+        return None;
+    };
+    Some(((stmt_index, index), decl.kind, decl.declarations.get(index)?))
 }
 
 /// The steps of `"a|b|c".split("|")` (any non-empty separator).
@@ -187,21 +205,22 @@ fn run_sequence<'a>(
     if !sequence.iter().all(|step| steps.insert(step.as_str())) {
         return None;
     }
-    let mut labels = Vec::with_capacity(switch.cases.len());
-    for case in &switch.cases {
+    // `switch` picks the first case whose test matches.
+    let mut labels = FxHashMap::default();
+    for (index, case) in switch.cases.iter().enumerate() {
         let Some(Expression::StringLiteral(test)) = &case.test else {
             return None;
         };
         if case.consequent.iter().any(declares_in_switch_scope) {
             return None;
         }
-        labels.push(test.value.as_str());
+        labels.entry(test.value.as_str()).or_insert(index);
     }
 
     let mut ran = vec![false; switch.cases.len()];
     let mut out = OxcVec::new_in(&allocator);
     for step in sequence {
-        let Some(index) = labels.iter().position(|label| label == step) else {
+        let Some(&index) = labels.get(step.as_str()) else {
             break;
         };
         ran[index] = true;

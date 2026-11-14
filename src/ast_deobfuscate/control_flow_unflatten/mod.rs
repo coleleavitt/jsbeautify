@@ -74,8 +74,15 @@ impl<'a> Traverse<'a, DeobfuscateState> for ControlFlowUnflattener {
     }
 
     fn exit_statements(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>, ctx: &mut Ctx<'a>) {
+        if !stmts
+            .iter()
+            .any(|stmt| matches!(stmt, Statement::WhileStatement(_) | Statement::ForStatement(_)))
+        {
+            return;
+        }
+        let declarators = analysis::declarators(stmts);
         let plans: Vec<_> = (0..stmts.len())
-            .filter_map(|index| analysis::plan_loop(stmts, index, self.script, ctx))
+            .filter_map(|index| analysis::plan_loop(stmts, index, &declarators, self.script, ctx))
             .collect();
         if plans.is_empty() {
             return;

@@ -178,3 +178,36 @@ fn keeps_script_globals_declared_in_a_top_level_block() {
     let (out, rewrites) = run_with(&lexical, SourceType::script());
     assert_eq!(rewrites, 1, "{out}");
 }
+
+#[test]
+fn runs_the_first_case_of_a_duplicate_label() {
+    let code = LOOP.replace(
+        "case \"1\":",
+        "case \"0\": console.log(\"shadowed\"); continue;\n        case \"1\":",
+    );
+    let (out, rewrites) = run(&code);
+    assert_eq!(rewrites, 1, "{out}");
+    assert!(!out.contains("shadowed"), "{out}");
+}
+
+#[test]
+fn unflattens_many_cases_in_reversed_order() {
+    let n = 3000;
+    let steps: Vec<String> = (0..n).rev().map(|i| i.to_string()).collect();
+    let cases = (0..n)
+        .map(|i| format!("case \"{i}\": f(\"{i}\"); continue;"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let code = format!(
+        "var S = \"{}\".split(\"|\"), I = 0; while (true) {{ switch (S[I++]) {{ {cases} }} break; }}",
+        steps.join("|")
+    );
+    let (out, rewrites) = run(&code);
+    assert_eq!(rewrites, 1);
+    let expected = (0..n)
+        .rev()
+        .map(|i| format!("f(\"{i}\");\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    assert!(out == expected, "steps ran out of order");
+}
