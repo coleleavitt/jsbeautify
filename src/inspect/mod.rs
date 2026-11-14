@@ -48,7 +48,7 @@ fn parse<'a>(
 ) -> Result<(Program<'a>, Vec<String>), InspectError> {
     let ret = Parser::new(allocator, source, source_type(goal, typescript)).parse();
     let diagnostics = render(source, ret.diagnostics.into_vec());
-    if ret.panicked {
+    if ret.fatal_error {
         return Err(InspectError::Parse(diagnostics));
     }
     Ok((ret.program, diagnostics))

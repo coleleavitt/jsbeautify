@@ -179,7 +179,7 @@ pub fn detect_turbopack_chunk(source: &str) -> Option<TurbopackChunk> {
 fn detect_on_current_stack(source: &str) -> Option<TurbopackChunk> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, SourceType::cjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return None;
     }
     let program = parsed.program;

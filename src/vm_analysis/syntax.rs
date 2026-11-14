@@ -69,7 +69,7 @@ pub(super) fn collect(source: &str, budget: &mut AnalysisBudget) -> SyntaxFacts 
     let mut facts = SyntaxFacts {
         arrays: collector.arrays,
         diagnostics: Vec::new(),
-        valid_program: !parsed.panicked,
+        valid_program: !parsed.fatal_error,
         ..SyntaxFacts::default()
     };
     if !parsed.diagnostics.is_empty() {

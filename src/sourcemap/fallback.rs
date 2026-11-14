@@ -145,7 +145,7 @@ fn named_boundaries(source: &str) -> Vec<Boundary> {
             .find_map(|source_type| {
                 let allocator = Allocator::default();
                 let parsed = Parser::new(&allocator, source, source_type).parse();
-                if parsed.panicked || !parsed.diagnostics.is_empty() {
+                if parsed.fatal_error || !parsed.diagnostics.is_empty() {
                     return None;
                 }
                 let mut finder = BoundaryFinder {

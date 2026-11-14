@@ -99,7 +99,7 @@ impl AstDeobfuscator {
                 continue;
             }
             let parse_result = Parser::new(allocator, code, candidate).parse();
-            if parse_result.diagnostics.is_empty() && !parse_result.panicked {
+            if parse_result.diagnostics.is_empty() && !parse_result.fatal_error {
                 return Some(parse_result);
             }
         }

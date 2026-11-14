@@ -13,8 +13,9 @@ and adds only Claude Code specifics.
 - The project has no `rust-toolchain.toml` and no package `rust-version` pin.
   Use a current Rust toolchain compatible with the pinned Oxc revision.
   `rustfmt.toml` sets `style_edition = "2024"`.
-- `oxc_*` crates are pinned to one Git revision in `Cargo.toml`. Do not describe
-  them as floating on `main`; update the revision and migration code together.
+- `oxc_*` crates come from crates.io, all on one release (see `Cargo.toml`).
+  Bump every `oxc_*` crate together, with the migration code, in one commit.
+  Git or path dependencies cannot be published, so do not commit them.
 - Gate, in order: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   then `cargo test --all-targets`. Clippy runs `pedantic` and `nursery`; fix
   lints rather than adding `#[allow]`, and scope any allow narrowly.
