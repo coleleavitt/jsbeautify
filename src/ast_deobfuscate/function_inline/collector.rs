@@ -214,9 +214,13 @@ impl<'a> Traverse<'a, DeobfuscateState> for FunctionCollector {
     }
 
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
+        // The inliner rewrites plain calls only; `f?.()` keeps `f` alive.
         let Expression::Identifier(ident) = &call.callee else {
             return;
         };
+        if call.optional {
+            return;
+        }
         let Some(symbol) = ctx.scoping().get_reference(ident.reference_id()).symbol_id() else {
             return;
         };

@@ -196,6 +196,11 @@ mod tests {
             "(function () { var BI = function (a, b) { return a === b; }; var BI = function (a, b) { return a + b; }; return BI(1, 2); })();",
             // Duplicate parameters: both operands read the second argument.
             "(function () { var BI = function (a, a) { return a === a; }; return BI(1, 2); })();",
+            // A default changes what an omitted or `undefined` argument compares.
+            "(function () { function BI(a, b = 5) { return a === b; } return BI(5, undefined); })();",
+            // Called before the `var` or `let` holds the function.
+            "(function () { try { BI(1, 1); } catch (e) {} var BI = function (a, b) { return a === b; }; })();",
+            "(function () { try { BI(1, 1); } catch (e) {} let BI = function (a, b) { return a === b; }; })();",
             // Operands swapped relative to the parameters.
             "(function () { var BI = function (a, b) { return b < a; }; return BI(1, 2); })();",
             // A direct eval may assign it, in its own scope or a nested one.
@@ -269,8 +274,11 @@ mod tests {
             format!("var Ot; {ops} Ot.push(tick());"),
             format!("var Ot; {ops} Ot.push(undeclared);"),
             format!("var Ot; {ops} Ot.push(later); let later = 1;"),
-            // Never reset to an array.
+            // Never reset to an array, or used before the first reset.
             "var Ot; Ot.push(1); Ot.push(2); Ot.pop(); Ot.pop();".to_string(),
+            format!("var Ot; try {{ Ot.push(1); }} catch (e) {{}} {ops}"),
+            // A parameter default may read a later parameter, which throws.
+            format!("var Ot; {ops} function f(a = (Ot.push(b), 0), b) {{ return a; }}"),
             // Redeclared, exported, or visible to a direct eval or a `with` body.
             format!("var Ot; var Ot; {ops}"),
             format!("export var Ot; {ops}"),

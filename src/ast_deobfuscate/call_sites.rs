@@ -6,11 +6,13 @@ use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::init_order::{defined_before_calls, initialized_early};
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 
 /// Never-reassigned, file-local bindings whose every reference is the callee of a plain
-/// call `f(a, …)` without spread arguments, with the argument counts used.
+/// call `f(a, …)` (not `f?.(…)`) without spread arguments, with the argument
+/// counts used. Each call reaches the binding's value ([`defined_before_calls`]).
 ///
 /// A pass may replace such a binding's calls and delete its declaration
 /// without leaving a dangling reference. Bindings an Annex B block function, a
@@ -25,6 +27,7 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
     };
     calls.visit_program(program);
     let shadowed = redirectable_symbols(program, scoping);
+    let early = initialized_early(program, scoping);
     calls
         .calls
         .into_iter()
@@ -34,7 +37,8 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
                 && !scoping.symbol_is_mutated(symbol)
                 && scoping.symbol_redeclarations(symbol).is_empty()
                 && !is_global_binding(program.source_type, scoping, symbol)
-                && !shadowed.contains(&symbol))
+                && !shadowed.contains(&symbol)
+                && defined_before_calls(scoping, &early, symbol))
             .then_some((symbol, arities))
         })
         .collect()
@@ -50,6 +54,7 @@ struct PlainCalls<'s> {
 impl<'a> Visit<'a> for PlainCalls<'_> {
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         if let Expression::Identifier(callee) = &it.callee
+            && !it.optional
             && let Some(symbol) = self.scoping.get_reference(callee.reference_id()).symbol_id()
         {
             let (count, arities) = self
@@ -105,5 +110,13 @@ mod tests {
         let code = "function g() { eval('1'); } (function () { function f(a) { return a; } f(1); })(); g();";
         // `g` shares the program scope with the eval; `f` is in a sibling scope.
         assert_eq!(called(code), ["f"]);
+    }
+
+    #[test]
+    fn leaves_out_optional_calls() {
+        assert_eq!(
+            called("function f(a) { return a; } f?.(1); f(2);"),
+            Vec::<String>::new()
+        );
     }
 }

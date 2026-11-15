@@ -10,6 +10,7 @@ use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::function_context::this_free_functions;
+use crate::ast_deobfuscate::init_order::{defined_before_calls, initialized_early};
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::with_scope::redirectable_symbols;
@@ -170,6 +171,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineCollector {
 
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
         if let Expression::Identifier(ident) = &call.callee
+            && !call.optional
             && let Some(symbol) = resolve(ident, ctx.scoping())
         {
             self.call_scopes.entry(symbol).or_default().push(ctx.current_scope_id());
@@ -178,12 +180,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for TrampolineCollector {
 
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         let shadowed = redirectable_symbols(program, ctx.scoping());
+        let early = initialized_early(program, ctx.scoping());
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, candidate) in candidates {
             let Some(candidate) = candidate else {
                 continue;
             };
-            if !shadowed.contains(&symbol) && self.is_inlinable(symbol, &candidate, ctx.scoping()) {
+            if !shadowed.contains(&symbol)
+                && defined_before_calls(ctx.scoping(), &early, symbol)
+                && self.is_inlinable(symbol, &candidate, ctx.scoping())
+            {
                 let info = candidate.info;
                 deob_trace!(
                     "[AST/tramp] found  {}.apply(this, [{}, arguments]) trampoline",

@@ -13,8 +13,10 @@ use stats::{Trackers, find_trackers};
 
 /// Finds variables like `Ot` that:
 ///   - are declared once by `var Ot;` (not at the top level of a classic script)
-///   - are reset with `Ot = [...]` and otherwise used only by `Ot.push(x)`,
+///   - are reset with `Ot = [...]`, first among the leading statements of
+///     their scope that run no code, and otherwise used only by `Ot.push(x)`,
 ///     `Ot.pop()` and `Ot.splice(...)` calls with side-effect-free arguments
+///     outside parameter lists
 ///   - are never read: every such operation's value is discarded
 ///
 /// …and removes every such operation plus the declaration. Also handles the

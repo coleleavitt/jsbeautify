@@ -1,7 +1,12 @@
 //! Inlining passes replace a binding's references with what its declaration
-//! holds, and often delete the declaration. A direct `eval` can call,
-//! reassign or shadow such a binding by name, so a binding it can see
-//! (`with_scope::redirectable_symbols`) keeps its references and declaration.
+//! holds, and often delete the declaration. That is only sound when every
+//! reference is a call that reaches the declaration's value:
+//!
+//! - a direct `eval` can call, reassign or shadow a binding it can see by name
+//!   (`with_scope::redirectable_symbols`);
+//! - a `var` or `let` holds nothing until its initializer runs
+//!   (`call_sites::initialized_early`);
+//! - an optional call `f?.()` is not rewritten, so it still needs `f`.
 
 use std::path::Path;
 use std::process::Command;
@@ -94,11 +99,71 @@ const CASES: &[(&str, &str)] = &[
         r#"(function () { var g = global; eval("g = { Math: { max: function () { return 'e'; } } }"); console.log(g.Math.max(1, 2)); })();"#,
         "e",
     ),
+    // operator proxy `var` called before it is set (TypeError)
+    (
+        r#"(function () { try { console.log(BI(1, 2)); } catch (e) { console.log("TE"); } var BI = function (a, b) { return a + b; }; console.log(BI(2, 2)); })();"#,
+        "TE\n4",
+    ),
+    // unary proxy `var` called before it is set
+    (
+        r#"(function () { try { console.log(Bd(1)); } catch (e) { console.log("TE"); } var Bd = function (x) { return !x; }; console.log(Bd(0)); })();"#,
+        "TE\ntrue",
+    ),
+    // call proxy `var` called before it is set
+    (
+        r#"(function () { function t(a, b) { return a + b; } try { console.log(p(1, 2)); } catch (e) { console.log("TE"); } var p = function (a, b) { return t(a, b); }; })();"#,
+        "TE",
+    ),
+    // trampoline `var` called before it is set (Akamai phase 0.5f)
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var S = 1; function D(s, args) { return "d" + s + args[0]; } try { console.log(T(5)); } catch (e) { console.log("TE"); } var T = function () { return D.apply(this, [S, arguments]); }; console.log(T(6)); })();"#,
+        "TE\nd16",
+    ),
+    // operator proxy called with `?.`
+    (
+        r"(function () { function add(a, b) { return a + b; } console.log(add?.(1, 2), add(3, 4)); })();",
+        "3 7",
+    ),
+    // unary proxy called with `?.`
+    (
+        r"(function () { function Bd(x) { return !x; } console.log(Bd?.(1), Bd(0)); })();",
+        "false true",
+    ),
+    // single-use function called with `?.`
+    (
+        r"(function () { function f(x) { return x + 1; } console.log(f?.(1)); })();",
+        "2",
+    ),
+    // call proxy called with `?.`
+    (
+        r"(function () { function t(a, b) { return a + b; } function p(a, b) { return t(a, b); } console.log(p?.(1, 2)); })();",
+        "3",
+    ),
+    // trampoline called with `?.`
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var S = 1; function D(s, args) { return "d" + s + args[0]; } var T = function () { return D.apply(this, [S, arguments]); }; console.log(T?.(5), T(6)); })();"#,
+        "d15 d16",
+    ),
+    // lookup forwarder called with `?.`
+    (
+        r#"var bmak = 1, _abck = 2; (function () { function A() { return ["a", "b", "c"]; } function F(i) { return A()[i]; } console.log(F?.(0), F(2)); })();"#,
+        "a c",
+    ),
+    // method-call forwarder called with `?.`
+    (
+        r"var bmak = 1, _abck = 2; (function () { function M(o, a) { return o.concat(a); } console.log(M?.([1], 2), M([3], 4)); })();",
+        "[ 1, 2 ] [ 3, 4 ]",
+    ),
+    // trampoline assigned in one `case` and called in another, the BMP async state-machine shape
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var S = 1; function D(s, args) { return "d" + s + args[0]; } function run(state) { var T; switch (state) { case 0: T = function () { return D.apply(this, [S, arguments]); }; case 1: try { return T(5); } catch (e) { return "TE"; } } } console.log(run(0), run(1)); })();"#,
+        "d15 TE",
+    ),
 ];
 
 #[test]
-fn proxies_visible_to_direct_eval_keep_their_behavior() {
-    let dir = std::env::temp_dir().join(format!("jsb-direct-eval-{}", std::process::id()));
+fn inlined_proxies_keep_their_behavior() {
+    let dir = std::env::temp_dir().join(format!("jsb-proxy-inlining-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     for flags in [&["-d"][..], &["-d", "--isolated"]] {
         for &(input, expected) in CASES {

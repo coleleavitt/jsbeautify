@@ -1,7 +1,7 @@
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, AssignmentOperator, AssignmentTarget, Declaration, ExportDeclaration, Expression,
-    ExpressionStatement, IdentifierReference, Program, SequenceExpression, UnaryOperator, VariableDeclaration,
-    VariableDeclarationKind,
+    ExpressionStatement, FormalParameters, IdentifierReference, Program, SequenceExpression, UnaryOperator,
+    VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
@@ -10,6 +10,7 @@ use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::{SymbolFlags, SymbolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::init_order::initialized_early;
 use crate::ast_deobfuscate::with_scope::{redirectable_symbols, scopes_in_with_bodies};
 
 use super::super::only_local_access;
@@ -72,6 +73,7 @@ pub(super) fn find_trackers(program: &Program<'_>, scoping: &Scoping) -> Tracker
     let mut uses = Uses {
         scoping,
         with_scopes: scopes_in_with_bodies(scoping),
+        in_parameters: 0,
         declared: FxHashSet::default(),
         removable: FxHashMap::default(),
     };
@@ -80,6 +82,8 @@ pub(super) fn find_trackers(program: &Program<'_>, scoping: &Scoping) -> Tracker
         declared, removable, ..
     } = uses;
     let redirectable = redirectable_symbols(program, scoping);
+    // Reset to an array before any operation can run.
+    let early = initialized_early(program, scoping);
     let symbols: FxHashSet<SymbolId> = declared
         .into_iter()
         .filter(|&symbol| {
@@ -87,7 +91,7 @@ pub(super) fn find_trackers(program: &Program<'_>, scoping: &Scoping) -> Tracker
             let ops = || references.iter().filter_map(|id| removable.get(id));
             references.iter().all(|id| removable.contains_key(id))
                 && ops().filter(|&&op| op == Op::Call).count() >= MIN_TRACKER_CALLS
-                && ops().any(|&op| op == Op::Reset)
+                && early.contains(&symbol)
                 && only_local_access(program, scoping, &redirectable, symbol)
         })
         .collect();
@@ -101,6 +105,9 @@ pub(super) fn find_trackers(program: &Program<'_>, scoping: &Scoping) -> Tracker
 struct Uses<'s> {
     scoping: &'s Scoping,
     with_scopes: FxHashSet<ScopeId>,
+    /// How many parameter lists enclose the visit, where a read of a later
+    /// parameter throws.
+    in_parameters: usize,
     /// Bindings of `var S;` declarators.
     declared: FxHashSet<SymbolId>,
     removable: FxHashMap<ReferenceId, Op>,
@@ -113,6 +120,9 @@ impl Uses<'_> {
         let Some((target, op)) = op(expr) else {
             return;
         };
+        if self.in_parameters > 0 {
+            return;
+        }
         let pure = match expr {
             Expression::CallExpression(call) => call.arguments.iter().all(|arg| match arg {
                 Argument::SpreadElement(_) => false,
@@ -173,6 +183,12 @@ impl<'a> Visit<'a> for Uses<'_> {
             }
         }
         walk::walk_variable_declaration(self, decl);
+    }
+
+    fn visit_formal_parameters(&mut self, params: &FormalParameters<'a>) {
+        self.in_parameters += 1;
+        walk::walk_formal_parameters(self, params);
+        self.in_parameters -= 1;
     }
 
     fn visit_export_declaration(&mut self, export: &ExportDeclaration<'a>) {

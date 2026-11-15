@@ -8,6 +8,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::init_order::{defined_before_calls, initialized_early};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 
@@ -25,7 +26,9 @@ use super::{Ctx, only_local_access};
 /// Proxies and call sites are matched by `SymbolId`. A binding is a proxy only
 /// when nothing else can reach it at runtime: it is declared once, never
 /// written, not a classic-script global, not visible to a direct `eval`, and
-/// not shadowed by a `with` object or an Annex B block function.
+/// not shadowed by a `with` object or an Annex B block function. A `var`
+/// proxy must also be set before any call can run it
+/// ([`defined_before_calls`]).
 pub struct EqualityProxyUnwrapper {
     proxies: FxHashMap<SymbolId, BinaryOperator>,
     unwrapped: usize,
@@ -60,8 +63,11 @@ impl EqualityProxyUnwrapper {
             return;
         }
         let redirectable = redirectable_symbols(program, scoping);
+        let early = initialized_early(program, scoping);
         self.proxies.retain(|&symbol, _| {
-            !scoping.symbol_is_mutated(symbol) && only_local_access(program, scoping, &redirectable, symbol)
+            !scoping.symbol_is_mutated(symbol)
+                && only_local_access(program, scoping, &redirectable, symbol)
+                && defined_before_calls(scoping, &early, symbol)
         });
     }
 
@@ -129,7 +135,11 @@ impl EqualityProxyUnwrapper {
             return None;
         }
         // The operands must read the first and the second parameter, two
-        // distinct bindings (sloppy mode allows `function (a, a)`).
+        // distinct bindings (sloppy mode allows `function (a, a)`) without
+        // defaults.
+        if func.params.items.iter().any(|param| param.initializer.is_some()) {
+            return None;
+        }
         let BindingPattern::BindingIdentifier(p1) = &func.params.items[0].pattern else {
             return None;
         };

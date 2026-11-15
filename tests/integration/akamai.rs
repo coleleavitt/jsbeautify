@@ -70,6 +70,36 @@ const CASES: &[(&str, &str, &[&str])] = &[
         "3",
         &[],
     ),
+    // eq_param_initializer
+    (
+        r"var bmak = 1, _abck = 2; (function () { function BI(a, b = 5) { return a === b; } console.log(BI(5, undefined), BI(1, 1)); })();",
+        "true true",
+        &[],
+    ),
+    // eq_var_before_init
+    (
+        r#"var bmak = 1, _abck = 2; (function () { try { console.log(BI(1, 1)); } catch (e) { console.log("TE"); } var BI = function (a, b) { return a === b; }; console.log(BI(2, 2)); })();"#,
+        "TE\ntrue",
+        &[],
+    ),
+    // eq_let_before_init
+    (
+        r"var bmak = 1, _abck = 2; (function () { try { console.log(BI(1, 1)); } catch (e) { console.log(e.name); } let BI = function (a, b) { return a === b; }; console.log(BI(2, 2)); })();",
+        "ReferenceError\ntrue",
+        &[],
+    ),
+    // tracker_before_reset
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var Ot; try { Ot.push(1); } catch (e) { console.log("TE"); } Ot = []; Ot.push(1); Ot.push(2); Ot.pop(); Ot.pop(); })();"#,
+        "TE",
+        &[],
+    ),
+    // tracker_param_tdz
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var Ot; Ot = []; Ot.push(1); Ot.push(2); Ot.pop(); Ot.pop(); function f(a = (Ot.push(b), 0), b) { return a; } try { f(); console.log("ok"); } catch (e) { console.log(e.name); } })();"#,
+        "ReferenceError",
+        &[],
+    ),
     // eq_with
     (
         r"var bmak = 1, _abck = 2; (function () { var BI = function (a, b) { return a === b; }; with ({ BI: function (a, b) { return a * b; } }) { console.log(BI(3, 4)); } })();",

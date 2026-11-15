@@ -8,6 +8,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
 
+use crate::ast_deobfuscate::init_order::{defined_before_calls, initialized_early};
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::with_scope::redirectable_symbols;
@@ -133,6 +134,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyCollector {
 
     fn enter_call_expression(&mut self, call: &mut CallExpression<'a>, ctx: &mut Ctx<'a>) {
         if let Expression::Identifier(ident) = &call.callee
+            && !call.optional
             && let Some(symbol) = ctx.scoping().get_reference(ident.reference_id()).symbol_id()
         {
             self.call_sites.entry(symbol).or_default().push(CallSite {
@@ -145,9 +147,13 @@ impl<'a> Traverse<'a, DeobfuscateState> for CallProxyCollector {
 
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         let shadowed = redirectable_symbols(program, ctx.scoping());
+        let early = initialized_early(program, ctx.scoping());
         let candidates = std::mem::take(&mut self.candidates);
         for (symbol, info) in candidates {
-            if !shadowed.contains(&symbol) && self.is_single_use(symbol, &info, ctx.scoping()) {
+            if !shadowed.contains(&symbol)
+                && defined_before_calls(ctx.scoping(), &early, symbol)
+                && self.is_single_use(symbol, &info, ctx.scoping())
+            {
                 deob_trace!(
                     "[AST] Found call proxy -> {} ({} params)",
                     info.target_name,

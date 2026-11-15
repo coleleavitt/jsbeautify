@@ -87,6 +87,7 @@ pub(crate) mod function_context;
 pub(crate) mod function_inline;
 pub(crate) mod heuristic_rename;
 pub(crate) mod iife_unwrap;
+pub(crate) mod init_order;
 pub(crate) mod json_parse_eval;
 pub(crate) mod let_to_const;
 pub mod llm_rename;
