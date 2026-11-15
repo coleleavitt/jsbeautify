@@ -28,6 +28,8 @@ pub struct SelfInitAccessorFlattener {
     pending: FxHashMap<SymbolId, (String, InitKind)>,
     /// Every name the program binds or reads, and the cache names taken.
     used_names: FxHashSet<String>,
+    /// Per cache base name, the next number to try.
+    next_suffix: FxHashMap<String, usize>,
     /// References that are the callee of a plain call `F()`.
     callees: FxHashSet<ReferenceId>,
     redirectable: FxHashSet<SymbolId>,
@@ -121,12 +123,15 @@ impl SelfInitAccessorFlattener {
     /// `__NAME_cache`, numbered when the program already uses that name.
     fn cache_name(&mut self, accessor: &str) -> String {
         let base = format!("__{accessor}_cache");
-        let mut name = base.clone();
-        let mut n = 1;
+        // Resume after the last number this base got, so `k` accessors of
+        // one name cost `O(k)`, not `O(k^2)`.
+        let n = self.next_suffix.entry(base.clone()).or_insert(1);
+        let mut name = if *n == 1 { base.clone() } else { format!("{base}_{n}") };
         while self.used_names.contains(&name) {
-            n += 1;
+            *n += 1;
             name = format!("{base}_{n}");
         }
+        *n += 1;
         self.used_names.insert(name.clone());
         name
     }

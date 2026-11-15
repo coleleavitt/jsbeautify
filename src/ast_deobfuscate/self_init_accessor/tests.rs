@@ -96,3 +96,23 @@ fn leaves_accessors_whose_rewrite_could_be_observed() {
         assert!(!out.contains("cache"), "{code}\n=> {out}");
     }
 }
+
+#[test]
+fn many_accessors_of_one_name_scale_linearly() {
+    crate::ast_deobfuscate::scaling::assert_near_linear("self-init cache names", 1000, |n| {
+        let code = (0..n)
+            .map(|i| format!("(function () {{ function F() {{ var x = []; F = function () {{ return x; }}; return x; }} F().push({i}); }})();\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let allocator = Allocator::default();
+        let mut program = Parser::new(&allocator, &code, SourceType::mjs()).parse().program;
+        let scoping = semantic::scoping(&program);
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        let mut pass = SelfInitAccessorFlattener::new();
+        let started = std::time::Instant::now();
+        traverse_mut_with_ctx(&mut pass, &mut program, &mut ctx);
+        let elapsed = started.elapsed();
+        assert_eq!(pass.rewritten(), n);
+        elapsed
+    });
+}
