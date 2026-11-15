@@ -149,10 +149,12 @@ mod tests {
     use super::*;
 
     fn indent_width(code: &str) -> usize {
-        let allocator = Allocator::default();
-        let parsed = Parser::new(&allocator, code, SourceType::mjs()).parse();
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        layout_codegen_options(&parsed.program).indent_width
+        crate::stack::run_on_sized_stack(code.len(), || {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, code, SourceType::mjs()).parse();
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            layout_codegen_options(&parsed.program).indent_width
+        })
     }
 
     fn blocks(depth: usize) -> String {
