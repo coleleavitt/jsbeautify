@@ -57,7 +57,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerRewriter {
             return;
         };
         let Some(index) = ConstExpr::from_ast(&cme.expression, scoping)
-            .and_then(|index| index.eval(&|binding, at| self.constants.get(binding, at)))
+            .and_then(|index| index.eval(&|binding, at, scope| self.constants.get(binding, at, scope)))
             .and_then(|index| usize::try_from(index).ok())
         else {
             return;

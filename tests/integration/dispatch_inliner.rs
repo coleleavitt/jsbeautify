@@ -1,5 +1,6 @@
 //! The string-array-factory dispatch inliner (`f()[k]` with a constant `k`)
-//! resolves factories and index constants through bindings, not names. Each
+//! resolves factories and index constants through bindings, not names, and
+//! leaves alone the globals a classic script shares with other scripts. Each
 //! case was miscompiled by the name-matched pass; its output must print what
 //! the input prints under node.
 
@@ -118,6 +119,15 @@ const CASES: &[(&str, &str)] = &[
         r#"var n = 0; function f(x = n++){return ["a","b"];} console.log(f()[0], n);"#,
         "a 1",
     ),
+    // a hoisted function called before the constant's definition
+    (
+        r#"function f(){return ["a","b","c"];} console.log(g()); var I = 1; console.log(g()); function g(){ return f()[I]; }"#,
+        "undefined\nb",
+    ),
+    (
+        r#"(function(){ function f(){return ["a","b","c"];} console.log(g()); var I = 1; console.log(g()); function g(){ return f()[I]; } })();"#,
+        "undefined\nb",
+    ),
 ];
 
 /// Factories and constants that nothing else can change are still decoded.
@@ -149,15 +159,58 @@ fn shadowed_or_rewritten_bindings_keep_their_behavior() {
 fn decodes_factories_through_their_bindings() {
     let dir = std::env::temp_dir().join(format!("jsb-dispatch-decoded-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    for flags in [&["-d"][..], &["-d", "--isolated"]] {
+    // Only `--isolated` promises that no other script changes the globals.
+    for (flags, decoded) in [(&["-d"][..], false), (&["-d", "--isolated"], true)] {
         let output = deobfuscate(&dir, DECODED, flags);
-        assert!(
+        assert_eq!(
             output.contains(r#"console.log("t5", "gX", "B5""#),
-            "{flags:?} left a call site:\n{output}"
+            decoded,
+            "{flags:?}:\n{output}"
         );
         if let Some(stdout) = node_stdout(&dir, &output) {
             assert_eq!(stdout.trim_end(), "t5 gX B5 0", "{flags:?}\n{output}");
         }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the scripts print when run one after another in one realm, as a
+/// page runs its `<script>` elements, or `None` when node is not installed.
+fn node_scripts_stdout(dir: &Path, scripts: &[&str]) -> Option<String> {
+    let mut paths = Vec::new();
+    for (index, script) in scripts.iter().enumerate() {
+        let path = dir.join(format!("script{index}.js"));
+        std::fs::write(&path, script).expect("write script");
+        paths.push(path);
+    }
+    let runner = "const vm = require('vm'), fs = require('fs'); const realm = vm.createContext({ console }); \
+                  for (const file of process.argv.slice(1)) vm.runInContext(fs.readFileSync(file, 'utf8'), realm, { filename: file });";
+    let output = match Command::new("node").arg("-e").arg(runner).args(&paths).output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => panic!("run node: {error}"),
+    };
+    assert!(output.status.success(), "node failed: {output:?}");
+    Some(String::from_utf8(output.stdout).expect("stdout is utf8"))
+}
+
+/// A classic script's top-level factory and constants, and the undeclared
+/// globals it assigns, are shared with the scripts that run after it.
+#[test]
+fn classic_script_keeps_the_globals_other_scripts_change() {
+    let dir = std::env::temp_dir().join(format!("jsb-dispatch-scripts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let first =
+        r#"function f(){return ["a","b"];} var I = 0; NF = 0; function show(){ console.log(f()[I], f()[NF]); }"#;
+    let second = r#"show(); I = 1; NF = 1; f = function(){ return ["x","y"]; }; show();"#;
+    let output = deobfuscate(&dir, first, &["-d"]);
+    if let Some(expected) = node_scripts_stdout(&dir, &[first, second]) {
+        assert_eq!(expected.trim_end(), "a a\ny y");
+        assert_eq!(
+            node_scripts_stdout(&dir, &[&output, second]),
+            Some(expected),
+            "{output}"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

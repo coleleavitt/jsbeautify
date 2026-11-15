@@ -26,8 +26,10 @@
 //! binding qualifies only when nothing but its own definition can give it a
 //! value: see [`DispatchInlinerCollector`].
 
+use oxc_semantic::Scoping;
+use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use oxc_traverse::TraverseCtx;
@@ -49,27 +51,92 @@ pub enum Binding {
     Global(String),
 }
 
+/// Where a definition's value becomes visible.
+#[derive(Clone, Copy)]
+struct Reach {
+    /// The end of the definition statement.
+    ready: u32,
+    /// The scope whose body holds the definition.
+    scope: ScopeId,
+    /// The definition is in the program body after nothing but function
+    /// declarations and declarations that run no code, so no code runs
+    /// before it.
+    early: bool,
+}
+
+impl Reach {
+    /// Whether a use at offset `at` in `scope` runs after the definition.
+    /// Textual order decides, except that a function declaration between
+    /// the definition's scope and the use may be called (hoisted) before the
+    /// definition runs, unless no code runs before it.
+    fn reaches(&self, at: u32, scope: ScopeId, hoisting: &Hoisting) -> bool {
+        at >= self.ready && (self.early || !hoisting.declaration_between(scope, self.scope))
+    }
+}
+
+/// Per scope, its depth and its nearest enclosing (or own) function
+/// declaration scope.
+#[derive(Default)]
+struct Hoisting(FxHashMap<ScopeId, (usize, Option<ScopeId>)>);
+
+impl Hoisting {
+    fn new(scoping: &Scoping, declarations: &FxHashSet<ScopeId>) -> Self {
+        let mut nesting = FxHashMap::default();
+        for scope in scoping.scope_descendants_from_root() {
+            let mut chain = Vec::new();
+            let mut current = Some(scope);
+            while let Some(id) = current
+                && !nesting.contains_key(&id)
+            {
+                chain.push(id);
+                current = scoping.scope_parent_id(id);
+            }
+            let (mut depth, mut declaration) = current.and_then(|id| nesting.get(&id).copied()).unwrap_or((0, None));
+            for id in chain.into_iter().rev() {
+                depth += 1;
+                if declarations.contains(&id) {
+                    declaration = Some(id);
+                }
+                nesting.insert(id, (depth, declaration));
+            }
+        }
+        Self(nesting)
+    }
+
+    /// Whether a function declaration encloses `inner` below its ancestor `outer`.
+    fn declaration_between(&self, inner: ScopeId, outer: ScopeId) -> bool {
+        let depth = |scope| self.0.get(&scope).map(|&(depth, _)| depth);
+        self.0
+            .get(&inner)
+            .and_then(|&(_, declaration)| declaration)
+            .and_then(depth)
+            .is_some_and(|declaration_depth| depth(outer).is_none_or(|outer_depth| declaration_depth > outer_depth))
+    }
+}
+
 struct Constant {
     value: usize,
-    /// The end of the definition: a read from this offset on sees the value.
-    ready: u32,
+    reach: Reach,
 }
 
 /// The index constants the collector proved.
 #[derive(Default)]
-pub struct IndexConstants(FxHashMap<Binding, Constant>);
+pub struct IndexConstants {
+    constants: FxHashMap<Binding, Constant>,
+    hoisting: Hoisting,
+}
 
 impl IndexConstants {
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.constants.len()
     }
 
-    /// The value a read of `binding` at offset `at` sees.
-    fn get(&self, binding: &Binding, at: u32) -> Option<usize> {
-        self.0
+    /// The value a read of `binding` at offset `at` in `scope` sees.
+    fn get(&self, binding: &Binding, at: u32, scope: ScopeId) -> Option<usize> {
+        self.constants
             .get(binding)
-            .filter(|constant| at >= constant.ready)
+            .filter(|constant| constant.reach.reaches(at, scope, &self.hoisting))
             .map(|constant| constant.value)
     }
 }

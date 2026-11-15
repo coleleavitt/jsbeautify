@@ -265,3 +265,49 @@ fn resolves_shared_array_factories_read_only_by_index() {
     let out = run(code);
     assert!(out.contains(r#""b" + "a""#), "got: {out}");
 }
+
+#[test]
+fn keeps_classic_script_globals_other_scripts_may_change() {
+    for code in [
+        r#"function f(){return ["a","b"];} var r = f()[0];"#,
+        r#"var I = 1; (function(){ function f(){return ["a","b"];} r = f()[I]; })();"#,
+        r#"NF = 1; (function(){ function f(){return ["a","b"];} r = f()[NF]; })();"#,
+    ] {
+        let out = run_as(code, SourceType::script());
+        assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
+    }
+    let code = r#"(function(){ var I = 1; function f(){return ["a","b"];} r = f()[I]; })();"#;
+    let out = run_as(code, SourceType::script());
+    assert!(out.contains(r#"r = "b""#), "got: {out}");
+}
+
+/// A function declaration is hoisted: a call above a constant's definition
+/// runs its body before the definition.
+#[test]
+fn keeps_reads_a_hoisted_call_may_run_before_the_definition() {
+    for code in [
+        r#"function f(){return ["a","b","c"];} g(); var I = 1; function g(){ return f()[I]; }"#,
+        r#"function f(){return ["a","b","c"];} g(); N = 1; function g(){ return f()[N]; }"#,
+        r#"function f(){return ["a","b","c"];} function outer(){ inner(); var I = 1; function inner(){ return f()[I]; } }"#,
+        r#"g(); var c = ["a","b"]; function F(){return c;} function g(){ return F()[0]; }"#,
+        r#"import "m"; function f(){return ["a","b","c"];} var I = 1; export function g(){ return f()[I]; }"#,
+    ] {
+        let out = run(code);
+        assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
+    }
+}
+
+#[test]
+fn resolves_hoisted_reads_of_definitions_no_code_runs_before() {
+    let code = r#"
+            var A = 1, s = "x";
+            function f(){return ["a","b","c"];}
+            var B = A + 1;
+            function g(){ return f()[B]; }
+            g();
+            function outer(){ var I = 1; var h = () => f()[I]; return h(); }
+        "#;
+    let out = run(code);
+    assert!(out.contains(r#"return "c""#), "got: {out}");
+    assert!(out.contains(r#"=> "b""#), "got: {out}");
+}
