@@ -179,7 +179,7 @@ impl DecoderInliner {
         None
     }
 
-    fn extract_xor_key(&self, call: &CallExpression<'_>) -> Option<Vec<u8>> {
+    fn extract_xor_key(&self, call: &CallExpression<'_>) -> Option<Vec<u16>> {
         deob_trace!("[AST]           extract_xor_key: args len = {}", call.arguments.len());
         if call.arguments.len() >= 2 {
             if let Some(arg) = call.arguments.get(1) {
@@ -187,12 +187,17 @@ impl DecoderInliner {
                 if let Some(expr) = arg.as_expression() {
                     deob_trace!("[AST]           Argument is expression");
                     if let Expression::StringLiteral(lit) = expr {
-                        let key = lit.value.as_bytes().to_vec();
+                        let key: Vec<u16> = lit.value.encode_utf16().collect();
                         deob_trace!("[AST]           String literal key: {key:?}");
                         return Some(key);
                     }
-                    if let Expression::NumericLiteral(lit) = expr {
-                        let key = vec![lit.value as u8];
+                    // `charCodeAt(i) ^ key` keeps the low 16 bits of an integer key;
+                    // other numbers are left alone.
+                    if let Expression::NumericLiteral(lit) = expr
+                        && lit.value.fract() == 0.0
+                        && (0.0..=f64::from(u16::MAX)).contains(&lit.value)
+                    {
+                        let key = vec![lit.value as u16];
                         deob_trace!("[AST]           Numeric literal key: {key:?}");
                         return Some(key);
                     }
@@ -214,8 +219,10 @@ impl DecoderInliner {
             && let Some(arg) = call.arguments.get(1)
             && let Some(expr) = arg.as_expression()
             && let Expression::StringLiteral(lit) = expr
+            && let Some(key) = lit.value.as_str().filter(|key| key.is_ascii())
         {
-            return Some(lit.value.as_bytes().to_vec());
+            // An ASCII key's bytes are its char codes.
+            return Some(key.as_bytes().to_vec());
         }
         None
     }

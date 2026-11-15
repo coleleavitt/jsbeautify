@@ -737,14 +737,13 @@ pub enum EsmBinding<'b, 'a> {
 /// The bindings of `__turbopack_context__.s([…])`, read like the runtime's
 /// `esm()`: after a name, a numeric tag `0` introduces a value; anything else
 /// is a getter, followed by an optional setter function. Stops at the first
-/// element it cannot read.
+/// element it cannot read. A binding whose name holds a lone surrogate is read
+/// past but not returned.
 pub fn esm_bindings<'b, 'a>(list: &'b ArrayExpression<'a>) -> Vec<(&'b str, EsmBinding<'b, 'a>)> {
     let mut out = Vec::new();
     let mut elements = list.elements.iter().peekable();
     while let Some(ArrayExpressionElement::StringLiteral(name)) = elements.next() {
-        let Some(name) = name.value.as_str() else {
-            break;
-        };
+        let name = name.value.as_str();
         let Some(binding) = elements.next().and_then(ArrayExpressionElement::as_expression) else {
             break;
         };
@@ -752,10 +751,10 @@ pub fn esm_bindings<'b, 'a>(list: &'b ArrayExpression<'a>) -> Vec<(&'b str, EsmB
             let Some(value) = elements.next().and_then(ArrayExpressionElement::as_expression) else {
                 break;
             };
-            out.push((name, EsmBinding::Value(value)));
+            out.extend(name.map(|name| (name, EsmBinding::Value(value))));
             continue;
         }
-        out.push((name, EsmBinding::Getter(binding)));
+        out.extend(name.map(|name| (name, EsmBinding::Getter(binding))));
         match elements.peek() {
             None | Some(ArrayExpressionElement::StringLiteral(_)) => {}
             Some(next) if next.as_expression().and_then(factory_params).is_some() => {

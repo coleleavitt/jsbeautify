@@ -1,6 +1,6 @@
-//! Lone surrogates in string values: deobfuscation and beautification keep
-//! every string's UTF-16 value, so the output behaves like the input under
-//! node and never prints U+FFFD in place of a surrogate.
+//! Lone surrogates and other non-ASCII string values: deobfuscation and
+//! beautification keep every string's UTF-16 value, so the output behaves
+//! like the input under node and never prints U+FFFD in place of a surrogate.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -103,4 +103,79 @@ fn lone_surrogate_export_name_is_an_error() {
     let src = "var x = 1;\nexport { x as \"\\uD800\" };\n";
     assert!(beautify(src, &Options::default()).is_err());
     assert!(AstDeobfuscator::new().deobfuscate(src).is_err());
+}
+
+const XOR: &str = "function xorDecode(s, k) { var r = ''; for (var i = 0; i < s.length; i++) r += String.fromCharCode(s.charCodeAt(i) ^ k.charCodeAt(i % k.length)); return r; }\n";
+const RC4: &str = "function rc4Decode(d, k) { var s = [], j = 0, x, r = ''; d = atob(d);
+  for (var i = 0; i < 256; i++) s[i] = i;
+  for (i = 0; i < 256; i++) { j = (j + s[i] + k.charCodeAt(i % k.length)) % 256; x = s[i]; s[i] = s[j]; s[j] = x; }
+  i = 0; j = 0;
+  for (var y = 0; y < d.length; y++) { i = (i + 1) % 256; j = (j + s[i]) % 256; x = s[i]; s[i] = s[j]; s[j] = x; r += String.fromCharCode(d.charCodeAt(y) ^ s[(s[i] + s[j]) % 256]); }
+  return r; }\n";
+
+/// A string array read through a decoder: `(array, decoder prelude, call)`.
+fn decoder_program(array: &str, prelude: &str, call: &str) -> String {
+    format!(
+        "var _0xarr = [{array}];\n{prelude}function _0xdec(i) {{ return {call}; }}\nconsole.log(JSON.stringify(_0xdec(0)));\n"
+    )
+}
+
+/// The decoders work on UTF-16 code units (`atob` yields one char per byte),
+/// not UTF-8 bytes. Each case says whether the call must still be decoded.
+#[test]
+fn decoders_work_on_char_codes() {
+    let cases = [
+        (
+            "xor ascii",
+            decoder_program(r#""\u0003\u000e\u0007", "b""#, XOR, r#"xorDecode(_0xarr[i], "key")"#),
+            true,
+        ),
+        (
+            "xor lone-surrogate key",
+            decoder_program(r#""\ud7ff", "b""#, XOR, r#"xorDecode(_0xarr[i], "\ud800")"#),
+            true,
+        ),
+        (
+            "xor non-ASCII key",
+            decoder_program(r#""\u00ff", "b""#, XOR, r#"xorDecode(_0xarr[i], "\u00e9")"#),
+            true,
+        ),
+        (
+            "xor non-ASCII value",
+            decoder_program(r#""\u00ff\u0101", "b""#, XOR, r#"xorDecode(_0xarr[i], "k")"#),
+            true,
+        ),
+        (
+            "atob non-ASCII",
+            decoder_program(r#""w6k=", "aGk=""#, "", "atob(_0xarr[i])"),
+            true,
+        ),
+        (
+            "rc4 ascii",
+            decoder_program(r#""OWLQRwc=", "b""#, RC4, r#"rc4Decode(_0xarr[i], "abcdefgh")"#),
+            true,
+        ),
+        (
+            "rc4 non-ASCII",
+            decoder_program(r#""kq6d", "b""#, RC4, r#"rc4Decode(_0xarr[i], "abcdefgh")"#),
+            false,
+        ),
+    ];
+    for (name, src, decoded) in cases {
+        let expected = node_stdout(&src);
+        for isolated in [false, true] {
+            let out = AstDeobfuscator::new()
+                .with_isolated(isolated)
+                .deobfuscate(&src)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(out.contains("JSON.stringify(\""), decoded, "{name}:\n{out}");
+            if let Some(expected) = &expected {
+                assert_eq!(
+                    node_stdout(&out).as_ref(),
+                    Some(expected),
+                    "{name} behaves differently:\n{out}"
+                );
+            }
+        }
+    }
 }

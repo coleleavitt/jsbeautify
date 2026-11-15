@@ -70,6 +70,16 @@ fn names_exported_locals_including_hoisted_modules() {
     assert!(out.contains("], 51)"), "{out}");
 }
 
+/// An export name with a lone surrogate names nothing, and the bindings after
+/// it are still named.
+#[test]
+fn skips_lone_surrogate_export_names() {
+    let out = run(r#"(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push([null,
+1,e=>{"use strict";let a=1,c=2;e.s(["\ud800",()=>a,"after",()=>c])}]);"#);
+    assert!(out.contains("let a = 1, after = 2"), "{out}");
+    assert!(out.contains("\"\\ud800\""), "{out}");
+}
+
 #[test]
 fn leaves_shadowing_context_names_alone() {
     let out = run(CHUNK);

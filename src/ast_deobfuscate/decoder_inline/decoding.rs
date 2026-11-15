@@ -20,31 +20,33 @@ impl DecoderInliner {
         result
     }
 
+    /// `atob`: one char per decoded byte (Latin-1), not UTF-8.
     fn decode_base64(&self, value: &str) -> Option<String> {
         deob_trace!("[AST]     decode_base64 input: {value:?}");
         let result = BASE64_STANDARD
             .decode(value.as_bytes())
             .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok());
+            .map(|bytes| bytes.into_iter().map(char::from).collect());
         deob_trace!("[AST]     decode_base64 output: {result:?}");
         result
     }
 
-    fn decode_xor(&self, value: &str, key: &[u8]) -> Option<String> {
+    /// `String.fromCharCode(s.charCodeAt(i) ^ k.charCodeAt(i % k.length))`, on
+    /// UTF-16 code units. A result with a lone surrogate has no Rust text.
+    fn decode_xor(&self, value: &str, key: &[u16]) -> Option<String> {
         deob_trace!("[AST]     decode_xor input: {value:?}, key: {key:?}");
         if key.is_empty() {
             deob_trace!("[AST]     decode_xor: empty key, returning None");
             return None;
         }
 
-        let bytes = value.as_bytes();
-        let decoded: Vec<u8> = bytes
-            .iter()
-            .enumerate()
-            .map(|(i, &byte)| byte ^ key[i % key.len()])
+        let decoded: Vec<u16> = value
+            .encode_utf16()
+            .zip(key.iter().cycle())
+            .map(|(unit, key)| unit ^ key)
             .collect();
 
-        let result = String::from_utf8(decoded).ok();
+        let result = String::from_utf16(&decoded).ok();
         deob_trace!("[AST]     decode_xor output: {result:?}");
         result
     }
@@ -85,7 +87,9 @@ impl DecoderInliner {
         }
 
         deob_trace!("[AST]     decode_rc4 output bytes: {data:?}");
-        let result = String::from_utf8(data).ok();
+        // A decoder may turn the bytes into chars one by one or as UTF-8; the
+        // two agree only on ASCII.
+        let result = data.is_ascii().then(|| data.into_iter().map(char::from).collect());
         deob_trace!("[AST]     decode_rc4 output: {result:?}");
         result
     }

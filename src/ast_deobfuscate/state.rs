@@ -75,6 +75,11 @@ pub enum OffsetOperation {
 pub enum DecoderType {
     Simple,
     Base64,
-    Xor { key: Vec<u8> },
-    Rc4 { key: Vec<u8> },
+    /// The key's UTF-16 code units, which the decoder XORs with the value's.
+    Xor {
+        key: Vec<u16>,
+    },
+    Rc4 {
+        key: Vec<u8>,
+    },
 }
