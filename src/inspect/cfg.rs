@@ -3,6 +3,7 @@ use crate::ParseGoal;
 use crate::ast_deobfuscate::semantic;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
+use oxc_ast::ast::PropertyKey;
 use oxc_cfg::graph::visit::EdgeRef;
 use oxc_cfg::{BlockNodeId, ControlFlowGraph, EdgeType};
 use oxc_semantic::dot::{DebugDot, DebugDotContext};
@@ -177,12 +178,21 @@ fn function_name<'a>(nodes: &AstNodes<'a>, node: &AstNode<'a>) -> Option<Cow<'a,
             .id
             .get_binding_identifier()
             .map(|id| Cow::Borrowed(id.name.as_str())),
-        AstKind::MethodDefinition(method) => method.key.static_name(),
-        AstKind::PropertyDefinition(property) => property.key.static_name(),
-        AstKind::ObjectProperty(property) => property.key.static_name(),
+        AstKind::MethodDefinition(method) => key_name(&method.key),
+        AstKind::PropertyDefinition(property) => key_name(&property.key),
+        AstKind::ObjectProperty(property) => key_name(&property.key),
         AstKind::AssignmentExpression(assignment) => assignment.left.get_identifier_name().map(Cow::Borrowed),
         _ => None,
     }
+}
+
+/// The name of a static key, with a lone surrogate shown as `\uXXXX`.
+fn key_name<'a>(key: &PropertyKey<'a>) -> Option<Cow<'a, str>> {
+    let name = key.static_name()?;
+    if name.as_str().is_none() {
+        return Some(Cow::Owned(name.display().to_string()));
+    }
+    name.into_cow_str()
 }
 
 impl ControlFlow {

@@ -132,7 +132,7 @@ fn is_typeof_expr(expr: &Expression<'_>) -> bool {
 }
 
 fn is_u_string(expr: &Expression<'_>) -> bool {
-    matches!(expr, Expression::StringLiteral(lit) if lit.value.as_str() == "u")
+    matches!(expr, Expression::StringLiteral(lit) if lit.value == "u")
 }
 
 fn numeric_value(expr: &Expression<'_>) -> Option<f64> {

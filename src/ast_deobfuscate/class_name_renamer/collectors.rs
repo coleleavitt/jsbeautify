@@ -132,7 +132,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for DisplayNameCollector {
         };
 
         let mangled = obj_id.name.as_str();
-        let real_name = s.value.as_str();
+        let Some(real_name) = s.value.as_str() else {
+            return;
+        };
 
         if real_name.len() <= 2 {
             return;

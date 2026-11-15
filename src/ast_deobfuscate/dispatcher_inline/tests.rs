@@ -79,6 +79,20 @@ fn test_inline_string() {
     assert!(output.contains("\"hello\""));
 }
 
+/// A lone surrogate has no Rust text, so neither a key nor a return value
+/// holding one is inlined.
+#[test]
+fn keeps_lone_surrogate_keys_and_return_values() {
+    for code in [
+        r#"var d = { "a": function() { return "\udc00"; } }; var x = d["a"]();"#,
+        r#"var d = { "\ud800": function() { return 1; } }; var x = d["\ud800"]();"#,
+    ] {
+        let (output, inliner) = run_dispatcher_inliner(code);
+        assert_eq!(inliner.rewrites(), 0, "{output}");
+        assert!(!output.contains('\u{FFFD}'), "{output}");
+    }
+}
+
 #[test]
 fn test_inline_multiple_calls() {
     let code = r#"

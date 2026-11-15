@@ -140,7 +140,7 @@ impl LoopUnroller {
             Expression::NumericLiteral(lit) => {
                 Some(Expression::new_numeric_literal(SPAN, lit.value, lit.raw, lit.base, ctx))
             }
-            Expression::StringLiteral(lit) => Some(Expression::new_string_literal(SPAN, lit.value.as_str(), None, ctx)),
+            Expression::StringLiteral(lit) => Some(Expression::new_string_literal(SPAN, lit.value, None, ctx)),
             _ => None,
         }
     }

@@ -197,7 +197,7 @@ fn eval_identifier<'c>(call: &'c CallExpression<'_>) -> Option<&'c str> {
     let [Argument::StringLiteral(code)] = call.arguments.as_slice() else {
         return None;
     };
-    let name = code.value.as_str();
+    let name = code.value.as_str()?;
     (is_valid_identifier(name) && !is_reserved_word(name)).then_some(name)
 }
 

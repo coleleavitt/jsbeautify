@@ -31,7 +31,7 @@ impl CommonSubexpressionElimination {
             }
             Expression::Identifier(ident) => Some(ident.name.to_string()),
             Expression::NumericLiteral(lit) => Some(lit.value.to_string()),
-            Expression::StringLiteral(lit) => Some(format!("\"{}\"", lit.value)),
+            Expression::StringLiteral(lit) => Some(format!("\"{}\"", lit.value.as_str()?)),
             Expression::BooleanLiteral(lit) => Some(lit.value.to_string()),
             Expression::UnaryExpression(unary) => {
                 let operand = self.expression_to_string(&unary.argument)?;
@@ -46,7 +46,7 @@ impl CommonSubexpressionElimination {
         match arg {
             Argument::Identifier(ident) => Some(ident.name.to_string()),
             Argument::NumericLiteral(lit) => Some(lit.value.to_string()),
-            Argument::StringLiteral(lit) => Some(format!("\"{}\"", lit.value)),
+            Argument::StringLiteral(lit) => Some(format!("\"{}\"", lit.value.as_str()?)),
             Argument::BooleanLiteral(lit) => Some(lit.value.to_string()),
             Argument::BinaryExpression(bin) => {
                 let left = self.expression_to_string(&bin.left)?;

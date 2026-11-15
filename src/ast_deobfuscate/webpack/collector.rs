@@ -137,33 +137,40 @@ impl NameCollector {
                 for prop in &obj.properties {
                     if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop
                         && !p.computed
-                        && let Some(name) = p.key.static_name()
+                        && let Some(key) = p.key.static_name()
+                        && let Some(name) = key.as_str()
                     {
-                        self.plan_getter_export(&name, &p.value, module, ctx);
+                        self.plan_getter_export(name, &p.value, module, ctx);
                     }
                 }
             }
             [_, Argument::ArrayExpression(arr)] => {
                 let mut elements = arr.elements.iter();
                 while let Some(ArrayExpressionElement::StringLiteral(name)) = elements.next() {
+                    // A lone-surrogate name is read past but planned for nothing.
+                    let name = name.value.as_str();
                     match elements.next() {
                         Some(ArrayExpressionElement::NumericLiteral(flag)) if flag.value == 0.0 => {
                             let Some(value) = elements.next().and_then(ArrayExpressionElement::as_expression) else {
                                 break;
                             };
-                            self.plan_export(&name.value, resolve_expr(value, ctx), module);
+                            if let Some(name) = name {
+                                self.plan_export(name, resolve_expr(value, ctx), module);
+                            }
                         }
                         Some(getter) => {
                             let Some(getter) = getter.as_expression() else { break };
-                            self.plan_getter_export(&name.value, getter, module, ctx);
+                            if let Some(name) = name {
+                                self.plan_getter_export(name, getter, module, ctx);
+                            }
                         }
                         None => break,
                     }
                 }
             }
             [_, Argument::StringLiteral(name), getter] => {
-                if let Some(getter) = getter.as_expression() {
-                    self.plan_getter_export(&name.value, getter, module, ctx);
+                if let (Some(name), Some(getter)) = (name.value.as_str(), getter.as_expression()) {
+                    self.plan_getter_export(name, getter, module, ctx);
                 }
             }
             _ => {}

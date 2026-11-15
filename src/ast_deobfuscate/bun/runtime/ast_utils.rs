@@ -119,7 +119,7 @@ pub(super) fn arrow_contains_string(arrow: &ArrowFunctionExpression<'_>, value: 
 }
 
 pub(super) fn is_string(expr: &Expression<'_>, value: &str) -> bool {
-    matches!(expr, Expression::StringLiteral(lit) if lit.value.as_str() == value)
+    matches!(expr, Expression::StringLiteral(lit) if lit.value == value)
 }
 
 pub(super) fn is_ident(expr: &Expression<'_>, name: &str) -> bool {

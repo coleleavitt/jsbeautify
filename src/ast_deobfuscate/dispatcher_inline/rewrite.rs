@@ -41,7 +41,7 @@ impl DispatcherInliner {
 
         // Support string literal keys: d["key"]()
         let key = match &member.expression {
-            Expression::StringLiteral(lit) => lit.value.as_str(),
+            Expression::StringLiteral(lit) => lit.value.as_str()?,
             _ => return None,
         };
 

@@ -211,3 +211,17 @@ fn unflattens_many_cases_in_reversed_order() {
         .concat();
     assert!(out == expected, "steps ran out of order");
 }
+
+/// A sequence or case label with a lone surrogate has no Rust text to split
+/// or match, so the loop stays.
+#[test]
+fn keeps_loops_with_lone_surrogate_strings() {
+    assert_kept(
+        r#"var S = "1\ud8000".split("\ud800"), I = 0;
+        while (true) { switch (S[I++]) { case "0": f(0); continue; case "1": f(1); continue; } break; }"#,
+    );
+    assert_kept(
+        r#"var S = "1|0".split("|"), I = 0;
+        while (true) { switch (S[I++]) { case "\ud800": f(2); continue; case "0": f(0); continue; case "1": f(1); continue; } break; }"#,
+    );
+}

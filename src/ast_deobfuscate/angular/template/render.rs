@@ -342,7 +342,9 @@ impl<'s, 'a> Renderer<'s, 'a> {
         }
         for (i, part) in parts.iter().enumerate() {
             match part {
-                Expression::StringLiteral(s) if i % 2 == 0 => text.push_str(&s.value),
+                Expression::StringLiteral(s) if i % 2 == 0 => {
+                    let _ = write!(text, "{}", s.value.display());
+                }
                 value => {
                     let _ = write!(text, "{{{{ {} }}}}", self.expr(value, view));
                 }
@@ -363,10 +365,10 @@ impl<'s, 'a> Renderer<'s, 'a> {
             return Vec::new();
         };
         let mut attrs = Vec::new();
-        let mut classes: Vec<&str> = Vec::new();
+        let mut classes: Vec<String> = Vec::new();
         let mut styles: Vec<String> = Vec::new();
         let mut marker: Option<u32> = None;
-        let mut pending: Option<&str> = None;
+        let mut pending: Option<String> = None;
         for item in *items {
             let Some(expr) = item.as_expression() else { continue };
             if let Some(m) = int_literal(expr) {
@@ -375,10 +377,11 @@ impl<'s, 'a> Renderer<'s, 'a> {
                 continue;
             }
             let Expression::StringLiteral(s) = expr else { continue };
-            let s = s.value.as_str();
+            // Rendered HTML is for reading, so a lone surrogate shows as `\uXXXX`.
+            let s = s.value.display().to_string();
             match marker {
                 None => match pending.take() {
-                    Some(name) => attrs.push(attr(name, s)),
+                    Some(name) => attrs.push(attr(&name, &s)),
                     None => pending = Some(s),
                 },
                 Some(1) => classes.push(s),

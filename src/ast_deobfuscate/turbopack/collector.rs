@@ -4,6 +4,7 @@ use oxc_ast::ast::{
     ObjectExpression, ObjectPropertyKind, Program, PropertyKey, SimpleAssignmentTarget, Statement,
     StaticMemberExpression, StringLiteral, TemplateLiteral, VariableDeclarator, WithStatement,
 };
+use oxc_str::JSStr;
 use oxc_syntax::identifier::is_identifier_name;
 use oxc_syntax::keyword::is_reserved_keyword_or_global_object;
 use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
@@ -1134,7 +1135,7 @@ fn error_class_name<'b>(class: &'b Class<'_>) -> Option<&'b str> {
             if !prop.r#static && matches!(&prop.key, PropertyKey::StaticIdentifier(key) if key.name == "name") =>
         {
             match prop.value.as_ref()?.without_parentheses() {
-                Expression::StringLiteral(name) if is_identifier_name(&name.value) => Some(name.value.as_str()),
+                Expression::StringLiteral(name) => name.value.as_str().filter(|name| is_identifier_name(name)),
                 _ => None,
             }
         }
@@ -1229,19 +1230,18 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
     }
 
     fn enter_string_literal(&mut self, lit: &mut StringLiteral<'a>, ctx: &mut Ctx<'a>) {
-        self.anchor(
-            lit.value.as_str(),
-            matches!(ctx.parent(), Ancestor::ReturnStatementArgument(_)),
-        );
+        if let Some(value) = lit.value.as_str() {
+            self.anchor(value, matches!(ctx.parent(), Ancestor::ReturnStatementArgument(_)));
+        }
     }
 
     fn enter_template_literal(&mut self, lit: &mut TemplateLiteral<'a>, ctx: &mut Ctx<'a>) {
-        if lit.quasis.iter().all(|q| q.value.cooked.is_some()) {
-            let quasis: Vec<&str> = lit
-                .quasis
-                .iter()
-                .filter_map(|q| q.value.cooked.as_ref().map(oxc_ast::ast::Str::as_str))
-                .collect();
+        if let Some(quasis) = lit
+            .quasis
+            .iter()
+            .map(|q| q.value.cooked.and_then(JSStr::as_str))
+            .collect::<Option<Vec<&str>>>()
+        {
             self.anchor(
                 &quasis.join("${}"),
                 matches!(ctx.parent(), Ancestor::ReturnStatementArgument(_)),
@@ -1342,7 +1342,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         }
         self.plan_worker_globals(call, ctx);
         if let [Argument::StringLiteral(message)] = call.arguments.as_slice()
-            && WORKER_ABORT_MESSAGES.contains(&message.value.as_str())
+            && message
+                .value
+                .as_str()
+                .is_some_and(|message| WORKER_ABORT_MESSAGES.contains(&message))
             && let Some(symbol) = resolve_expr(&call.callee, ctx)
         {
             self.plan(symbol, "abort");
@@ -1367,10 +1370,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
         }
         if self.refresh_method(&call.callee, ctx) == Some("register")
             && let [Argument::Identifier(handle), Argument::StringLiteral(id)] = call.arguments.as_slice()
-            && is_identifier_name(&id.value)
+            && let Some(id) = id.value.as_str()
+            && is_identifier_name(id)
             && let Some(symbol) = resolve(handle, ctx)
         {
-            self.plan(symbol, &format!("refreshReg_{}", id.value));
+            self.plan(symbol, &format!("refreshReg_{id}"));
         }
 
         match self.context_member(&call.callee, ctx) {
@@ -1410,7 +1414,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for NameCollector {
             }
             Some("q") => {
                 let path = match call.arguments.as_slice() {
-                    [Argument::StringLiteral(path)] => Some(path.value.as_str()),
+                    [Argument::StringLiteral(path)] => path.value.as_str(),
                     _ => None,
                 };
                 self.record_asset(call, path, ctx);

@@ -250,11 +250,15 @@ fn exported_locals(program: &Program<'_>, scoping: &Scoping) -> Vec<(String, Sym
 }
 
 /// Static imports, re-exports, local exports and literal dynamic imports.
+/// A source with a lone surrogate names no file, so it links nothing.
 fn module_links(program: &Program<'_>, facts: &mut FileFacts) {
     for statement in &program.body {
         match statement {
             Statement::ImportDeclaration(import) => {
-                let source = import.source.value.to_string();
+                let Some(source) = import.source.value.as_str() else {
+                    continue;
+                };
+                let source = source.to_string();
                 let Some(specifiers) = &import.specifiers else {
                     facts.imports.push(ImportFact {
                         source,
@@ -289,9 +293,12 @@ fn module_links(program: &Program<'_>, facts: &mut FileFacts) {
                 }
             }
             Statement::ExportFromDeclaration(export) => {
+                let Some(source) = export.source.value.as_str() else {
+                    continue;
+                };
                 for spec in &export.specifiers {
                     facts.imports.push(ImportFact {
-                        source: export.source.value.to_string(),
+                        source: source.to_string(),
                         kind: ImportKind::ReExport {
                             imported: spec.local.name().to_string(),
                             exported: spec.exported.name().to_string(),
@@ -317,12 +324,16 @@ fn module_links(program: &Program<'_>, facts: &mut FileFacts) {
                     });
                 }
             }
-            Statement::ExportAllDeclaration(export) => facts.imports.push(ImportFact {
-                source: export.source.value.to_string(),
-                kind: ImportKind::ReExportAll {
-                    exported: export.exported.as_ref().map(|name| name.name().to_string()),
-                },
-            }),
+            Statement::ExportAllDeclaration(export) => {
+                if let Some(source) = export.source.value.as_str() {
+                    facts.imports.push(ImportFact {
+                        source: source.to_string(),
+                        kind: ImportKind::ReExportAll {
+                            exported: export.exported.as_ref().map(|name| name.name().to_string()),
+                        },
+                    });
+                }
+            }
             Statement::ExportDefaultDeclaration(export) => {
                 let local = match &export.declaration {
                     ExportDefaultDeclarationKind::Identifier(id) => Some(id.name.to_string()),
@@ -375,9 +386,9 @@ struct DynamicImports {
 impl<'a> Visit<'a> for DynamicImports {
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
         match &it.source {
-            Expression::StringLiteral(source) => self.sources.push(source.value.to_string()),
+            Expression::StringLiteral(source) => self.sources.extend(source.value.as_str().map(str::to_string)),
             Expression::TemplateLiteral(source) if source.expressions.is_empty() => {
-                if let Some(cooked) = source.quasis.first().and_then(|q| q.value.cooked.as_ref()) {
+                if let Some(cooked) = source.quasis.first().and_then(|q| q.value.cooked?.as_str()) {
                     self.sources.push(cooked.to_string());
                 }
             }

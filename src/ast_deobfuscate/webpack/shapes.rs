@@ -48,7 +48,7 @@ pub(super) fn function_params<'b, 'a>(expr: &'b Expression<'a>) -> Option<&'b Fo
 fn module_id(key: &PropertyKey<'_>) -> Option<String> {
     match key {
         PropertyKey::NumericLiteral(n) => Some(n.value.to_string()),
-        PropertyKey::StringLiteral(s) => Some(s.value.to_string()),
+        PropertyKey::StringLiteral(s) => s.value.as_str().map(str::to_string),
         _ => None,
     }
 }

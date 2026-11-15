@@ -38,6 +38,7 @@ use oxc_ast::ast::{
     BindingIdentifier, BindingPattern, CallExpression, Expression, FormalParameters, FunctionBody, NewExpression,
     ObjectExpression, ObjectPropertyKind, Program, Statement,
 };
+use oxc_str::JSStr;
 use oxc_syntax::operator::{AssignmentOperator, LogicalOperator};
 
 /// One run of module ids and the factory they share.
@@ -79,9 +80,10 @@ pub fn global_name<'b>(expr: &'b Expression<'_>) -> Option<Cow<'b, str>> {
         Expression::StaticMemberExpression(m) => {
             global_member_name(&m.object, Some(Cow::Borrowed(m.property.name.as_str())))
         }
-        Expression::ComputedMemberExpression(m) => {
-            global_member_name(&m.object, m.static_property_name().map(Cow::from))
-        }
+        Expression::ComputedMemberExpression(m) => global_member_name(
+            &m.object,
+            m.static_property_name().and_then(JSStr::as_str).map(Cow::Borrowed),
+        ),
         _ => None,
     }
 }
@@ -92,9 +94,10 @@ pub fn global_target_name<'b>(target: &'b AssignmentTarget<'_>) -> Option<Cow<'b
         AssignmentTarget::StaticMemberExpression(m) => {
             global_member_name(&m.object, Some(Cow::Borrowed(m.property.name.as_str())))
         }
-        AssignmentTarget::ComputedMemberExpression(m) => {
-            global_member_name(&m.object, m.static_property_name().map(Cow::from))
-        }
+        AssignmentTarget::ComputedMemberExpression(m) => global_member_name(
+            &m.object,
+            m.static_property_name().and_then(JSStr::as_str).map(Cow::Borrowed),
+        ),
         _ => None,
     }
 }
@@ -132,7 +135,7 @@ fn is_script_element(expr: &Expression<'_>) -> bool {
 pub fn module_id(expr: &Expression<'_>) -> Option<String> {
     match expr.without_parentheses() {
         Expression::NumericLiteral(n) if n.value >= 0.0 && n.value.fract() == 0.0 => Some(n.value.to_string()),
-        Expression::StringLiteral(s) => Some(s.value.to_string()),
+        Expression::StringLiteral(s) => s.value.as_str().map(str::to_string),
         _ => None,
     }
 }
@@ -380,9 +383,12 @@ pub fn node_entry_runtime<'b>(init: &'b Expression<'_>) -> Option<(&'b str, &'b 
     else {
         return None;
     };
+    let (Some(runtime), Some(path)) = (runtime.value.as_str(), path.value.as_str()) else {
+        return None;
+    };
     (matches!(require.callee.without_parentheses(), Expression::Identifier(id) if id.name == "require")
-        && runtime.value.ends_with("_runtime.js"))
-    .then(|| (runtime.value.as_str(), path.value.as_str()))
+        && runtime.ends_with("_runtime.js"))
+    .then_some((runtime, path))
 }
 
 /// A readable identifier fragment for a module id: the number of a production
@@ -453,12 +459,16 @@ pub fn reexport_groups<'b, 'a>(list: &'b ArrayExpression<'a>) -> Option<Vec<Reex
     let mut elements = list.elements.iter();
     while let Some(head) = elements.next() {
         let head = head.as_expression()?;
+        // A string head is a module id even when it holds a lone surrogate.
+        if matches!(head.without_parentheses(), Expression::StringLiteral(s) if s.value.has_lone_surrogate()) {
+            return None;
+        }
         let source = module_id(head).map_or(ReexportSource::Namespace(head), ReexportSource::Module);
         let mut names = Vec::new();
         for element in elements.by_ref() {
             match element {
                 ArrayExpressionElement::NumericLiteral(end) if end.value == 0.0 => break,
-                ArrayExpressionElement::StringLiteral(name) => names.push(name.value.to_string()),
+                ArrayExpressionElement::StringLiteral(name) => names.push(name.value.as_str()?.to_string()),
                 _ => return None,
             }
         }
@@ -508,7 +518,7 @@ pub fn context_map(obj: &ObjectExpression<'_>) -> Option<Vec<(String, String)>> 
         if !has_module {
             return None;
         }
-        entries.push((key.to_string(), id));
+        entries.push((key.as_str()?.to_string(), id));
     }
     (!entries.is_empty()).then_some(entries)
 }
@@ -642,20 +652,20 @@ fn loader_chunk(expr: &Expression<'_>) -> Option<LoaderChunk> {
         list.elements
             .iter()
             .map(|e| match e {
-                ArrayExpressionElement::StringLiteral(s) => Some(s.value.to_string()),
+                ArrayExpressionElement::StringLiteral(s) => s.value.as_str().map(str::to_string),
                 _ => None,
             })
             .collect()
     };
     match expr.without_parentheses() {
         Expression::StringLiteral(path) => Some(LoaderChunk {
-            path: path.value.to_string(),
+            path: path.value.as_str()?.to_string(),
             components: Vec::new(),
         }),
         Expression::ObjectExpression(data) => data.properties.iter().find_map(|p| match p {
             ObjectPropertyKind::ObjectProperty(p) if p.key.is_specific_static_name("path") => match &p.value {
                 Expression::StringLiteral(path) => Some(LoaderChunk {
-                    path: path.value.to_string(),
+                    path: path.value.as_str()?.to_string(),
                     components: Vec::new(),
                 }),
                 _ => None,
@@ -667,7 +677,7 @@ fn loader_chunk(expr: &Expression<'_>) -> Option<LoaderChunk> {
                 return None;
             };
             Some(LoaderChunk {
-                path: url.value.to_string(),
+                path: url.value.as_str()?.to_string(),
                 components: strings(components.as_expression()?)?,
             })
         }
@@ -688,7 +698,7 @@ pub fn asset_path<'b>(value: &'b Expression<'_>) -> Option<&'b str> {
         }
         _ => return None,
     };
-    path.value.contains('/').then_some(path.value.as_str())
+    path.value.as_str().filter(|path| path.contains('/'))
 }
 
 /// The entry name of the Next.js edge wrapper's
@@ -701,7 +711,9 @@ pub fn edge_entry<'b, 'a>(assign: &'b AssignmentExpression<'a>) -> Option<(Cow<'
     }
     let (object, name) = match &assign.left {
         AssignmentTarget::StaticMemberExpression(m) => (&m.object, Cow::Borrowed(m.property.name.as_str())),
-        AssignmentTarget::ComputedMemberExpression(m) => (&m.object, Cow::from(m.static_property_name()?)),
+        AssignmentTarget::ComputedMemberExpression(m) => {
+            (&m.object, Cow::Borrowed(m.static_property_name()?.as_str()?))
+        }
         _ => return None,
     };
     if global_name(object).as_deref() != Some("_ENTRIES") {
@@ -730,6 +742,9 @@ pub fn esm_bindings<'b, 'a>(list: &'b ArrayExpression<'a>) -> Vec<(&'b str, EsmB
     let mut out = Vec::new();
     let mut elements = list.elements.iter().peekable();
     while let Some(ArrayExpressionElement::StringLiteral(name)) = elements.next() {
+        let Some(name) = name.value.as_str() else {
+            break;
+        };
         let Some(binding) = elements.next().and_then(ArrayExpressionElement::as_expression) else {
             break;
         };
@@ -737,10 +752,10 @@ pub fn esm_bindings<'b, 'a>(list: &'b ArrayExpression<'a>) -> Vec<(&'b str, EsmB
             let Some(value) = elements.next().and_then(ArrayExpressionElement::as_expression) else {
                 break;
             };
-            out.push((name.value.as_str(), EsmBinding::Value(value)));
+            out.push((name, EsmBinding::Value(value)));
             continue;
         }
-        out.push((name.value.as_str(), EsmBinding::Getter(binding)));
+        out.push((name, EsmBinding::Getter(binding)));
         match elements.peek() {
             None | Some(ArrayExpressionElement::StringLiteral(_)) => {}
             Some(next) if next.as_expression().and_then(factory_params).is_some() => {

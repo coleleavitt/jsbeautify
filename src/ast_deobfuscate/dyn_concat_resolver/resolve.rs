@@ -1,5 +1,6 @@
 use oxc_allocator::{ArenaVec, TakeIn};
 use oxc_ast::ast::{BinaryOperator, Expression, TemplateElement, TemplateLiteral};
+use oxc_str::JSStr;
 
 use super::literal::{make_string_literal, make_template_element};
 use super::{Ctx, DynConcatResolver, MAX_INLINE_LEN};
@@ -19,7 +20,12 @@ pub(super) fn try_resolve_to_string(
 /// grows past `MAX_INLINE_LEN`, so a long chain costs linear time.
 fn append_resolved(expr: &Expression<'_>, resolver: &DynConcatResolver, ctx: &Ctx<'_>, out: &mut String) -> bool {
     match expr {
-        Expression::StringLiteral(lit) if !lit.lone_surrogates => out.push_str(&lit.value),
+        Expression::StringLiteral(lit) => {
+            let Some(value) = lit.value.as_str() else {
+                return false;
+            };
+            out.push_str(value);
+        }
         Expression::ParenthesizedExpression(p) => return append_resolved(&p.expression, resolver, ctx, out),
         Expression::Identifier(id) => {
             let Some(value) = ctx
@@ -97,10 +103,9 @@ pub(super) fn fold_adjacent_literals<'a>(expr: &mut Expression<'a>, ctx: &Ctx<'a
     changed |= fold_adjacent_literals(&mut b.right, ctx);
 
     if let (Expression::StringLiteral(l), Expression::StringLiteral(r)) = (&b.left, &b.right)
-        && !l.lone_surrogates
-        && !r.lone_surrogates
+        && let (Some(l), Some(r)) = (l.value.as_str(), r.value.as_str())
     {
-        let combined = format!("{}{}", l.value.as_str(), r.value.as_str());
+        let combined = format!("{l}{r}");
         if combined.len() <= MAX_INLINE_LEN {
             *expr = make_string_literal(&combined, ctx);
             return true;
@@ -114,13 +119,17 @@ pub(super) fn substitute_in_template<'a>(
     resolver: &DynConcatResolver,
     ctx: &Ctx<'a>,
 ) -> usize {
-    if tmpl
+    let Some(cooked) = tmpl
         .quasis
         .iter()
-        .any(|quasi| quasi.lone_surrogates || quasi.value.cooked.is_none())
-    {
+        .map(|quasi| quasi.value.cooked.and_then(JSStr::as_str))
+        .collect::<Option<Vec<&'a str>>>()
+    else {
         return 0;
-    }
+    };
+    let Some((tail, heads)) = cooked.split_last() else {
+        return 0;
+    };
     let values: Vec<Option<&str>> = tmpl
         .expressions
         .iter()
@@ -144,8 +153,8 @@ pub(super) fn substitute_in_template<'a>(
     let mut new_quasis: ArenaVec<'a, TemplateElement<'a>> = ArenaVec::with_capacity_in(tmpl.quasis.len() - count, ctx);
     let mut kept_expressions = ArenaVec::with_capacity_in(expressions.len() - count, ctx);
     let mut pending_text = String::new();
-    for ((quasi, interp), value) in tmpl.quasis.iter().zip(expressions).zip(values) {
-        pending_text.push_str(quasi.value.cooked.as_ref().expect("checked above").as_str());
+    for ((quasi, interp), value) in heads.iter().zip(expressions).zip(values) {
+        pending_text.push_str(quasi);
         if let Some(value) = value {
             pending_text.push_str(value);
         } else {
@@ -154,12 +163,7 @@ pub(super) fn substitute_in_template<'a>(
             pending_text.clear();
         }
     }
-    let tail = tmpl
-        .quasis
-        .last()
-        .and_then(|quasi| quasi.value.cooked.as_ref())
-        .expect("checked above");
-    pending_text.push_str(tail.as_str());
+    pending_text.push_str(tail);
     new_quasis.push(make_template_element(&pending_text, true, ctx));
 
     tmpl.quasis = new_quasis;

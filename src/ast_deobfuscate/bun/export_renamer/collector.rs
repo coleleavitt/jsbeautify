@@ -132,7 +132,9 @@ impl ExportNameCollector {
             };
 
             let mangled = mangled_id.name.as_str();
-            let original = original_name.as_ref();
+            let Some(original) = original_name.as_str() else {
+                continue;
+            };
             let Some(symbol_id) = ctx.scoping().get_reference(mangled_id.reference_id()).symbol_id() else {
                 continue;
             };

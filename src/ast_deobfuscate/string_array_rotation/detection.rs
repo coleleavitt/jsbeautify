@@ -36,7 +36,7 @@ impl StringArrayRotation {
         let mut strings = Vec::new();
         for element in &array_expr.elements {
             if let ArrayExpressionElement::StringLiteral(lit) = element {
-                strings.push(lit.value.to_string());
+                strings.push(lit.value.as_str()?.to_string());
             } else {
                 return None;
             }

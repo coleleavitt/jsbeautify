@@ -108,7 +108,7 @@ fn argument_descriptor_getter_reads_source_key(arg: &Argument<'_>, source_param:
         let ObjectPropertyKind::ObjectProperty(prop) = property else {
             return false;
         };
-        prop.key.name().is_some_and(|name| name.as_ref() == "get")
+        prop.key.name().is_some_and(|name| name.as_js_str() == "get")
             && expr_contains_source_key(&prop.value, source_param, loop_var)
     })
 }
@@ -215,5 +215,5 @@ pub(super) fn expression_is_ident(expr: &Expression<'_>, name: &str) -> bool {
 }
 
 pub(super) fn expression_is_string(expr: &Expression<'_>, value: &str) -> bool {
-    matches!(expr, Expression::StringLiteral(lit) if lit.value.as_str() == value)
+    matches!(expr, Expression::StringLiteral(lit) if lit.value == value)
 }

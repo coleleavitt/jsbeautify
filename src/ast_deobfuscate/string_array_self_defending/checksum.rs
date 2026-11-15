@@ -193,7 +193,7 @@ impl Compiler<'_> {
 pub(super) fn index_literal(args: &[Argument<'_>], coerces_strings: bool) -> Option<f64> {
     match args {
         [Argument::NumericLiteral(lit)] => Some(lit.value),
-        [Argument::StringLiteral(lit)] if coerces_strings => string_to_number(&lit.value),
+        [Argument::StringLiteral(lit)] if coerces_strings => lit.value.as_str().and_then(string_to_number),
         _ => None,
     }
 }

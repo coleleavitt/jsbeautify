@@ -38,11 +38,15 @@ pub(super) fn fold_local_base64_calls(facts: &SyntaxFacts, budget: &mut Analysis
         if budget.exhausted() {
             break;
         }
-        if call.literal.len() > MAX_LITERAL_BYTES.saturating_mul(4) / 3 + 4 {
+        let Some(literal) = call.literal.as_deref() else {
+            rejected += 1;
+            continue;
+        };
+        if literal.len() > MAX_LITERAL_BYTES.saturating_mul(4) / 3 + 4 {
             rejected += 1;
             continue;
         }
-        let Some(bytes) = decode_unpadded(&call.literal) else {
+        let Some(bytes) = decode_unpadded(literal) else {
             rejected += 1;
             continue;
         };

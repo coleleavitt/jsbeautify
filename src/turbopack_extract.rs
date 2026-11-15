@@ -532,8 +532,10 @@ impl<'a> Visit<'a> for FactoryScan<'_> {
                 }
             }
             Some("q") => {
-                if let [Argument::StringLiteral(path)] = call.arguments.as_slice() {
-                    self.asset = Some(path.value.to_string());
+                if let [Argument::StringLiteral(path)] = call.arguments.as_slice()
+                    && let Some(path) = path.value.as_str()
+                {
+                    self.asset = Some(path.to_string());
                 }
             }
             Some("v" | "f") => {
@@ -548,9 +550,10 @@ impl<'a> Visit<'a> for FactoryScan<'_> {
             }
             Some("x" | "y") => {
                 if let Some(Argument::StringLiteral(request)) = call.arguments.first()
-                    && !self.externals.iter().any(|e| e == request.value.as_str())
+                    && let Some(request) = request.value.as_str()
+                    && !self.externals.iter().any(|e| e == request)
                 {
-                    self.externals.push(request.value.to_string());
+                    self.externals.push(request.to_string());
                 }
             }
             _ => {}

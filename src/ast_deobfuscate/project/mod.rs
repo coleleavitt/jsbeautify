@@ -113,7 +113,10 @@ pub(crate) fn import_bindings<'p>(program: &'p Program<'_>) -> impl Iterator<Ite
         let Statement::ImportDeclaration(import) = statement else {
             return Vec::new();
         };
-        let source = import.source.value.as_str();
+        // A source with a lone surrogate names no module.
+        let Some(source) = import.source.value.as_str() else {
+            return Vec::new();
+        };
         import
             .specifiers
             .iter()

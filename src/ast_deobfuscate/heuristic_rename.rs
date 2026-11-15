@@ -34,6 +34,7 @@ use oxc_ast::ast::{
     Argument, BindingPattern, CatchClause, Expression, ForInStatement, ForOfStatement, ForStatement, ForStatementInit,
     IdentifierReference, UnaryOperator, VariableDeclarator,
 };
+use oxc_str::JSStr;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
@@ -155,7 +156,7 @@ fn is_json_parse(expr: &Expression<'_>) -> bool {
         && let Some(member) = call.callee.as_member_expression()
         && let Expression::Identifier(obj) = member.object()
         && obj.name == "JSON"
-        && member.static_property_name() == Some("parse")
+        && member.static_property_name().is_some_and(|name| name == "parse")
     {
         return true;
     }
@@ -170,8 +171,9 @@ fn infer_from_init(init: &Expression<'_>) -> Option<(u8, String)> {
             if let Expression::Identifier(callee) = &call.callee
                 && callee.name == "require"
                 && let Some(Argument::StringLiteral(s)) = call.arguments.first()
+                && let Some(module) = s.value.as_str()
             {
-                let n = module_to_name(s.value.as_str());
+                let n = module_to_name(module);
                 if !n.is_empty() {
                     return Some((8, n));
                 }
@@ -193,7 +195,8 @@ fn infer_from_init(init: &Expression<'_>) -> Option<(u8, String)> {
                 Expression::Identifier(id) => Some(id.name.as_str()),
                 e => e
                     .as_member_expression()
-                    .and_then(oxc_ast::ast::MemberExpression::static_property_name),
+                    .and_then(oxc_ast::ast::MemberExpression::static_property_name)
+                    .and_then(JSStr::as_str),
             }?;
             let n = lower_camel(ctor);
             (!n.is_empty()).then_some((7, n))
@@ -211,9 +214,9 @@ fn infer_from_init(init: &Expression<'_>) -> Option<(u8, String)> {
                 return None;
             }
             let ty = if let Expression::StringLiteral(s) = &bin.right {
-                Some(s.value.as_str())
+                s.value.as_str()
             } else if let Expression::StringLiteral(s) = &bin.left {
-                Some(s.value.as_str())
+                s.value.as_str()
             } else {
                 None
             };

@@ -18,6 +18,7 @@ mod esbuild_bundles;
 mod fixtures;
 mod format_cli;
 mod inspect;
+mod lone_surrogates;
 mod nesting;
 mod obfuscator;
 mod project;

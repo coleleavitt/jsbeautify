@@ -92,8 +92,10 @@ impl<'a> Traverse<'a, DeobfuscateState> for AngularNameCollector {
         if !prop.r#static {
             return;
         }
-        if let (Some(key), Some(value)) = (prop.key.static_name(), prop.value.as_ref()) {
-            self.record_definition(&key, value, ctx);
+        if let (Some(key), Some(value)) = (prop.key.static_name(), prop.value.as_ref())
+            && let Some(key) = key.as_str()
+        {
+            self.record_definition(key, value, ctx);
         }
     }
 
@@ -117,7 +119,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for AngularNameCollector {
                 if let [first, ..] = call.arguments.as_slice()
                     && call.arguments.len() <= 2
                     && let Some(Expression::StringLiteral(action_type)) = first.as_expression()
-                    && let Some(name) = action_name(&action_type.value)
+                    && let Some(name) = action_type.value.as_str().and_then(action_name)
                 {
                     self.actions.insert(outer, name);
                 }

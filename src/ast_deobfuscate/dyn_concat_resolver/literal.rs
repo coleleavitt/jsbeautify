@@ -1,6 +1,7 @@
 use oxc_allocator::GetAllocator;
 use oxc_ast::ast::{Expression, TemplateElement, TemplateElementValue};
 use oxc_span::SPAN;
+use oxc_str::JSStr;
 
 use super::Ctx;
 
@@ -24,7 +25,7 @@ fn escape_template_raw(value: &str) -> String {
 }
 
 pub fn make_template_element<'a>(value: &str, tail: bool, ctx: &Ctx<'a>) -> TemplateElement<'a> {
-    let cooked = oxc_ast::ast::Str::from_str_in(ctx.allocator().alloc_str(value), ctx);
+    let cooked = JSStr::from_str_in(value, ctx);
     let raw_text = escape_template_raw(value);
     let raw = oxc_ast::ast::Str::from_str_in(&raw_text, ctx);
     TemplateElement::new(

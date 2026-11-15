@@ -108,7 +108,7 @@ impl FunctionCollector {
                 })
             }
             Expression::NumericLiteral(num) => Some(ReturnExpr::Number(num.value)),
-            Expression::StringLiteral(s) => Some(ReturnExpr::String(s.value.as_str().to_string())),
+            Expression::StringLiteral(s) => s.value.as_str().map(|value| ReturnExpr::String(value.to_string())),
             Expression::BooleanLiteral(b) => Some(ReturnExpr::Boolean(b.value)),
             Expression::NullLiteral(_) => Some(ReturnExpr::Null),
             Expression::BinaryExpression(binary) => {

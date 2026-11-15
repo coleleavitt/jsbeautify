@@ -193,7 +193,7 @@ impl BunRuntimeCollector {
             let BindingPattern::BindingIdentifier(val_ident) = &prop.value else {
                 continue;
             };
-            if let Some(helper) = object_function_helper(key_name.as_ref()) {
+            if let Some(helper) = key_name.as_str().and_then(object_function_helper) {
                 self.record(val_ident, helper);
             }
         }

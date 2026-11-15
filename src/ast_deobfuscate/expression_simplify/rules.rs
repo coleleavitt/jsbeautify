@@ -102,23 +102,22 @@ impl ExpressionSimplifier {
         member: &ComputedMemberExpression<'a>,
         ctx: &mut Ctx<'a>,
     ) -> Option<Expression<'a>> {
-        if let Expression::StringLiteral(lit) = &member.expression {
-            let prop_name = lit.value.as_str();
+        if let Expression::StringLiteral(lit) = &member.expression
+            && let Some(prop_name) = lit.value.as_str()
+            && Self::is_valid_identifier(prop_name)
+        {
+            deob_trace!("[AST] Converting [\"{prop_name}\"]] to .{prop_name}");
+            self.rewrites += 1;
 
-            if Self::is_valid_identifier(prop_name) {
-                deob_trace!("[AST] Converting [\"{prop_name}\"]] to .{prop_name}");
-                self.rewrites += 1;
-
-                let object = Self::clone_expression(&member.object, ctx);
-                let property = oxc_ast::ast::IdentifierName::new(SPAN, prop_name, ctx);
-                return Some(Expression::new_static_member_expression(
-                    SPAN,
-                    object,
-                    property,
-                    member.optional,
-                    ctx,
-                ));
-            }
+            let object = Self::clone_expression(&member.object, ctx);
+            let property = oxc_ast::ast::IdentifierName::new(SPAN, prop_name, ctx);
+            return Some(Expression::new_static_member_expression(
+                SPAN,
+                object,
+                property,
+                member.optional,
+                ctx,
+            ));
         }
 
         None
@@ -174,7 +173,7 @@ impl ExpressionSimplifier {
 
 fn foldable_string<'b>(expr: &'b Expression<'_>) -> Option<&'b str> {
     match expr {
-        Expression::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.as_str()),
+        Expression::StringLiteral(lit) => lit.value.as_str(),
         _ => None,
     }
 }

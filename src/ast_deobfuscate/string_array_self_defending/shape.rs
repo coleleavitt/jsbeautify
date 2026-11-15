@@ -130,7 +130,7 @@ fn string_elements(init: &Expression<'_>) -> Option<Vec<String>> {
         .elements
         .iter()
         .map(|element| match element {
-            ArrayExpressionElement::StringLiteral(lit) if !lit.lone_surrogates => Some(lit.value.to_string()),
+            ArrayExpressionElement::StringLiteral(lit) => lit.value.as_str().map(str::to_string),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;

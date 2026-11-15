@@ -19,6 +19,7 @@
 use oxc_allocator::{GetAllocator, TakeIn, Vec as ArenaVec};
 use oxc_ast::ast::{Argument, Expression, TemplateElement};
 use oxc_span::SPAN;
+use oxc_str::JSStr;
 use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
 
 use crate::ast_deobfuscate::dyn_concat_resolver::literal::make_template_element;
@@ -49,47 +50,38 @@ struct Pieces<'a> {
     expressions: Vec<Expression<'a>>,
 }
 
-/// Whether `receiver` is a string or a template whose text is known.
-fn is_string_receiver(receiver: &Expression<'_>) -> bool {
+/// The quasi texts of `receiver` when it is a string or a template whose text
+/// is known and holds no lone surrogate.
+fn receiver_quasis(receiver: &Expression<'_>) -> Option<Vec<String>> {
     match receiver {
-        Expression::StringLiteral(lit) => !lit.lone_surrogates,
+        Expression::StringLiteral(lit) => Some(vec![lit.value.as_str()?.to_owned()]),
         Expression::TemplateLiteral(tmpl) => tmpl
             .quasis
             .iter()
-            .all(|quasi| quasi.value.cooked.is_some() && !quasi.lone_surrogates),
-        _ => false,
+            .map(|quasi| quasi.value.cooked.and_then(JSStr::as_str).map(str::to_owned))
+            .collect(),
+        _ => None,
     }
 }
 
 impl<'a> Pieces<'a> {
-    /// `receiver` must satisfy [`is_string_receiver`].
-    fn from_receiver(receiver: Expression<'a>) -> Self {
-        match receiver {
-            Expression::StringLiteral(lit) => Self {
-                quasis: vec![lit.value.to_string()],
-                expressions: Vec::new(),
-            },
-            Expression::TemplateLiteral(tmpl) => {
-                let tmpl = tmpl.unbox();
-                Self {
-                    quasis: tmpl
-                        .quasis
-                        .iter()
-                        .map(|quasi| quasi.value.cooked.expect("checked by is_string_receiver").to_string())
-                        .collect(),
-                    expressions: tmpl.expressions.into_iter().collect(),
-                }
-            }
-            _ => unreachable!("checked by is_string_receiver"),
-        }
+    /// `quasis` are the [`receiver_quasis`] of `receiver`.
+    fn from_receiver(receiver: Expression<'a>, quasis: Vec<String>) -> Self {
+        let expressions = match receiver {
+            Expression::TemplateLiteral(tmpl) => tmpl.unbox().expressions.into_iter().collect(),
+            _ => Vec::new(),
+        };
+        Self { quasis, expressions }
     }
 
     fn push(&mut self, arg: Expression<'a>) {
-        if let Expression::StringLiteral(lit) = &arg {
+        if let Expression::StringLiteral(lit) = &arg
+            && let Some(text) = lit.value.as_str()
+        {
             self.quasis
                 .last_mut()
                 .expect("pieces always hold a quasi")
-                .push_str(&lit.value);
+                .push_str(text);
         } else {
             self.expressions.push(arg);
             self.quasis.push(String::new());
@@ -116,7 +108,7 @@ fn valid_concat_arguments(arguments: &[Argument<'_>]) -> bool {
     for arg in arguments {
         match arg.as_expression() {
             None => return false,
-            Some(Expression::StringLiteral(lit)) if lit.lone_surrogates => return false,
+            Some(Expression::StringLiteral(lit)) if lit.value.has_lone_surrogate() => return false,
             Some(expr) if !is_primitive_literal(expr) => non_literals += 1,
             Some(_) => {}
         }
@@ -161,9 +153,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
             calls += 1;
             receiver = inner;
         }
-        if !is_string_receiver(receiver) {
+        let Some(receiver_quasis) = receiver_quasis(receiver) else {
             return;
-        }
+        };
 
         let mut argument_lists = Vec::with_capacity(calls);
         let mut receiver = expr.take_in(ctx);
@@ -178,7 +170,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for ConcatCanonicaliser {
             argument_lists.push(call.arguments);
             receiver = sme.unbox().object;
         }
-        let mut pieces = Pieces::from_receiver(receiver);
+        let mut pieces = Pieces::from_receiver(receiver, receiver_quasis);
         for arguments in argument_lists.into_iter().rev() {
             for arg in arguments {
                 pieces.push(arg.into_expression());
@@ -265,6 +257,18 @@ mod tests {
             run("x = \"\".concat(a).concat(\"-\", 1).concat(b);"),
             "x = `${a}-${1}${b}`;\n"
         );
+    }
+
+    /// A lone surrogate cannot become Rust text, so the call stays as written.
+    #[test]
+    fn leaves_lone_surrogate_strings_alone() {
+        for code in [
+            "x = \"\\ud800\".concat(y);\n",
+            "x = `\\ud800${a}`.concat(y);\n",
+            "x = \"\".concat(\"\\udc00\", y);\n",
+        ] {
+            assert_eq!(run(code), code);
+        }
     }
 
     #[test]

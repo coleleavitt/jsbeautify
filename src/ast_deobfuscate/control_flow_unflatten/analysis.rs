@@ -173,7 +173,8 @@ fn split_sequence(init: &Expression<'_>) -> Option<Vec<String>> {
     if call.optional || member.optional() || member.static_property_name()? != "split" || separator.value.is_empty() {
         return None;
     }
-    Some(source.value.split(separator.value.as_str()).map(String::from).collect())
+    let (source, separator) = (source.value.as_str()?, separator.value.as_str()?);
+    Some(source.split(separator).map(String::from).collect())
 }
 
 /// Whether evaluating `expr` has no side effects and gives a value of known
@@ -214,7 +215,7 @@ fn run_sequence<'a>(
         if case.consequent.iter().any(declares_in_switch_scope) {
             return None;
         }
-        labels.entry(test.value.as_str()).or_insert(index);
+        labels.entry(test.value.as_str()?).or_insert(index);
     }
 
     let mut ran = vec![false; switch.cases.len()];

@@ -14,7 +14,7 @@ pub(super) fn object_property<'b, 'a>(obj: &'b ObjectExpression<'a>, name: &str)
 pub(super) fn class_name_for(kind: DefKind, def: &ObjectExpression<'_>) -> Option<String> {
     let base = match kind {
         DefKind::Pipe => match object_property(def, "name")? {
-            Expression::StringLiteral(s) => s.value.to_string(),
+            Expression::StringLiteral(s) => s.value.as_str()?.to_string(),
             _ => return None,
         },
         DefKind::Component | DefKind::Directive => selector_base(object_property(def, "selectors")?)?,
@@ -38,16 +38,16 @@ fn selector_base(selectors: &Expression<'_>) -> Option<String> {
     };
     let parts: Vec<&Expression<'_>> = first.elements.iter().filter_map(|e| e.as_expression()).collect();
     let tag = match parts.first() {
-        Some(Expression::StringLiteral(s)) => s.value.as_str(),
+        Some(Expression::StringLiteral(s)) => s.value.as_str()?,
         _ => return None,
     };
     if !tag.is_empty() {
         return (tag != "ng-component").then(|| tag.to_string());
     }
     match parts.get(1..)? {
-        [Expression::StringLiteral(attr), ..] => Some(attr.value.to_string()),
+        [Expression::StringLiteral(attr), ..] => attr.value.as_str().map(str::to_string),
         [Expression::NumericLiteral(flag), Expression::StringLiteral(class), ..] if flag.value == 8.0 => {
-            Some(class.value.to_string())
+            class.value.as_str().map(str::to_string)
         }
         _ => None,
     }

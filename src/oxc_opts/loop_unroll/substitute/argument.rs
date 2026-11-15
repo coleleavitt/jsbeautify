@@ -28,7 +28,7 @@ impl LoopUnroller {
             Argument::NumericLiteral(lit) => {
                 Some(Argument::new_numeric_literal(SPAN, lit.value, lit.raw, lit.base, ctx))
             }
-            Argument::StringLiteral(lit) => Some(Argument::new_string_literal(SPAN, lit.value.as_str(), None, ctx)),
+            Argument::StringLiteral(lit) => Some(Argument::new_string_literal(SPAN, lit.value, None, ctx)),
             Argument::BooleanLiteral(lit) => Some(Argument::new_boolean_literal(SPAN, lit.value, ctx)),
             Argument::NullLiteral(_) => Some(Argument::new_null_literal(SPAN, ctx)),
             Argument::BinaryExpression(bin) => {

@@ -82,8 +82,9 @@ fn walk_detector_expr(expr: &Expression<'_>, detector: &mut AkamaiDetector) {
             }
         }
         Expression::StringLiteral(s) => {
-            let v = s.value.as_str();
-            if BMP_IDENT_SIGS.contains(&v) {
+            if let Some(v) = s.value.as_str()
+                && BMP_IDENT_SIGS.contains(&v)
+            {
                 detector.record(v);
             }
         }

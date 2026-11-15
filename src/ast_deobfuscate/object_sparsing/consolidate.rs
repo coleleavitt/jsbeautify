@@ -74,7 +74,7 @@ impl ObjectSparsingConsolidator {
     fn extract_value(expr: &Expression<'_>) -> Option<PropertyValue> {
         match expr {
             Expression::NumericLiteral(n) => Some(PropertyValue::Number(n.value)),
-            Expression::StringLiteral(s) => Some(PropertyValue::String(s.value.as_str().to_string())),
+            Expression::StringLiteral(s) => s.value.as_str().map(|value| PropertyValue::String(value.to_string())),
             Expression::BooleanLiteral(b) => Some(PropertyValue::Bool(b.value)),
             Expression::NullLiteral(_) => Some(PropertyValue::Null),
             Expression::Identifier(id) => Some(PropertyValue::Identifier(id.name.as_str().to_string())),

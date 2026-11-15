@@ -31,7 +31,7 @@ fn call_has_string_arg(expr: &Expression<'_>, target: &str) -> bool {
     };
     call.arguments.iter().any(|a| {
         if let oxc_ast::ast::Argument::StringLiteral(s) = a {
-            s.value.as_str() == target
+            s.value == target
         } else {
             false
         }
@@ -83,7 +83,7 @@ pub(super) fn stmt_returns_ident(stmt: &Statement<'_>, target: &str) -> bool {
 
 fn contains_str_in_expr(expr: &Expression<'_>, target: &str) -> bool {
     match expr {
-        Expression::StringLiteral(s) => s.value.as_str() == target,
+        Expression::StringLiteral(s) => s.value == target,
         Expression::ParenthesizedExpression(p) => contains_str_in_expr(&p.expression, target),
         Expression::SequenceExpression(s) => s.expressions.iter().any(|e| contains_str_in_expr(e, target)),
         Expression::CallExpression(c) => {

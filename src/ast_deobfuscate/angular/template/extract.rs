@@ -43,7 +43,7 @@ impl<'a> Call<'a> {
 
     pub(super) fn string(&self, index: usize) -> Option<&'a str> {
         match self.arg(index)? {
-            Expression::StringLiteral(s) => Some(s.value.as_str()),
+            Expression::StringLiteral(s) => s.value.as_str(),
             _ => None,
         }
     }

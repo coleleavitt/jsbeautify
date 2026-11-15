@@ -37,7 +37,7 @@ impl DispatcherInliner {
                 return None;
             };
             let key = match &obj_prop.key {
-                PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                PropertyKey::StringLiteral(s) => s.value.as_str()?.to_string(),
                 PropertyKey::StaticIdentifier(id) => id.name.as_str().to_string(),
                 _ => return None,
             };
@@ -106,7 +106,7 @@ impl DispatcherInliner {
     pub(super) fn extract_literal_value(expr: &Expression<'_>) -> Option<ReturnValue> {
         match expr {
             Expression::NumericLiteral(lit) => Some(ReturnValue::Number(lit.value)),
-            Expression::StringLiteral(lit) => Some(ReturnValue::String(lit.value.to_string())),
+            Expression::StringLiteral(lit) => lit.value.as_str().map(|value| ReturnValue::String(value.to_string())),
             Expression::BooleanLiteral(lit) => Some(ReturnValue::Bool(lit.value)),
             Expression::NullLiteral(_) => Some(ReturnValue::Null),
             _ => None,

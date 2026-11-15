@@ -56,7 +56,7 @@ impl DispatchInlinerCollector {
             let Expression::StringLiteral(s) = expr else {
                 return None;
             };
-            strings.push(s.value.as_str().to_string());
+            strings.push(s.value.as_str()?.to_string());
         }
         Some(strings)
     }

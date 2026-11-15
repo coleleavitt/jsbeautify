@@ -173,14 +173,18 @@ pub(super) fn export_descriptor_keys(arrow: &oxc_ast::ast::ArrowFunctionExpressi
     let Some(Argument::ObjectExpression(descriptor)) = call.arguments.get(2) else {
         return Vec::new();
     };
-    descriptor
-        .properties
-        .iter()
-        .filter_map(|property| match property {
-            ObjectPropertyKind::ObjectProperty(prop) => prop.key.static_name().map(String::from),
-            ObjectPropertyKind::SpreadProperty(_) => None,
-        })
-        .collect()
+    let mut keys = Vec::new();
+    for property in &descriptor.properties {
+        if let ObjectPropertyKind::ObjectProperty(prop) = property
+            && let Some(name) = prop.key.static_name()
+        {
+            // A lone-surrogate key is no descriptor key. Dropping it would let
+            // the remaining keys pass for a known shape, so give no evidence.
+            let Some(name) = name.as_str() else { return Vec::new() };
+            keys.push(name.to_owned());
+        }
+    }
+    keys
 }
 
 /// Whether the helper body constructs a `WeakMap`, as Bun's cached

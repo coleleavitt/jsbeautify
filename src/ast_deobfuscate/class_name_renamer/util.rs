@@ -37,7 +37,7 @@ fn this_name_assignment<'a>(expr: &Expression<'a>) -> Option<&'a str> {
         return None;
     }
     match &assign.right {
-        Expression::StringLiteral(s) => Some(s.value.as_str()),
+        Expression::StringLiteral(s) => s.value.as_str(),
         _ => None,
     }
 }

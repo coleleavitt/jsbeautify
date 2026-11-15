@@ -86,8 +86,9 @@ impl<'a> Traverse<'a, DeobfuscateState> for AkamaiDetector {
     }
 
     fn enter_string_literal(&mut self, lit: &mut StringLiteral<'a>, _ctx: &mut Ctx<'a>) {
-        let value = lit.value.as_str();
-        if BMP_IDENT_SIGS.contains(&value) {
+        if let Some(value) = lit.value.as_str()
+            && BMP_IDENT_SIGS.contains(&value)
+        {
             self.record(value);
         }
     }

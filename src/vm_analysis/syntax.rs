@@ -41,7 +41,8 @@ pub(super) struct DecoderFact {
 pub(super) struct DecoderCallFact {
     pub(super) decoder: String,
     pub(super) span: SourceSpan,
-    pub(super) literal: String,
+    /// `None` when the literal holds a lone surrogate, which is never base64.
+    pub(super) literal: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -229,7 +230,7 @@ impl<'a> Visit<'a> for DecoderCallCollector<'_, '_> {
             self.calls.push(DecoderCallFact {
                 decoder: decoder.clone(),
                 span: source_span(call.span),
-                literal: literal.value.to_string(),
+                literal: literal.value.as_str().map(str::to_string),
             });
         }
         walk::walk_call_expression(self, call);

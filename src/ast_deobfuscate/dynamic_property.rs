@@ -41,7 +41,7 @@ impl DynamicPropertyConverter {
 
     fn try_extract_property_name(expr: &Expression<'_>) -> Option<String> {
         match expr {
-            Expression::StringLiteral(s) => Some(s.value.as_str().to_string()),
+            Expression::StringLiteral(s) => Some(s.value.as_str()?.to_string()),
             Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
                 let left = Self::try_extract_property_name(&binary.left)?;
                 let right = Self::try_extract_property_name(&binary.right)?;
