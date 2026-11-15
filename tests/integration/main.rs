@@ -26,6 +26,7 @@ mod nesting;
 mod obfuscator;
 mod project;
 mod proxy_inlining;
+mod rewrite_order;
 mod script_mode;
 mod string_array_decoders;
 mod string_folding;

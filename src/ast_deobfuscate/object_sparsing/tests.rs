@@ -85,3 +85,46 @@ fn test_no_consolidation_gap() {
         "Should preserve assignment after gap, got: {output}"
     );
 }
+
+#[test]
+fn keeps_assignments_whose_value_could_observe_the_order() {
+    for code in [
+        // The object itself, not yet assigned while its literal is built.
+        "var o = {}; o.self = o;",
+        // An undeclared name throws, and a global may be an accessor.
+        "var o = {}; o.b = missing;",
+        // A `let` read before its declaration throws.
+        "var o = {}; o.b = later; let later = 2;",
+        // A `with` object may hold `o` behind a setter.
+        "function f(w) { with (w) { var o = {}; o.a = 1; } }",
+    ] {
+        let output = run_consolidation_script(code);
+        assert!(output.contains("o = {}"), "{code}\n=> {output}");
+    }
+}
+
+#[test]
+fn moves_reads_that_cannot_observe_the_order() {
+    let output = run_consolidation_script(
+        "function g(p) { var x = 5; function f() {} var o = {}; o.a = x; o.b = f; o.c = p; o.d = undefined; }",
+    );
+    assert!(
+        output.contains("a: x")
+            && output.contains("b: f")
+            && output.contains("c: p")
+            && output.contains("d: undefined"),
+        "{output}"
+    );
+}
+
+fn run_consolidation_script(code: &str) -> String {
+    let allocator = Allocator::default();
+    let ret = Parser::new(&allocator, code, SourceType::script()).parse();
+    assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
+    let mut program = ret.program;
+    let mut consolidator = ObjectSparsingConsolidator::new();
+    let scoping = semantic::scoping(&program);
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut consolidator, &mut program, &mut ctx);
+    Codegen::new().build(&program).code
+}
