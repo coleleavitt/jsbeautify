@@ -7,8 +7,17 @@ use oxc_span::SourceType;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 
 fn run(code: &str) -> String {
+    run_as(code, SourceType::mjs())
+}
+
+/// Runs the pass on sloppy-mode script input.
+fn run_script(code: &str) -> String {
+    run_as(code, SourceType::cjs())
+}
+
+fn run_as(code: &str, source_type: SourceType) -> String {
     let allocator = Allocator::default();
-    let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+    let ret = Parser::new(&allocator, code, source_type).parse();
     let mut program = ret.program;
 
     let mut collector = DispatchInlinerCollector::new();
@@ -173,4 +182,86 @@ fn preserves_non_array_return() {
     let code = r"var __cache = compute(); function F() { return __cache; } var r = F()[0];";
     let out = run(code);
     assert!(out.contains("F()[0]"), "non-array return must be preserved: {out}");
+}
+
+/// Inputs whose `f()[k]` reads must stay: the factory or the index binding a
+/// call site names is not (only) the one its definition gives a value.
+#[test]
+fn keeps_call_sites_a_binding_may_not_reach() {
+    for code in [
+        // A parameter or a catch binding shadows the factory or constant.
+        r#"function f(){return ["a","b","c"];} function g(f){ return f()[1]; }"#,
+        r#"var I = 0; function f(){return ["a","b","c"];} try { throw 2; } catch (I) { f()[I]; }"#,
+        r#"var I = 0; function f(){return ["a","b","c"];} function g(I){ return f()[I]; }"#,
+        // A block's `let` is not a body-level definition.
+        r#"function f(){return ["a","b","c"];} { let K = 1; f()[K]; }"#,
+        // Written after its definition.
+        r#"var J = 0; function f(){return ["a","b","c"];} J = 2; f()[J];"#,
+        r#"var J = 0; function f(){return ["a","b","c"];} J++; f()[J];"#,
+        r#"function f(){return ["a","b"];} f = function(){return ["x","y"];}; f()[0];"#,
+        r#"var c = ["a","b"]; function F(){return c;} c = ["x","y"]; F()[0];"#,
+        r#"function f(){return ["a","b","c"];} N = 1; N += 1; f()[N];"#,
+        // Read before its definition runs.
+        r#"function f(){return ["a","b"];} f()[I]; var I = 1;"#,
+        r#"function f(){return ["a","b"];} if (x) { var I = 1; } f()[I];"#,
+        // A shared array that a caller mutates.
+        r#"function f(){ var a = ["a","b"]; f = function(){return a;}; return a; } f().reverse(); f()[0];"#,
+        r#"function f(){ var a = ["a","b"]; f = function(){return a;}; return a; } delete f()[0]; f()[1];"#,
+        // An async factory returns a promise; a default parameter runs code.
+        r#"async function f(){return ["a","b"];} f()[0];"#,
+        r#"function f(x = n++){return ["a","b"];} f()[0];"#,
+    ] {
+        let out = run(code);
+        assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
+    }
+}
+
+#[test]
+fn keeps_call_sites_a_with_body_or_eval_may_redirect() {
+    for code in [
+        r#"function f(){return ["a","b"];} var o = {I: 5}; with (o) { var I = 1; } f()[I];"#,
+        r#"function f(){return ["a","b"];} var o = {}; with (o) { N = 1; } N = 0; f()[N];"#,
+        r#"function f(){return ["a","b"];} var I = 0; eval("I = 1"); f()[I];"#,
+        r#"function f(){return ["a","b"];} function g(){ eval("var f"); return f()[0]; }"#,
+        r#"function f(){return ["a","b"];} N = 0; (0, function(){ (eval)("N = 1"); })(); f()[N];"#,
+    ] {
+        let out = run_script(code);
+        assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
+    }
+}
+
+#[test]
+fn keeps_call_sites_an_annex_b_function_may_redirect() {
+    let code = r#"{ function f(){return ["x","y"];} } f()[0]; function f(){return ["a","b"];}"#;
+    let out = run_script(code);
+    assert!(out.contains("f()[0]"), "got: {out}");
+}
+
+#[test]
+fn resolves_through_unrelated_same_named_bindings() {
+    let code = r#"
+            var I = 1;
+            function f(){return ["a","b","c"];}
+            function g(I, f){ return I + f; }
+            var r = f()[I];
+        "#;
+    let out = run(code);
+    assert!(out.contains(r#"r = "b""#), "got: {out}");
+}
+
+#[test]
+fn resolves_each_call_site_to_its_own_factory() {
+    let code = r#"function f(){return ["a","b"];} function g(){ function f(){return ["x","y"];} return f()[1]; } var r = f()[1];"#;
+    let out = run(code);
+    assert!(
+        out.contains(r#"return "y""#) && out.contains(r#"r = "b""#),
+        "got: {out}"
+    );
+}
+
+#[test]
+fn resolves_shared_array_factories_read_only_by_index() {
+    let code = r#"var c = ["a","b"]; function F(){return c;} var r = F()[1] + F()[0];"#;
+    let out = run(code);
+    assert!(out.contains(r#""b" + "a""#), "got: {out}");
 }

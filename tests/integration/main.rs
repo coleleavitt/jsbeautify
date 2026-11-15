@@ -14,6 +14,7 @@ mod beautify;
 mod cli;
 mod dead_declarations;
 mod deobfuscate;
+mod dispatch_inliner;
 mod dowhile_switch;
 mod esbuild_bundles;
 mod fixtures;
