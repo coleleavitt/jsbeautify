@@ -51,7 +51,6 @@ const PASS_SAMPLES: &[(&str, &str)] = &[
         r#"var _0x5a3b=["Hello","World"];function _0xdec(i){i=i-0;return _0x5a3b[i]}console.log(_0xdec(0),_0xdec(1));"#,
     ),
     ("string-var inlining", r#"var s="a";var t=s+"b";console.log(t);"#),
-    ("window alias", "var w=window;w.foo=1;console.log(w.foo);"),
     (
         "unused lexical bindings",
         "let a=1;const b=2;class C{}var unused;function g(){}",
@@ -87,6 +86,16 @@ fn script_keeps_every_global_binding() {
             expected.difference(&kept).collect::<Vec<_>>()
         );
     }
+}
+
+/// A script that holds the global object in a binding may read its own
+/// globals through it, so `--isolated` leaves it a script.
+const GLOBAL_OBJECT_ALIAS: &str = "var w=window;w.foo=1;console.log(w.foo);";
+
+#[test]
+fn isolated_script_aliasing_the_global_object_keeps_its_globals() {
+    let out = deobfuscate(GLOBAL_OBJECT_ALIAS, ParseGoal::Auto, true);
+    assert_eq!(global_names(&out), global_names(GLOBAL_OBJECT_ALIAS), "{out}");
 }
 
 #[test]

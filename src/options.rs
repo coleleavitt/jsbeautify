@@ -2,7 +2,10 @@ use std::default::Default;
 use std::path::PathBuf;
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{ComputedMemberExpression, Expression, Function, Program, StaticMemberExpression};
+use oxc_ast::ast::{
+    Class, Expression, Function, IdentifierReference, Program, StaticMemberExpression, ThisExpression, UnaryExpression,
+    UnaryOperator,
+};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_semantic::Scoping;
@@ -128,11 +131,16 @@ impl ParseGoal {
     }
 }
 
-/// Whether a script reads one of its own top-level bindings as a property of
-/// the global object (`globalThis.x`, `window["x"]`, top-level `this.x`, or a
-/// computed key that may name any of them). `--isolated` only promises that
-/// other scripts do not; the file's own reads keep it a script. A global
-/// object reached through an alias (`var w = window; w.x`) is not followed.
+/// Whether a script may read one of its own top-level bindings through the
+/// global object. `--isolated` only promises that other scripts do not.
+///
+/// The rule is deliberately simple: the script counts as reading them when it
+/// uses an unresolved global-object name (`globalThis`, `window`, `self`,
+/// `global`, `frames`, `top`, `parent`) or a top-level `this` in any way
+/// other than `.name` with a name that is not one of its top-level bindings
+/// or `typeof`,
+/// or when it references an unresolved `eval` or `Function` (indirect eval,
+/// `new Function`, and `Function("return this")()` reach the global object).
 fn reads_own_globals(program: &Program<'_>) -> bool {
     let scoping = crate::ast_deobfuscate::semantic::scoping(program);
     let globals: FxHashSet<&str> = scoping
@@ -153,12 +161,19 @@ fn reads_own_globals(program: &Program<'_>) -> bool {
 struct GlobalReads<'s> {
     scoping: &'s Scoping,
     globals: &'s FxHashSet<&'s str>,
-    /// Non-arrow functions around the visit, where `this` is not the global.
+    /// Non-arrow functions and classes around the visit, where `this` is not
+    /// the global object.
     function_depth: usize,
     found: bool,
 }
 
 impl GlobalReads<'_> {
+    fn is_unresolved(&self, id: &IdentifierReference<'_>) -> bool {
+        id.reference_id
+            .get()
+            .is_some_and(|reference| self.scoping.get_reference(reference).symbol_id().is_none())
+    }
+
     fn is_global_object(&self, expr: &Expression<'_>) -> bool {
         match expr {
             Expression::ThisExpression(_) => self.function_depth == 0,
@@ -166,10 +181,7 @@ impl GlobalReads<'_> {
                 matches!(
                     id.name.as_str(),
                     "globalThis" | "window" | "self" | "global" | "frames" | "top" | "parent"
-                ) && id
-                    .reference_id
-                    .get()
-                    .is_some_and(|reference| self.scoping.get_reference(reference).symbol_id().is_none())
+                ) && self.is_unresolved(id)
             }
             Expression::ParenthesizedExpression(paren) => self.is_global_object(&paren.expression),
             _ => false,
@@ -184,23 +196,40 @@ impl<'a> Visit<'a> for GlobalReads<'_> {
         self.function_depth -= 1;
     }
 
+    fn visit_class(&mut self, class: &Class<'a>) {
+        self.function_depth += 1;
+        walk::walk_class(self, class);
+        self.function_depth -= 1;
+    }
+
     fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
-        if self.is_global_object(&member.object) && self.globals.contains(member.property.name.as_str()) {
-            self.found = true;
+        // `window.addEventListener` cannot read one of the script's bindings.
+        if self.is_global_object(&member.object) && !self.globals.contains(member.property.name.as_str()) {
+            return;
         }
         walk::walk_static_member_expression(self, member);
     }
 
-    fn visit_computed_member_expression(&mut self, member: &ComputedMemberExpression<'a>) {
-        if self.is_global_object(&member.object) {
-            let names_global = match &member.expression {
-                Expression::StringLiteral(key) => key.value.as_str().is_none_or(|key| self.globals.contains(key)),
-                Expression::NumericLiteral(_) => false,
-                _ => true,
-            };
-            self.found |= names_global;
+    fn visit_unary_expression(&mut self, unary: &UnaryExpression<'a>) {
+        // `typeof window` tells nothing about the script's bindings.
+        if unary.operator == UnaryOperator::Typeof && self.is_global_object(&unary.argument) {
+            return;
         }
-        walk::walk_computed_member_expression(self, member);
+        walk::walk_unary_expression(self, unary);
+    }
+
+    fn visit_this_expression(&mut self, _this: &ThisExpression) {
+        self.found |= self.function_depth == 0;
+    }
+
+    fn visit_identifier_reference(&mut self, id: &IdentifierReference<'a>) {
+        if matches!(
+            id.name.as_str(),
+            "globalThis" | "window" | "self" | "global" | "frames" | "top" | "parent" | "eval" | "Function"
+        ) && self.is_unresolved(id)
+        {
+            self.found = true;
+        }
     }
 }
 
@@ -298,7 +327,8 @@ mod tests {
             "var a = 1; console.log(a, typeof globalThis.setTimeout);",
             "var a = 1; window.b = 2;",
             "var a = 1; function f() { return this.a; }",
-            "var a = 1; globalThis[0];",
+            "var a = 1; class C { m() { return this.a; } }",
+            "var a = 1; typeof window === 'undefined';",
         ] {
             assert_eq!(isolated_kind(code), "commonjs", "{code}");
         }
@@ -312,6 +342,14 @@ mod tests {
             "var x = 1; this.x;",
             "var x = 1; (() => this.x)();",
             "var x = 1; self[key];",
+            "var x = 1; globalThis[0];",
+            "var x = 1; var { x: y } = globalThis;",
+            "var x = 1; 'x' in globalThis;",
+            "var x = 1; Object.getOwnPropertyDescriptor(globalThis, 'x');",
+            "var x = 1; (0, eval)('x');",
+            "var x = 1; new Function('return x')();",
+            "var x = 1; Function('return this')().x;",
+            "var x = 1; var w = window; w.x;",
         ] {
             assert_eq!(isolated_kind(code), "script", "{code}");
         }

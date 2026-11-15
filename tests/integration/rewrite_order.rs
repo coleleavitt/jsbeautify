@@ -232,6 +232,15 @@ fn isolated_scripts_keep_globals_they_read_themselves() {
             "x",
         ),
         ("var answer = 42;\nconsole.log(this.answer);\n", "42"),
+        ("var x = 7;\nvar { x: y } = globalThis;\nconsole.log(y);\n", "7"),
+        ("var x = 7;\nconsole.log('x' in globalThis);\n", "true"),
+        ("var x = 7;\nconsole.log((0, eval)('x'));\n", "7"),
+        ("var x = 7;\nconsole.log(Function('return this')().x);\n", "7"),
+        ("var x = 7;\nvar w = globalThis;\nconsole.log(w.x);\n", "7"),
+        (
+            "var x = 7;\nconsole.log(Object.getOwnPropertyDescriptor(globalThis, 'x').value);\n",
+            "7",
+        ),
     ] {
         let output = deobfuscate(&dir, input, &["-d", "--isolated"]);
         let Some(input_stdout) = node_script_stdout(input) else {
