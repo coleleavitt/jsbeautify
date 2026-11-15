@@ -1,3 +1,4 @@
+use super::structural::StructuralHalf;
 use super::{
     AlgebraicSimplifier, ArrayCoerceFold, ArrayUnpacker, AstDeobfuscator, BeautifyError, BooleanLiteralConverter,
     CommaReturnSimplifier, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DispatcherInliner,
@@ -155,7 +156,10 @@ impl AstDeobfuscator {
             },
         );
 
-        let (intermediate, runtime, source_type) = self.run_structural_half(&code);
+        let (intermediate, runtime, source_type) = match self.run_structural_half(&code)? {
+            StructuralHalf::Ran(intermediate, runtime, source_type) => (intermediate, runtime, source_type),
+            StructuralHalf::Skipped(output) => return Ok(output),
+        };
         // Measured against the source type the structural half settled on, so
         // the final checkpoints compare like with like.
         let baseline = semantic_baseline(&code, source_type);

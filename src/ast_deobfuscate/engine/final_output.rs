@@ -84,6 +84,26 @@ impl AstDeobfuscator {
         Ok(laid_out.unwrap_or(output))
     }
 
+    /// The laid-out code of `program` as parsed, without any pass, annotation
+    /// or semantic check: for input whose analysis would cost too much.
+    pub(super) fn generate_untransformed_output(&self, program: &Program<'_>) -> Result<String> {
+        let output = Codegen::new()
+            .with_options(crate::beautifier::layout_codegen_options(program))
+            .build(program)
+            .code;
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, &output, program.source_type).parse();
+        if !parsed.diagnostics.is_empty() {
+            return Err(crate::BeautifyError::BeautificationFailed(
+                "codegen of the untransformed input produced invalid JavaScript".to_string(),
+            ));
+        }
+        let Some(layout) = &self.layout else {
+            return Ok(output);
+        };
+        layout.apply_parsed(&output, &parsed.program, true, program.source_type, &[])
+    }
+
     fn lay_out(&self, output: String, source_type: SourceType) -> Result<String> {
         match &self.layout {
             Some(layout) => layout.apply(&output, source_type, &[]),

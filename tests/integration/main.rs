@@ -14,6 +14,7 @@ mod annex_b_functions;
 mod beautify;
 mod cli;
 mod dead_declarations;
+mod deep_scopes;
 mod deobfuscate;
 mod dispatch_inliner;
 mod dowhile_switch;

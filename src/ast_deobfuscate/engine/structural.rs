@@ -1,10 +1,20 @@
-use super::{Allocator, AstDeobfuscator, BundleRuntime, Parser, SourceType, checkpoint_code, mem_ck};
+use super::{
+    Allocator, AstDeobfuscator, BundleRuntime, Parser, Result, SourceType, checkpoint_code, mem_ck, semantic_budget,
+};
+
+/// What the structural half hands on.
+pub(super) enum StructuralHalf {
+    /// The structural checkpoint output, the bundler runtime, and the source
+    /// type every later parse must use: the resolved parse goal, made
+    /// `CommonJS` when a Bun CJS wrapper was flattened.
+    Ran(String, BundleRuntime, SourceType),
+    /// The final output of the untransformed input, which is too deeply
+    /// nested to analyse (see `semantic_budget`).
+    Skipped(String),
+}
 
 impl AstDeobfuscator {
-    /// Returns the structural checkpoint output, the bundler runtime, and the
-    /// source type every later parse must use: the resolved parse goal, made
-    /// `CommonJS` when a Bun CJS wrapper was flattened.
-    pub(super) fn run_structural_half(&mut self, code: &str) -> (String, BundleRuntime, SourceType) {
+    pub(super) fn run_structural_half(&mut self, code: &str) -> Result<StructuralHalf> {
         // ── Structural half (Phases 0–12.5) runs in its own arena that is freed
         // before the cosmetic half re-parses. The transform passes accumulate a
         // large volume of dead intermediate AST in oxc's bump arena (which never
@@ -40,6 +50,11 @@ impl AstDeobfuscator {
 
         let mut program = parse_result.program;
         eprintln!("[DEOBFUSCATE] Parsed as {:?}", program.source_type);
+        if semantic_budget::exceeds_budget(&program, code.len()) {
+            return self
+                .generate_untransformed_output(&program)
+                .map(StructuralHalf::Skipped);
+        }
 
         // A scoping the phases hand on while they leave the program unchanged.
         let mut scoping = self.run_structural_preamble(&allocator, &mut program);
@@ -82,7 +97,11 @@ impl AstDeobfuscator {
         // dead intermediate AST accumulated by Phases 0–12.5.
         mem_ck("Phase 12.6: structural checkpoint codegen");
         eprintln!("[DEOBFUSCATE] Phase 12.6: structural checkpoint (codegen + arena reset)");
-        (checkpoint_code(&program), runtime, program.source_type)
+        Ok(StructuralHalf::Ran(
+            checkpoint_code(&program),
+            runtime,
+            program.source_type,
+        ))
     }
 
     fn parse_with_source_type_fallback<'a>(

@@ -3,6 +3,7 @@ mod checkpoint;
 mod cosmetic;
 mod final_output;
 mod lifecycle;
+mod semantic_budget;
 mod structural;
 mod structural_bun;
 mod structural_early;
