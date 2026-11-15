@@ -2,8 +2,9 @@
 //! value read earlier, a binding resolved by name, a cache hoisted to another
 //! scope, or a renamed shorthand destructuring target must not change it.
 
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn deobfuscate(dir: &Path, code: &str, flags: &[&str]) -> String {
     let path = dir.join("input.js");
@@ -168,6 +169,57 @@ fn reordering_rewrites_keep_their_behavior() {
                 "{flags:?} {input}\n=>\n{output}"
             );
         }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What `code` prints run by node as a classic script, whose top-level
+/// bindings are properties of the global object.
+fn node_script_stdout(code: &str) -> Option<String> {
+    let mut child = match Command::new("node")
+        .args([
+            "-e",
+            "require('vm').runInThisContext(require('fs').readFileSync(0, 'utf8'))",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => panic!("run node: {error}"),
+    };
+    child
+        .stdin
+        .take()
+        .expect("node stdin")
+        .write_all(code.as_bytes())
+        .expect("write to node");
+    let output = child.wait_with_output().expect("run node");
+    assert!(output.status.success(), "node failed on:\n{code}");
+    Some(String::from_utf8(output.stdout).expect("stdout is utf8"))
+}
+
+/// `--isolated` promises that other scripts do not read the file's globals.
+/// A script that reads its own through the global object keeps them.
+#[test]
+fn isolated_scripts_keep_globals_they_read_themselves() {
+    let dir = std::env::temp_dir().join(format!("jsb-isolated-self-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    for (input, expected) in [
+        (
+            "var x = function () { return 'x'; };\ntry { console.log(globalThis.x()); } catch (e) { console.log(e.name); }\n",
+            "x",
+        ),
+        ("var answer = 42;\nconsole.log(this.answer);\n", "42"),
+    ] {
+        let output = deobfuscate(&dir, input, &["-d", "--isolated"]);
+        let Some(input_stdout) = node_script_stdout(input) else {
+            eprintln!("node not found; skipping the behavior comparison");
+            return;
+        };
+        assert_eq!(input_stdout.trim_end(), expected, "{input}");
+        assert_eq!(node_script_stdout(&output), Some(input_stdout), "{input}\n=>\n{output}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

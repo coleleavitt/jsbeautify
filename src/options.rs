@@ -2,8 +2,13 @@ use std::default::Default;
 use std::path::PathBuf;
 
 use oxc_allocator::Allocator;
+use oxc_ast::ast::{ComputedMemberExpression, Expression, Function, Program, StaticMemberExpression};
+use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
+use oxc_semantic::Scoping;
 use oxc_span::SourceType;
+use oxc_syntax::scope::ScopeFlags;
+use rustc_hash::FxHashSet;
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
@@ -95,7 +100,8 @@ impl ParseGoal {
     /// The source type `code` is processed as. `Auto` settles on module or
     /// script by the presence of ESM syntax, or `CommonJS` when a script fails
     /// to parse only because of a top-level `return`. With `isolated`, a script
-    /// becomes `CommonJS`, whose top-level bindings are private.
+    /// becomes `CommonJS`, whose top-level bindings are private, unless it
+    /// reads one of them through the global object itself.
     #[must_use]
     pub fn resolve(self, code: &str, isolated: bool) -> SourceType {
         crate::stack::run_on_sized_stack(code.len(), || self.resolve_on_current_stack(code, isolated))
@@ -115,10 +121,86 @@ impl ParseGoal {
         {
             source_type = SourceType::cjs();
         }
-        if isolated && source_type.is_script() {
+        if isolated && source_type.is_script() && !reads_own_globals(&parsed.program) {
             source_type = source_type.with_commonjs(true);
         }
         source_type
+    }
+}
+
+/// Whether a script reads one of its own top-level bindings as a property of
+/// the global object (`globalThis.x`, `window["x"]`, top-level `this.x`, or a
+/// computed key that may name any of them). `--isolated` only promises that
+/// other scripts do not; the file's own reads keep it a script. A global
+/// object reached through an alias (`var w = window; w.x`) is not followed.
+fn reads_own_globals(program: &Program<'_>) -> bool {
+    let scoping = crate::ast_deobfuscate::semantic::scoping(program);
+    let globals: FxHashSet<&str> = scoping
+        .get_bindings(scoping.root_scope_id())
+        .keys()
+        .map(oxc_str::Ident::as_str)
+        .collect();
+    let mut reads = GlobalReads {
+        scoping: &scoping,
+        globals: &globals,
+        function_depth: 0,
+        found: false,
+    };
+    reads.visit_program(program);
+    reads.found
+}
+
+struct GlobalReads<'s> {
+    scoping: &'s Scoping,
+    globals: &'s FxHashSet<&'s str>,
+    /// Non-arrow functions around the visit, where `this` is not the global.
+    function_depth: usize,
+    found: bool,
+}
+
+impl GlobalReads<'_> {
+    fn is_global_object(&self, expr: &Expression<'_>) -> bool {
+        match expr {
+            Expression::ThisExpression(_) => self.function_depth == 0,
+            Expression::Identifier(id) => {
+                matches!(
+                    id.name.as_str(),
+                    "globalThis" | "window" | "self" | "global" | "frames" | "top" | "parent"
+                ) && id
+                    .reference_id
+                    .get()
+                    .is_some_and(|reference| self.scoping.get_reference(reference).symbol_id().is_none())
+            }
+            Expression::ParenthesizedExpression(paren) => self.is_global_object(&paren.expression),
+            _ => false,
+        }
+    }
+}
+
+impl<'a> Visit<'a> for GlobalReads<'_> {
+    fn visit_function(&mut self, func: &Function<'a>, flags: ScopeFlags) {
+        self.function_depth += 1;
+        walk::walk_function(self, func, flags);
+        self.function_depth -= 1;
+    }
+
+    fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
+        if self.is_global_object(&member.object) && self.globals.contains(member.property.name.as_str()) {
+            self.found = true;
+        }
+        walk::walk_static_member_expression(self, member);
+    }
+
+    fn visit_computed_member_expression(&mut self, member: &ComputedMemberExpression<'a>) {
+        if self.is_global_object(&member.object) {
+            let names_global = match &member.expression {
+                Expression::StringLiteral(key) => key.value.as_str().is_none_or(|key| self.globals.contains(key)),
+                Expression::NumericLiteral(_) => false,
+                _ => true,
+            };
+            self.found |= names_global;
+        }
+        walk::walk_computed_member_expression(self, member);
     }
 }
 
@@ -193,6 +275,45 @@ impl Default for Options {
             keep_fn_names: false,
             short_export_names: false,
             window_alias_es5: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParseGoal;
+
+    fn isolated_kind(code: &str) -> &'static str {
+        let source_type = ParseGoal::Auto.resolve(code, true);
+        if source_type.is_commonjs() {
+            "commonjs"
+        } else {
+            "script"
+        }
+    }
+
+    #[test]
+    fn isolated_scripts_become_commonjs() {
+        for code in [
+            "var a = 1; console.log(a, typeof globalThis.setTimeout);",
+            "var a = 1; window.b = 2;",
+            "var a = 1; function f() { return this.a; }",
+            "var a = 1; globalThis[0];",
+        ] {
+            assert_eq!(isolated_kind(code), "commonjs", "{code}");
+        }
+    }
+
+    #[test]
+    fn isolated_scripts_reading_their_own_globals_stay_scripts() {
+        for code in [
+            "var x = 1; globalThis.x;",
+            "var x = 1; window['x'] = 2;",
+            "var x = 1; this.x;",
+            "var x = 1; (() => this.x)();",
+            "var x = 1; self[key];",
+        ] {
+            assert_eq!(isolated_kind(code), "script", "{code}");
         }
     }
 }
