@@ -6,6 +6,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::init_order::initialized_early;
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::with_scope::{redirectable_symbols, scopes_in_with_bodies};
@@ -17,7 +18,9 @@ use super::utils::{GlobalObject, global_object};
 /// `var X = window` (or `self`, `global`, `globalThis`) and whose every write
 /// is a plain `X = window`. Any other write (`X = other`, `X++`, `[X] = …`,
 /// `for (X of …)`, a parameter set through `arguments`, a function
-/// declaration of the same name) means `X` may hold something else.
+/// declaration of the same name) means `X` may hold something else, and so
+/// does a read that may run before `X` is set
+/// ([`crate::ast_deobfuscate::init_order::initialized_early`]).
 #[derive(Default)]
 pub struct WindowAliasCollector {
     candidates: FxHashMap<SymbolId, GlobalObject>,
@@ -107,6 +110,8 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
         // `with` objects, Annex B functions and direct `eval` may stand in for
         // an alias, and other scripts may assign a classic script's global.
         let redirectable = redirectable_symbols(program, scoping);
+        // A read before the alias is set sees `undefined` (or throws for `let`).
+        let early = initialized_early(program, scoping);
         for &symbol in self.candidates.keys() {
             let declarations = 1 + scoping.symbol_redeclarations(symbol).len();
             let only_alias_writes = scoping.get_resolved_reference_ids(symbol).iter().all(|&reference| {
@@ -115,6 +120,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
             if self.alias_declarations.get(&symbol).copied().unwrap_or_default() != declarations
                 || !only_alias_writes
                 || redirectable.contains(&symbol)
+                || !early.contains(&symbol)
                 || is_global_binding(self.source_type, scoping, symbol)
             {
                 self.poisoned.insert(symbol);

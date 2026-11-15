@@ -14,12 +14,13 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
-use oxc_syntax::scope::ScopeFlags;
+use oxc_syntax::scope::{ScopeFlags, ScopeId};
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
+use crate::ast_deobfuscate::with_scope::scopes_in_with_bodies;
 
 /// Bindings set by a statement at the top level of a statement list (a
 /// function body, a block, a static block or the program) before any code
@@ -78,6 +79,7 @@ pub fn initialized_early(program: &Program<'_>, scoping: &Scoping) -> FxHashSet<
         scoping,
         owners: &owners,
         global_reach: &global_reach,
+        with_scopes: scopes_in_with_bodies(scoping),
         found: FxHashSet::default(),
         budget,
     };
@@ -102,7 +104,7 @@ pub fn defined_before_calls(scoping: &Scoping, early: &FxHashSet<SymbolId>, symb
 }
 
 /// Evaluating `expr` runs no code and cannot throw.
-fn is_inert_value(expr: &Expression<'_>) -> bool {
+fn is_inert_literal(expr: &Expression<'_>) -> bool {
     let literal = |expr: &Expression<'_>| {
         matches!(
             expr,
@@ -268,6 +270,7 @@ struct Early<'s, 'o> {
     /// The bindings functions earlier code may call without naming them
     /// can reach.
     global_reach: &'o FxHashSet<SymbolId>,
+    with_scopes: FxHashSet<ScopeId>,
     found: FxHashSet<SymbolId>,
     budget: usize,
 }
@@ -334,7 +337,7 @@ impl<'s, 'o> Early<'s, 'o> {
     fn declarator(&mut self, declarator: &VariableDeclarator<'_>, list: (u32, u32), reached: &mut Reached<'_>) {
         match (&declarator.id, &declarator.init) {
             (BindingPattern::BindingIdentifier(_), None) => {}
-            (BindingPattern::BindingIdentifier(id), Some(init)) if is_inert_value(init) => {
+            (BindingPattern::BindingIdentifier(id), Some(init)) if self.is_inert_value(init) => {
                 if let Some(symbol) = id.symbol_id.get() {
                     self.set(symbol, list, reached);
                 }
@@ -383,10 +386,28 @@ impl<'s, 'o> Early<'s, 'o> {
         match stmt {
             Statement::VariableDeclaration(decl) => decl.declarations.iter().any(|declarator| {
                 matches!(declarator.id, BindingPattern::BindingIdentifier(_))
-                    && declarator.init.as_ref().is_some_and(|init| is_inert_value(init))
+                    && declarator.init.as_ref().is_some_and(|init| self.is_inert_value(init))
             }),
             Statement::ExpressionStatement(stmt) => self.inert_assignment(&stmt.expression).is_some(),
             _ => false,
+        }
+    }
+
+    /// Evaluating `expr` runs no code: a function, a literal, an array of
+    /// literals, or a global object read outside `with` bodies (which throws
+    /// when the host has no such global, so nothing after it runs either).
+    fn is_inert_value(&self, expr: &Expression<'_>) -> bool {
+        match expr {
+            Expression::Identifier(id) => {
+                matches!(
+                    id.name.as_str(),
+                    "globalThis" | "window" | "self" | "global" | "frames" | "top" | "parent"
+                ) && id.reference_id.get().is_some_and(|reference| {
+                    let reference = self.scoping.get_reference(reference);
+                    reference.symbol_id().is_none() && !self.with_scopes.contains(&reference.scope_id())
+                })
+            }
+            expr => is_inert_literal(expr),
         }
     }
 
@@ -400,7 +421,7 @@ impl<'s, 'o> Early<'s, 'o> {
         };
         let symbol = self.scoping.get_reference(target.reference_id.get()?).symbol_id()?;
         (assign.operator == AssignmentOperator::Assign
-            && is_inert_value(&assign.right)
+            && self.is_inert_value(&assign.right)
             && self.scoping.symbol_flags(symbol).is_function_scoped_declaration()
             && !self.owners.params.contains(&symbol))
         .then_some(symbol)

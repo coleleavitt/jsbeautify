@@ -149,6 +149,16 @@ const CASES: &[(&str, &str)] = &[
         r"webpackJsonp([0],{1:function(e,t){({e}={e:5});t.v=e;console.log(e)}}); function webpackJsonp(c, m) { for (var k in m) m[k]({}, {}); }",
         "5",
     ),
+    // window alias: read by a function called before the `var` is set
+    (
+        r"(function () { function h() { return g.Math.max(1, 2); } try { console.log(h()); } catch (e) { console.log(e.name); } var g = global; console.log(h()); })();",
+        "TypeError\n2",
+    ),
+    // window alias: read by a function called before the `let` is set
+    (
+        r"(function () { function h() { return g.Math.max(1, 2); } try { console.log(h()); } catch (e) { console.log(e.name); } let g = global; console.log(h()); })();",
+        "ReferenceError\n2",
+    ),
 ];
 
 #[test]

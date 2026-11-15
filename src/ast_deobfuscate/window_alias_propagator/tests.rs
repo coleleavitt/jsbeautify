@@ -389,6 +389,9 @@ fn keeps_aliases_with_other_writes_or_declarations() {
         "w.document; var w = window; function w() {}",
         "function f(w) { w = window; arguments[0] = o; return w.document; }",
         "function f(o) { with (o) { var w = window; } return w.document; }",
+        // Read by a function that may run before the alias is set.
+        "function f() { function h() { return w.document; } h(); var w = window; }",
+        "function f() { function h() { return w.document; } h(); let w = window; }",
     ] {
         let out = run_source(code, false, SourceType::cjs());
         assert!(out.contains("w.document"), "{code}\n=> {out}");
