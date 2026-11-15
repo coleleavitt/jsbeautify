@@ -137,7 +137,7 @@ pub(crate) mod webpack;
 pub(crate) mod window_alias_propagator;
 pub(crate) mod with_scope;
 
-pub use akamai::{
+pub(crate) use akamai::{
     AkamaiDeobfuscator, AkamaiDetector, BooleanArithmeticFolder, EqualityProxyUnwrapper, StackTrackerRemover,
     UndefinedPatternNormalizer,
 };

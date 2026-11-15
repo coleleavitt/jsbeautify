@@ -56,11 +56,6 @@ impl AkamaiDeobfuscator {
         );
         self.detected
     }
-
-    #[must_use]
-    pub const fn is_detected(&self) -> bool {
-        self.detected
-    }
 }
 
 impl Default for AkamaiDeobfuscator {
