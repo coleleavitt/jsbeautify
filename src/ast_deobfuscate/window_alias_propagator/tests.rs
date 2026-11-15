@@ -12,8 +12,13 @@ fn run(code: &str) -> String {
 }
 
 fn run_with(code: &str, es5_only: bool) -> String {
+    run_source(code, es5_only, SourceType::mjs())
+}
+
+fn run_source(code: &str, es5_only: bool, source_type: SourceType) -> String {
     let allocator = Allocator::default();
-    let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+    let ret = Parser::new(&allocator, code, source_type).parse();
+    assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
     let mut program = ret.program;
 
     let mut collector = WindowAliasCollector::new();
@@ -372,4 +377,32 @@ fn es5_mode_rewrites_only_names_es5_era_browsers_define() {
     );
     assert!(out.contains("a = navigator") && out.contains("s.performance"), "{out}");
     assert!(out.contains("var p = Promise"), "Node keeps its ES2015 globals: {out}");
+}
+
+#[test]
+fn keeps_aliases_with_other_writes_or_declarations() {
+    for code in [
+        "var w = window; [w] = [o]; w.document;",
+        "var w = window; ({ w } = o); w.document;",
+        "var w = window; for ([w] of o); w.document;",
+        "var w = window; var [w] = [o]; w.document;",
+        "w.document; var w = window; function w() {}",
+        "function f(w) { w = window; arguments[0] = o; return w.document; }",
+        "function f(o) { with (o) { var w = window; } return w.document; }",
+    ] {
+        let out = run_source(code, false, SourceType::cjs());
+        assert!(out.contains("w.document"), "{code}\n=> {out}");
+    }
+}
+
+#[test]
+fn keeps_classic_script_globals_other_scripts_may_assign() {
+    let allocator = Allocator::default();
+    let code = "var w = window; function f() { return w.document; }";
+    let mut program = Parser::new(&allocator, code, SourceType::script()).parse().program;
+    let mut collector = WindowAliasCollector::new();
+    let scoping = semantic::scoping(&program);
+    let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+    traverse_mut_with_ctx(&mut collector, &mut program, &mut ctx);
+    assert!(collector.aliases().is_empty());
 }

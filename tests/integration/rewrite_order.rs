@@ -98,6 +98,46 @@ const CASES: &[(&str, &str)] = &[
         r"var bmak = 1, _abck = 2; (function () { function F() { var x = []; F = function () { return x; }; return x; } function G() { var y = Object.create(null); G = function () { return y; }; return y; } F().push(1); console.log(F().length, F() === F(), Object.getPrototypeOf(G()), G() === G()); })();",
         "1 true null true",
     ),
+    // window alias: an array destructuring writes the alias
+    (
+        r#"(function () { var g = global; [g] = [{ Math: { max: function () { return "e"; } } }]; console.log(g.Math.max(1, 2)); })();"#,
+        "e",
+    ),
+    // window alias: an object destructuring writes the alias
+    (
+        r#"(function () { var gx = global; ({ gx } = { gx: { Math: { max: function () { return "e"; } } } }); console.log(gx.Math.max(1, 2)); })();"#,
+        "e",
+    ),
+    // window alias: a `for … of` destructuring writes the alias
+    (
+        r#"(function () { var g = global; for ([g] of [[{ Math: { max: function () { return "e"; } } }]]) {} console.log(g.Math.max(1, 2)); })();"#,
+        "e",
+    ),
+    // window alias: a destructuring `var` redeclares the alias
+    (
+        r#"(function () { var g = global; var [g] = [{ Math: { max: function () { return "e"; } } }]; console.log(g.Math.max(1, 2)); })();"#,
+        "e",
+    ),
+    // window alias: a function declaration of the same name is hoisted over it
+    (
+        r"(function () { console.log(typeof g.Math); var g = global; function g() {} g.Math = 1; })();",
+        "undefined",
+    ),
+    // window alias: a sloppy parameter written through `arguments`
+    (
+        r#"(function () { function f(g) { g = global; arguments[0] = { Math: { max: function () { return "e"; } } }; return g.Math.max(1, 2); } console.log(f(0)); })();"#,
+        "e",
+    ),
+    // window alias: `global` read in a `with` body may be the object's property
+    (
+        r#"(function () { var o = { global: { Math: { max: function () { return "e"; } } } }; with (o) { var g = global; } console.log(g.Math.max(1, 2)); })();"#,
+        "e",
+    ),
+    // window alias: a plain alias still propagates
+    (
+        r"(function () { var g = global; console.log(g.Math.max(1, 2), typeof g.setTimeout); })();",
+        "2 function",
+    ),
 ];
 
 #[test]
