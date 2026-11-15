@@ -66,7 +66,9 @@ impl ObjectSparsingConsolidator {
         let Expression::Identifier(obj_id) = &member.object else {
             return None;
         };
-        if member.optional || resolve(obj_id, ctx) != Some(target) {
+        // In a literal, `__proto__: v` sets the prototype rather than a
+        // property, and a second one is a SyntaxError.
+        if member.optional || member.property.name == "__proto__" || resolve(obj_id, ctx) != Some(target) {
             return None;
         }
         let prop_name = member.property.name.as_str().to_string();

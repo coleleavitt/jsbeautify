@@ -95,6 +95,8 @@ fn keeps_assignments_whose_value_could_observe_the_order() {
         "var o = {}; o.b = missing;",
         // A `let` read before its declaration throws.
         "var o = {}; o.b = later; let later = 2;",
+        // `__proto__` in a literal sets the prototype, and twice is a SyntaxError.
+        "var o = {}; o.__proto__ = p; o.__proto__ = q;",
         // A `with` object may hold `o` behind a setter.
         "function f(w) { with (w) { var o = {}; o.a = 1; } }",
     ] {

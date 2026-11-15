@@ -159,6 +159,16 @@ const CASES: &[(&str, &str)] = &[
         r"(function () { function h() { return g.Math.max(1, 2); } try { console.log(h()); } catch (e) { console.log(e.name); } let g = global; console.log(h()); })();",
         "ReferenceError\n2",
     ),
+    // object sparsing: two `__proto__` assignments stay assignments
+    (
+        r"(function () { var p = { a: 1 }, q = { b: 2 }; var o = {}; o.__proto__ = p; o.__proto__ = q; console.log(o.a, o.b); })();",
+        "undefined 2",
+    ),
+    // object sparsing: a `__proto__` assignment stops the merge
+    (
+        r"(function () { var p = { a: 1 }; var o = {}; o.__proto__ = p; o.c = 3; console.log(o.a, o.c, Object.keys(o).join()); })();",
+        "1 3 c",
+    ),
 ];
 
 #[test]
