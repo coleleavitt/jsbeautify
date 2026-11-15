@@ -208,6 +208,15 @@ fn obfuscator_string_array_renames_every_reference() {
     }
 }
 
+/// `--rename-vars` names `x = typeof y === "…"` from the type string, which
+/// may start with a multi-byte char.
+#[test]
+fn rename_vars_names_a_non_ascii_typeof_test() {
+    let code = "function g(y) { var x = typeof y === \"éa\"; return x; }\nconsole.log(g(1));\n";
+    let out = deobfuscate_file("typeof.js", code, &["--rename-vars"]);
+    assert!(out.contains("typeof") && out.contains("\"éa\""), "{out}");
+}
+
 #[test]
 fn hex_renamer_never_captures_an_existing_name() {
     let code = "var var_1 = 'user'; var _0x1f = 'obf'; console.log(var_1, _0x1f);";

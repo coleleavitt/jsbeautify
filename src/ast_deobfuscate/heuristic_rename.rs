@@ -91,6 +91,16 @@ impl HeuristicNameCollector {
     }
 }
 
+/// `isString` for `typeof x === "string"`, `isType` without a type. The type
+/// is source text, so it is split by chars, not bytes.
+fn typeof_name(ty: Option<&str>) -> String {
+    let mut chars = ty.map(str::chars);
+    match (chars.as_mut().and_then(Iterator::next), chars) {
+        (Some(first), Some(rest)) => format!("is{}{}", first.to_uppercase(), rest.as_str()),
+        _ => "isType".to_string(),
+    }
+}
+
 /// The `SymbolId` of a plain `BindingIdentifier` pattern (destructuring is skipped).
 fn binding_symbol(pat: &BindingPattern<'_>) -> Option<SymbolId> {
     match pat {
@@ -220,13 +230,7 @@ fn infer_from_init(init: &Expression<'_>) -> Option<(u8, String)> {
             } else {
                 None
             };
-            let name = match ty {
-                Some(t) if !t.is_empty() => {
-                    format!("is{}{}", t[..1].to_uppercase(), &t[1..])
-                }
-                _ => "isType".to_string(),
-            };
-            Some((5, name))
+            Some((5, typeof_name(ty)))
         }
         // X = !!y
         Expression::UnaryExpression(u) if u.operator == UnaryOperator::LogicalNot => {
@@ -327,5 +331,13 @@ mod tests {
         assert_eq!(lower_camel("URLSearchParams"), "urlSearchParams");
         assert_eq!(lower_camel("HTMLElement"), "htmlElement");
         assert_eq!(lower_camel("EventEmitter"), "eventEmitter");
+    }
+
+    #[test]
+    fn typeof_name_splits_by_chars() {
+        assert_eq!(typeof_name(Some("string")), "isString");
+        assert_eq!(typeof_name(Some("éa")), "isÉa");
+        assert_eq!(typeof_name(Some("")), "isType");
+        assert_eq!(typeof_name(None), "isType");
     }
 }
