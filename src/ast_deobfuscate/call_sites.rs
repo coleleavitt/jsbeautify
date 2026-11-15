@@ -13,11 +13,10 @@ use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 /// call `f(a, …)` without spread arguments, with the argument counts used.
 ///
 /// A pass may replace such a binding's calls and delete its declaration
-/// without leaving a dangling reference. Bindings an Annex B block function or
-/// a `with` object may stand in for at runtime ([`redirectable_symbols`]) are
-/// left out, since their calls need not reach their declaration, and so are
-/// bindings a direct `eval` can see: it may call, reassign or shadow them by
-/// name.
+/// without leaving a dangling reference. Bindings an Annex B block function, a
+/// `with` object or a direct `eval` may stand in for at runtime
+/// ([`redirectable_symbols`]) are left out, since their calls need not reach
+/// their declaration.
 #[must_use]
 pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap<SymbolId, FxHashSet<usize>> {
     let mut calls = PlainCalls {
@@ -35,9 +34,6 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
                 && !scoping.symbol_is_mutated(symbol)
                 && scoping.symbol_redeclarations(symbol).is_empty()
                 && !is_global_binding(program.source_type, scoping, symbol)
-                && !scoping
-                    .scope_flags(scoping.symbol_scope_id(symbol))
-                    .contains_direct_eval()
                 && !shadowed.contains(&symbol))
             .then_some((symbol, arities))
         })

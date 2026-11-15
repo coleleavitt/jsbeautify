@@ -9,7 +9,7 @@
 //! `d` is matched by `SymbolId` and must never be reassigned or used other than
 //! as the object of a member call, so no code can replace one of its functions,
 //! nor read from a `with` body, where a property of the `with` object could
-//! stand in for it.
+//! stand in for it, nor be visible to a direct `eval`, which could reassign it.
 //! Calls with non-literal arguments are kept, since inlining drops them.
 
 use oxc_ast::ast::{Argument, CallExpression, Expression, Program, Statement};
@@ -20,7 +20,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::{DeobfuscateState, DispatcherInfo};
-use crate::ast_deobfuscate::with_scope::with_observed_symbols;
+use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -95,7 +95,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatcherInliner {
             counts: FxHashMap::default(),
         };
         objects.visit_program(program);
-        let with_observed = with_observed_symbols(program, scoping);
+        let redirectable = redirectable_symbols(program, scoping);
         self.call_only = objects
             .counts
             .into_iter()
@@ -103,7 +103,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatcherInliner {
                 !scoping.symbol_is_mutated(symbol)
                     && scoping.symbol_redeclarations(symbol).is_empty()
                     && !is_global_binding(program.source_type, scoping, symbol)
-                    && !with_observed.contains(&symbol)
+                    && !redirectable.contains(&symbol)
                     && scoping.get_resolved_reference_ids(symbol).len() == count
             })
             .map(|(symbol, _)| symbol)

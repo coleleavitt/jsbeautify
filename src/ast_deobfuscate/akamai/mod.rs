@@ -47,9 +47,9 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 /// Whether every access to `symbol` at runtime is one of its resolved
 /// references: it is declared once, is not a classic-script global that other
-/// scripts reach by name, no direct `eval` can see it, and it is not in
-/// `redirectable` ([`crate::ast_deobfuscate::with_scope::redirectable_symbols`]:
-/// a `with` object or an Annex B block function may stand in for it).
+/// scripts reach by name, and it is not in `redirectable`
+/// ([`crate::ast_deobfuscate::with_scope::redirectable_symbols`]: a `with`
+/// object, an Annex B block function or a direct `eval` may stand in for it).
 fn only_local_access(
     program: &Program<'_>,
     scoping: &Scoping,
@@ -59,9 +59,6 @@ fn only_local_access(
     scoping.symbol_redeclarations(symbol).is_empty()
         && !redirectable.contains(&symbol)
         && !is_global_binding(program.source_type, scoping, symbol)
-        && !scoping
-            .scope_flags(scoping.symbol_scope_id(symbol))
-            .contains_direct_eval()
 }
 
 mod boolean_arithmetic;

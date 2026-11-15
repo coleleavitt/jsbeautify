@@ -1,7 +1,7 @@
-//! Proxy and forwarder passes inline calls of bindings found by
-//! `call_sites::plain_call_arities`. A direct `eval` can call, reassign or
-//! shadow such a binding by name, so a binding it can see keeps its calls
-//! and its declaration.
+//! Inlining passes replace a binding's references with what its declaration
+//! holds, and often delete the declaration. A direct `eval` can call,
+//! reassign or shadow such a binding by name, so a binding it can see
+//! (`with_scope::redirectable_symbols`) keeps its references and declaration.
 
 use std::path::Path;
 use std::process::Command;
@@ -63,6 +63,36 @@ const CASES: &[(&str, &str)] = &[
     (
         r#"var bmak = 1, _abck = 2; (function () { function M(o, a) { return o.concat(a); } eval("M = function (o, a) { return 'e'; }"); console.log(M([1], 2), M([3], 4)); })();"#,
         "e e",
+    ),
+    // single-use function called by name inside eval (function_inline)
+    (
+        r#"(function () { function BI(a, b) { return a + b; } console.log(BI(1, 2), eval("BI(5, 6)")); })();"#,
+        "3 11",
+    ),
+    // single-use function reassigned by eval (function_inline)
+    (
+        r#"(function () { function BI(a, b) { return a + b; } eval("BI = function (a, b) { return a * b; }"); console.log(BI(3, 4)); })();"#,
+        "12",
+    ),
+    // call proxy reassigned by eval
+    (
+        r#"(function () { function t(a, b) { return a + b; } function p(a, b) { return t(a, b); } eval("p = function (a, b) { return 'e'; }"); console.log(p(1, 2)); })();"#,
+        "e",
+    ),
+    // trampoline reassigned by eval (Akamai phase 0.5f)
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var S = 1; function D(s, args) { return "d" + s + args[0]; } var T = function () { return D.apply(this, [S, arguments]); }; eval("T = function (x) { return 'e' + x; }"); console.log(T(5), T(6)); })();"#,
+        "e5 e6",
+    ),
+    // dispatcher object reassigned by eval
+    (
+        r#"(function () { var d = { a: function () { return 1; }, b: function () { return 2; } }; eval("d = { a: function () { return 'ea'; }, b: function () { return 'eb'; } }"); console.log(d.a(), d.b()); })();"#,
+        "ea eb",
+    ),
+    // window alias reassigned by eval
+    (
+        r#"(function () { var g = global; eval("g = { Math: { max: function () { return 'e'; } } }"); console.log(g.Math.max(1, 2)); })();"#,
+        "e",
     ),
 ];
 

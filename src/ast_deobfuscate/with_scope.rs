@@ -19,14 +19,30 @@ use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
 
 /// Bindings whose references may reach something other than their own
 /// declaration at runtime: a sloppy-mode block function
-/// ([`annex_b_shadowed_symbols`]) or a `with` object's property
-/// ([`with_observed_symbols`]). A pass must not replace their references with
+/// ([`annex_b_shadowed_symbols`]), a `with` object's property
+/// ([`with_observed_symbols`]), or whatever a direct `eval` assigns or declares
+/// ([`eval_visible_symbols`]). A pass must not replace their references with
 /// what the declaration holds.
 #[must_use]
 pub fn redirectable_symbols(program: &Program<'_>, scoping: &Scoping) -> FxHashSet<SymbolId> {
     let mut symbols = annex_b_shadowed_symbols(program, scoping);
     symbols.extend(with_observed_symbols(program, scoping));
+    symbols.extend(eval_visible_symbols(scoping));
     symbols
+}
+
+/// Bindings a direct `eval` can reach by name: those declared in the scope of
+/// a direct `eval` or in one of its ancestors (`oxc_semantic` flags all of
+/// them). The evaluated code may call, reassign or (with a sloppy-mode `var`)
+/// shadow them, so their resolved references are not all their uses.
+pub fn eval_visible_symbols(scoping: &Scoping) -> impl Iterator<Item = SymbolId> + '_ {
+    let any_eval = scoping.root_scope_flags().contains_direct_eval();
+    scoping.symbol_ids().filter(move |&symbol| {
+        any_eval
+            && scoping
+                .scope_flags(scoping.symbol_scope_id(symbol))
+                .contains_direct_eval()
+    })
 }
 
 /// Bindings a `with` body reads or writes by name past its `with` object:
@@ -171,7 +187,7 @@ mod tests {
     use oxc_parser::Parser;
     use oxc_span::SourceType;
 
-    use super::with_observed_symbols;
+    use super::{eval_visible_symbols, with_observed_symbols};
     use crate::ast_deobfuscate::semantic;
 
     /// The observed bindings' names, in declaration order.
@@ -212,6 +228,19 @@ mod tests {
         ] {
             assert!(names(code).is_empty(), "{code}: {:?}", names(code));
         }
+    }
+
+    #[test]
+    fn eval_sees_bindings_of_its_scope_and_ancestors_only() {
+        let code = "var a; function f(b) { var c; function g() { var d; eval(''); } } function h(e) {}";
+        let allocator = Allocator::default();
+        let program = Parser::new(&allocator, code, SourceType::cjs()).parse().program;
+        let scoping = semantic::scoping(&program);
+        let mut found: Vec<_> = eval_visible_symbols(&scoping)
+            .map(|symbol| scoping.symbol_name(symbol).to_string())
+            .collect();
+        found.sort_unstable();
+        assert_eq!(found, ["a", "b", "c", "d", "f", "g", "h"]);
     }
 
     #[test]

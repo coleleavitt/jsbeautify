@@ -1,12 +1,13 @@
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentTarget, ForInStatement, ForOfStatement, SimpleAssignmentTarget, UpdateExpression,
-    VariableDeclarator,
+    AssignmentExpression, AssignmentTarget, ForInStatement, ForOfStatement, Program, SimpleAssignmentTarget,
+    UpdateExpression, VariableDeclarator,
 };
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::state::DeobfuscateState;
+use crate::ast_deobfuscate::with_scope::eval_visible_symbols;
 
 use super::Ctx;
 use super::utils::{GlobalObject, global_object};
@@ -105,6 +106,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for WindowAliasCollector {
 
     fn enter_for_of_statement(&mut self, stmt: &mut ForOfStatement<'a>, ctx: &mut Ctx<'a>) {
         poison_for_loop_target(&stmt.left, ctx, &mut self.poisoned);
+    }
+
+    fn exit_program(&mut self, _program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
+        // A direct `eval` may assign anything to an alias it can see.
+        self.poisoned.extend(eval_visible_symbols(ctx.scoping()));
     }
 }
 
