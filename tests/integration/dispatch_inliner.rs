@@ -128,6 +128,39 @@ const CASES: &[(&str, &str)] = &[
         r#"(function(){ function f(){return ["a","b","c"];} console.log(g()); var I = 1; console.log(g()); function g(){ return f()[I]; } })();"#,
         "undefined\nb",
     ),
+    // sloppy-mode `arguments[0]` writes the parameter
+    (
+        r#"function f(){return ["a","b","c"];} function g(J){ J = 0; arguments[0] = 2; return f()[J]; } console.log(g(5));"#,
+        "c",
+    ),
+    // a non-index key runs an `Array.prototype` getter that changes the shared array
+    (
+        r#"Object.defineProperty(Array.prototype, "x", { get() { this[0] = "z"; return 1; } }); function f(){ var a = ["a","b"]; f = function(){return a;}; return a; } var K = "x"; f()[K]; console.log(f()[0]);"#,
+        "z",
+    ),
+    // doubles round past 2^53
+    (
+        r#"function f(){return ["a","b"];} var A = 9007199254740992; var B = A + 1 - 9007199254740992; console.log(f()[B]);"#,
+        "a",
+    ),
+    // an earlier declarator in the same declaration calls a hoisted function
+    (
+        r#"function f(){return ["a","b","c"];} var K = g(), J = 1; function g(){ console.log(f()[J]); return 0; } g();"#,
+        "undefined\nb",
+    ),
+    // the global object and global-scope code assign globals
+    (
+        r#"function f(){return ["a","b"];} N = 0; globalThis.N = 1; console.log(f()[N]);"#,
+        "b",
+    ),
+    (
+        r#"function f(){return ["a","b"];} N = 0; (0, eval)("N = 1"); console.log(f()[N]);"#,
+        "b",
+    ),
+    (
+        r#"function f(){return ["a","b"];} N = 0; Function("N = 1")(); console.log(f()[N]);"#,
+        "b",
+    ),
 ];
 
 /// Factories and constants that nothing else can change are still decoded.
@@ -211,6 +244,41 @@ fn classic_script_keeps_the_globals_other_scripts_change() {
             Some(expected),
             "{output}"
         );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module this one re-exports runs first, and may call a hoisted function
+/// of this one before its top-level definitions run.
+#[test]
+fn re_exported_module_runs_before_the_definitions() {
+    let dir = std::env::temp_dir().join(format!("jsb-dispatch-modules-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let entry = r#"function f(){return ["a","b","c","d"];} var J = 1; function h(){ return f()[J]; } export { h }; export * from "./b.mjs"; console.log(h());"#;
+    let dependency = r#"import { h } from "./a.mjs"; console.log(h());"#;
+    let input = dir.join("input.mjs");
+    std::fs::write(&input, entry).expect("write input");
+    let output = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("-d")
+        .arg(&input)
+        .output()
+        .expect("run jsbeautify");
+    assert!(output.status.success(), "jsbeautify failed: {output:?}");
+    let deobfuscated = String::from_utf8(output.stdout).expect("stdout is utf8");
+    std::fs::write(dir.join("b.mjs"), dependency).expect("write dependency");
+    let run = |code: &str| {
+        std::fs::write(dir.join("a.mjs"), code).expect("write entry");
+        let output = match Command::new("node").arg(dir.join("a.mjs")).output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => panic!("run node: {error}"),
+        };
+        assert!(output.status.success(), "node failed: {output:?}");
+        Some(String::from_utf8(output.stdout).expect("stdout is utf8"))
+    };
+    if let Some(expected) = run(entry) {
+        assert_eq!(expected.trim_end(), "undefined\nb");
+        assert_eq!(run(&deobfuscated), Some(expected), "{deobfuscated}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

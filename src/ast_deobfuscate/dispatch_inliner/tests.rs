@@ -311,3 +311,34 @@ fn resolves_hoisted_reads_of_definitions_no_code_runs_before() {
     assert!(out.contains(r#"return "c""#), "got: {out}");
     assert!(out.contains(r#"=> "b""#), "got: {out}");
 }
+
+/// Fixes from review: each input's `f()[k]` must stay.
+#[test]
+fn keeps_reads_code_may_reach_before_or_around_the_definition() {
+    for code in [
+        // A re-exported module runs first and may call the hoisted `h`.
+        r#"function f(){return ["a","b","c","d"];} var J = 1; function h(){ return f()[J]; } export { h }; export * from "./b.mjs";"#,
+        r#"function f(){return ["a","b","c","d"];} var J = 1; function h(){ return f()[J]; } export { h }; export { x } from "./b.mjs";"#,
+        // `g()` runs before `J = 1` in the same declaration.
+        r#"function f(){return ["a","b","c"];} var K = g(), J = 1; function g(){ return f()[J]; }"#,
+        // A shared array read through a non-index key reaches `Array.prototype` accessors.
+        r#"function f(){ var a = ["a","b"]; f = function(){return a;}; return a; } var K = "x"; f()[K]; var r = f()[0];"#,
+        // Past 2^53, doubles round: `A + 1 - A` is 0 in JS.
+        r#"function f(){return ["a","b"];} var A = 9007199254740992; var B = A + 1 - 9007199254740992; f()[B];"#,
+        r#"function f(){return ["a","b"];} var A = 4503599627370496; var B = A * 2 + 1 - A * 2; f()[B];"#,
+    ] {
+        let out = run(code);
+        assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
+    }
+    for code in [
+        // Sloppy-mode `arguments[0]` writes the parameter.
+        r#"function f(){return ["a","b","c"];} function g(J){ J = 0; arguments[0] = 2; return f()[J]; }"#,
+        // The global object or global-scope code may assign the global.
+        r#"function f(){return ["a","b"];} N = 0; globalThis.N = 1; f()[N];"#,
+        r#"function f(){return ["a","b"];} N = 0; (0, eval)("N = 1"); f()[N];"#,
+        r#"function f(){return ["a","b"];} N = 0; Function("N = 1")(); f()[N];"#,
+    ] {
+        let out = run_script(code);
+        assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
+    }
+}

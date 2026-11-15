@@ -1,6 +1,6 @@
 use oxc_ast::ast::{
     AssignmentOperator, AssignmentTarget, BindingPattern, Expression, FormalParameters, Function, Program,
-    ReturnStatement, Statement, UnaryOperator, VariableDeclaration, VariableDeclarationKind,
+    ReturnStatement, Statement, UnaryOperator, VariableDeclaration, VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, SourceType};
@@ -27,6 +27,13 @@ enum Shape {
     /// `return ARRAY`, read through this reference: every call returns the
     /// array a `var ARRAY = [..]` declaration holds.
     Returns(SymbolId, ReferenceId),
+}
+
+/// A read `f()[k]` that only reads the element.
+struct ElementRead {
+    at: u32,
+    scope: ScopeId,
+    index: Option<ConstExpr>,
 }
 
 /// A statement that gives an index constant its value.
@@ -65,10 +72,11 @@ pub struct DispatchInlinerCollector {
     /// Body-level `var NAME = [strings]` declarations.
     arrays: FxHashMap<SymbolId, (Vec<String>, Reach)>,
     definitions: Vec<Definition>,
-    /// Callees of the `f()[k]` reads that leave the array alone, with their
-    /// offsets and scopes.
-    element_reads: FxHashMap<ReferenceId, (u32, ScopeId)>,
+    /// The `f()[k]` reads that leave the array alone, by callee reference.
+    element_reads: FxHashMap<ReferenceId, ElementRead>,
     eval_scopes: Vec<ScopeId>,
+    /// Parameter bindings, which sloppy-mode `arguments[i]` also writes.
+    parameters: FxHashSet<SymbolId>,
     /// Scopes of function declarations, which are hoisted.
     declaration_scopes: FxHashSet<ScopeId>,
     /// No code has run before the current program-body statement.
@@ -193,37 +201,63 @@ impl DispatchInlinerCollector {
     }
 
     /// Records the arrays and constants a body-level declaration defines.
-    fn record_declarators(&mut self, decl: &VariableDeclaration<'_>, scope: ScopeId, early: bool, scoping: &Scoping) {
+    /// In the program body (`prefix`), each declarator is early while no
+    /// declarator or statement before it has run code.
+    fn record_declarators(&mut self, decl: &VariableDeclaration<'_>, scope: ScopeId, prefix: bool, scoping: &Scoping) {
+        if !matches!(
+            decl.kind,
+            VariableDeclarationKind::Var | VariableDeclarationKind::Let | VariableDeclarationKind::Const
+        ) {
+            self.in_prefix = false;
+        }
         for declarator in &decl.declarations {
-            let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-                continue;
-            };
-            let (Some(symbol), Some(init)) = (id.symbol_id.get(), &declarator.init) else {
-                continue;
-            };
-            if scoping.symbol_scope_id(symbol) != scope {
-                continue;
-            }
-            let reach = Reach {
-                ready: declarator.span.end,
-                scope,
-                early,
-            };
-            if let Some(strings) = Self::extract_string_array(init) {
-                self.arrays.insert(symbol, (strings, reach));
-            } else if let Some(expr) = ConstExpr::from_ast(init, scoping) {
-                self.definitions.push(Definition {
-                    binding: Binding::Symbol(symbol),
-                    expr,
-                    reach,
-                    write: None,
-                });
+            let early = prefix && self.in_prefix;
+            self.record_declarator(declarator, scope, early, scoping);
+            if early {
+                self.in_prefix = self.note_prefix_declarator(declarator, scoping);
             }
         }
     }
 
+    fn record_declarator(
+        &mut self,
+        declarator: &VariableDeclarator<'_>,
+        scope: ScopeId,
+        early: bool,
+        scoping: &Scoping,
+    ) {
+        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+            return;
+        };
+        let (Some(symbol), Some(init)) = (id.symbol_id.get(), &declarator.init) else {
+            return;
+        };
+        if scoping.symbol_scope_id(symbol) != scope || self.parameters.contains(&symbol) {
+            return;
+        }
+        let reach = Reach {
+            ready: declarator.span.end,
+            scope,
+            early,
+        };
+        if let Some(strings) = Self::extract_string_array(init) {
+            self.arrays.insert(symbol, (strings, reach));
+        } else if let Some(expr) = ConstExpr::from_ast(init, scoping) {
+            self.definitions.push(Definition {
+                binding: Binding::Symbol(symbol),
+                expr,
+                reach,
+                write: None,
+            });
+        }
+    }
+
     /// Records the constant a body-level `NAME = …;` defines.
-    fn record_assignment(&mut self, expr: &Expression<'_>, scope: ScopeId, early: bool, scoping: &Scoping) {
+    fn record_assignment(&mut self, expr: &Expression<'_>, scope: ScopeId, prefix: bool, scoping: &Scoping) {
+        let early = prefix && self.in_prefix;
+        if prefix {
+            self.in_prefix = false;
+        }
         let Expression::AssignmentExpression(assign) = expr else {
             return;
         };
@@ -231,93 +265,68 @@ impl DispatchInlinerCollector {
             return;
         };
         let binding = Binding::of(target, scoping);
+        // A sloppy-mode parameter is also written through `arguments[i]`.
         let declared_here = match &binding {
-            Binding::Symbol(symbol) => scoping.symbol_scope_id(*symbol) == scope,
+            Binding::Symbol(symbol) => scoping.symbol_scope_id(*symbol) == scope && !self.parameters.contains(symbol),
             Binding::Global(_) => scope == scoping.root_scope_id(),
         };
         if assign.operator != AssignmentOperator::Assign || !declared_here {
             return;
         }
-        if let Some(expr) = ConstExpr::from_ast(&assign.right, scoping) {
-            self.definitions.push(Definition {
-                binding,
-                expr,
-                reach: Reach {
-                    ready: assign.span.end,
-                    scope,
-                    early,
-                },
-                write: Some(target.reference_id()),
-            });
+        let Some(value) = ConstExpr::from_ast(&assign.right, scoping) else {
+            return;
+        };
+        if early {
+            // A `let`, `const` or class binding may still be uninitialised.
+            let assignable = match binding {
+                Binding::Symbol(symbol) => scoping.symbol_flags(symbol).is_function_scoped_declaration(),
+                Binding::Global(_) => true,
+            };
+            self.in_prefix = assignable && self.notes_number(binding.clone(), &value);
         }
+        self.definitions.push(Definition {
+            binding,
+            expr: value,
+            reach: Reach {
+                ready: assign.span.end,
+                scope,
+                early,
+            },
+            write: Some(target.reference_id()),
+        });
     }
 
-    /// Whether a program-body statement runs no code, noting the bindings it
-    /// gives a number: a function declaration, or a declaration or `NAME = …`
-    /// whose values only create functions or string arrays, or compute a
-    /// number from literals and earlier such numbers.
-    fn note_prefix_statement(&mut self, stmt: &Statement<'_>, scoping: &Scoping) -> bool {
-        match stmt {
-            Statement::FunctionDeclaration(_) | Statement::EmptyStatement(_) => true,
-            Statement::VariableDeclaration(decl) => {
-                if !matches!(
-                    decl.kind,
-                    VariableDeclarationKind::Var | VariableDeclarationKind::Let | VariableDeclarationKind::Const
-                ) {
-                    return false;
-                }
-                for declarator in &decl.declarations {
-                    let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-                        return false;
-                    };
-                    let Some(init) = &declarator.init else {
-                        continue;
-                    };
-                    if matches!(
-                        init,
-                        Expression::FunctionExpression(_)
-                            | Expression::ArrowFunctionExpression(_)
-                            | Expression::StringLiteral(_)
-                            | Expression::BooleanLiteral(_)
-                            | Expression::NullLiteral(_)
-                    ) || Self::extract_string_array(init).is_some()
-                    {
-                        continue;
-                    }
-                    let Some(symbol) = id.symbol_id.get() else {
-                        return false;
-                    };
-                    if !self.notes_number(Binding::Symbol(symbol), init, scoping) {
-                        return false;
-                    }
-                }
-                true
-            }
-            Statement::ExpressionStatement(es) => {
-                let Expression::AssignmentExpression(assign) = &es.expression else {
-                    return false;
-                };
-                let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left else {
-                    return false;
-                };
-                let binding = Binding::of(target, scoping);
-                // A `let`, `const` or class binding may still be uninitialised.
-                let assignable = match binding {
-                    Binding::Symbol(symbol) => scoping.symbol_flags(symbol).is_function_scoped_declaration(),
-                    Binding::Global(_) => true,
-                };
-                assign.operator == AssignmentOperator::Assign
-                    && assignable
-                    && self.notes_number(binding, &assign.right, scoping)
-            }
-            _ => false,
+    /// Whether a program-body declarator runs no code, noting the binding it
+    /// gives a number: its value only creates a function or string array, or
+    /// computes a number from literals and earlier such numbers.
+    fn note_prefix_declarator(&mut self, declarator: &VariableDeclarator<'_>, scoping: &Scoping) -> bool {
+        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+            return false;
+        };
+        let Some(init) = &declarator.init else {
+            return true;
+        };
+        if matches!(
+            init,
+            Expression::FunctionExpression(_)
+                | Expression::ArrowFunctionExpression(_)
+                | Expression::StringLiteral(_)
+                | Expression::BooleanLiteral(_)
+                | Expression::NullLiteral(_)
+        ) || Self::extract_string_array(init).is_some()
+        {
+            return true;
         }
+        let (Some(symbol), Some(value)) = (id.symbol_id.get(), ConstExpr::from_ast(init, scoping)) else {
+            return false;
+        };
+        self.notes_number(Binding::Symbol(symbol), &value)
     }
 
     /// Whether `value` computes a number from literals and prefix numbers,
     /// which then `binding` holds.
-    fn notes_number(&mut self, binding: Binding, value: &Expression<'_>, scoping: &Scoping) -> bool {
-        let pure = ConstExpr::from_ast(value, scoping).is_some_and(|expr| expr.reads_only(&self.prefix_numbers));
+    fn notes_number(&mut self, binding: Binding, value: &ConstExpr) -> bool {
+        let pure = value.reads_only(&self.prefix_numbers);
         if pure {
             self.prefix_numbers.insert(binding);
         }
@@ -343,12 +352,22 @@ impl DispatchInlinerCollector {
 
     fn resolve_factories(&mut self, guards: &Guards<'_>) {
         let scoping = guards.scoping;
-        // Every reference but `except` is an `f()[k]` read that `reach` reaches.
-        let only_element_reads = |symbol: SymbolId, except: Option<ReferenceId>, reach: Option<&Reach>| {
+        // Every reference but `except` is an `f()[k]` read that `reach`
+        // reaches, with `k` a constant index below `len`. Any other key may
+        // run an `Array.prototype` accessor that gets hold of the array.
+        let only_element_reads = |symbol: SymbolId, except: Option<ReferenceId>, reach: Option<&Reach>, len: usize| {
             scoping.get_resolved_reference_ids(symbol).iter().all(|&reference| {
                 Some(reference) == except
-                    || self.element_reads.get(&reference).is_some_and(|&(at, scope)| {
-                        reach.is_none_or(|reach| reach.reaches(at, scope, &self.constants.hoisting))
+                    || self.element_reads.get(&reference).is_some_and(|read| {
+                        reach.is_none_or(|reach| reach.reaches(read.at, read.scope, &self.constants.hoisting))
+                            && read
+                                .index
+                                .as_ref()
+                                .and_then(|index| {
+                                    index.eval(&|binding, at, scope| self.constants.get(binding, at, scope))
+                                })
+                                .and_then(|index| usize::try_from(index).ok())
+                                .is_some_and(|index| index < len)
                     })
             })
         };
@@ -358,13 +377,13 @@ impl DispatchInlinerCollector {
             let strings = match shape {
                 Shape::Fresh(strings) => guards.stable(symbol, None).then_some(strings),
                 Shape::SelfInit(strings, write) => (guards.stable(symbol, Some(*write))
-                    && only_element_reads(symbol, Some(*write), None))
+                    && only_element_reads(symbol, Some(*write), None, strings.len()))
                 .then_some(strings),
                 Shape::Returns(array, reference) => self.arrays.get(array).and_then(|(strings, reach)| {
                     (guards.stable(symbol, None)
                         && guards.stable(*array, None)
                         && scoping.get_resolved_reference_ids(*array) == [*reference]
-                        && only_element_reads(symbol, None, Some(reach)))
+                        && only_element_reads(symbol, None, Some(reach), strings.len()))
                     .then_some(strings)
                 }),
             };
@@ -421,6 +440,22 @@ impl DispatchInlinerCollector {
     }
 }
 
+/// Globals that reach the global object, or run code in global scope from a
+/// string, where it may assign any global.
+const GLOBAL_OBJECT_NAMES: &[&str] = &[
+    "globalThis",
+    "window",
+    "self",
+    "global",
+    "frames",
+    "parent",
+    "top",
+    "eval",
+    "Function",
+    "setTimeout",
+    "setInterval",
+];
+
 /// What can give a binding a value other than its definition.
 struct Guards<'s> {
     scoping: &'s Scoping,
@@ -432,6 +467,9 @@ struct Guards<'s> {
     with_bodies: FxHashSet<ScopeId>,
     /// The program's source type: a classic script shares its globals.
     source_type: SourceType,
+    /// The program names the global object or runs code in global scope, so
+    /// it may assign a global without naming it.
+    global_object_reachable: bool,
 }
 
 impl<'s> Guards<'s> {
@@ -450,6 +488,9 @@ impl<'s> Guards<'s> {
             eval_visible,
             with_bodies: scopes_in_with_bodies(scoping),
             source_type: program.source_type,
+            global_object_reachable: GLOBAL_OBJECT_NAMES
+                .iter()
+                .any(|&name| scoping.root_unresolved_references().contains_key(name)),
         }
     }
 
@@ -475,6 +516,7 @@ impl<'s> Guards<'s> {
                 // Other scripts share a classic script's globals, and a direct
                 // eval anywhere may assign one.
                 !self.source_type.is_script()
+                    && !self.global_object_reachable
                     && self.eval_visible.is_empty()
                     && self
                         .scoping
@@ -494,11 +536,15 @@ impl<'s> Guards<'s> {
 
 impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
     fn enter_program(&mut self, program: &mut Program<'a>, _ctx: &mut Ctx<'a>) {
-        // An imported module may call into this one before its body runs.
-        self.in_prefix = !program
-            .body
-            .iter()
-            .any(|stmt| matches!(stmt, Statement::ImportDeclaration(_)));
+        // A module this one imports or re-exports runs first and may call into it.
+        self.in_prefix = !program.body.iter().any(|stmt| {
+            matches!(
+                stmt,
+                Statement::ImportDeclaration(_)
+                    | Statement::ExportAllDeclaration(_)
+                    | Statement::ExportFromDeclaration(_)
+            )
+        });
     }
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
@@ -515,19 +561,33 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
     }
 
     fn enter_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
-        let early = match ctx.parent() {
-            Ancestor::ProgramBody(_) => self.in_prefix,
+        let prefix = match ctx.parent() {
+            Ancestor::ProgramBody(_) => true,
             Ancestor::FunctionBodyStatements(_) => false,
             _ => return,
         };
         let scope = ctx.current_scope_id();
-        if let Statement::VariableDeclaration(decl) = stmt {
-            self.record_declarators(decl, scope, early, ctx.scoping());
-        } else if let Statement::ExpressionStatement(es) = stmt {
-            self.record_assignment(&es.expression, scope, early, ctx.scoping());
+        match stmt {
+            Statement::VariableDeclaration(decl) => self.record_declarators(decl, scope, prefix, ctx.scoping()),
+            Statement::ExpressionStatement(es) => self.record_assignment(&es.expression, scope, prefix, ctx.scoping()),
+            Statement::FunctionDeclaration(_) | Statement::EmptyStatement(_) => {}
+            _ => {
+                if prefix {
+                    self.in_prefix = false;
+                }
+            }
         }
-        if early {
-            self.in_prefix = self.note_prefix_statement(stmt, ctx.scoping());
+    }
+
+    fn enter_formal_parameters(&mut self, params: &mut FormalParameters<'a>, _ctx: &mut Ctx<'a>) {
+        let rest = params.rest.as_ref().map(|rest| &rest.rest.argument);
+        for pattern in params.items.iter().map(|param| &param.pattern).chain(rest) {
+            self.parameters.extend(
+                pattern
+                    .get_binding_identifiers()
+                    .iter()
+                    .filter_map(|id| id.symbol_id.get()),
+            );
         }
     }
 
@@ -544,8 +604,12 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
                     && let Expression::Identifier(callee) = &call.callee
                     && Self::reads_element_only(ctx)
                 {
-                    self.element_reads
-                        .insert(callee.reference_id(), (callee.span().start, ctx.current_scope_id()));
+                    let read = ElementRead {
+                        at: callee.span().start,
+                        scope: ctx.current_scope_id(),
+                        index: ConstExpr::from_ast(&cme.expression, ctx.scoping()),
+                    };
+                    self.element_reads.insert(callee.reference_id(), read);
                 }
             }
             _ => {}
@@ -555,7 +619,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
         let guards = Guards::new(program, ctx.scoping(), &self.eval_scopes);
         self.constants.hoisting = Hoisting::new(ctx.scoping(), &self.declaration_scopes);
-        self.resolve_factories(&guards);
         self.resolve_constants(&guards);
+        self.resolve_factories(&guards);
     }
 }

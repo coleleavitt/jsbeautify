@@ -6,7 +6,16 @@ use rustc_hash::FxHashSet;
 
 use super::Binding;
 
-/// An integer expression of literals and identifiers, `+`, `-` and `*`.
+/// The largest integer a JS number holds exactly. Within it, `i64` and
+/// double arithmetic agree.
+const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+
+fn safe(value: i64) -> Option<i64> {
+    (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value).then_some(value)
+}
+
+/// An integer expression of literals and identifiers, `+`, `-` and `*`,
+/// whose literals and intermediate values are all safe integers.
 pub(super) enum ConstExpr {
     Lit(i64),
     /// A read of `Binding` at this source offset, in this scope.
@@ -21,7 +30,7 @@ impl ConstExpr {
         match expr {
             Expression::NumericLiteral(n) => {
                 let v = n.value;
-                if v.fract() != 0.0 || v > i64::MAX as f64 || v < i64::MIN as f64 {
+                if v.fract() != 0.0 || v.abs() > MAX_SAFE_INTEGER as f64 {
                     return None;
                 }
                 Some(Self::Lit(v as i64))
@@ -54,9 +63,9 @@ impl ConstExpr {
         match self {
             Self::Lit(v) => Some(*v),
             Self::Read(binding, at, scope) => read(binding, *at, *scope).and_then(|v| i64::try_from(v).ok()),
-            Self::Add(l, r) => l.eval(read)?.checked_add(r.eval(read)?),
-            Self::Sub(l, r) => l.eval(read)?.checked_sub(r.eval(read)?),
-            Self::Mul(l, r) => l.eval(read)?.checked_mul(r.eval(read)?),
+            Self::Add(l, r) => l.eval(read)?.checked_add(r.eval(read)?).and_then(safe),
+            Self::Sub(l, r) => l.eval(read)?.checked_sub(r.eval(read)?).and_then(safe),
+            Self::Mul(l, r) => l.eval(read)?.checked_mul(r.eval(read)?).and_then(safe),
         }
     }
 }
