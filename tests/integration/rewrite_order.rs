@@ -232,6 +232,10 @@ fn isolated_scripts_keep_globals_they_read_themselves() {
             "x",
         ),
         ("var answer = 42;\nconsole.log(this.answer);\n", "42"),
+        (
+            "(() => {\n  var g = globalThis;\n  var n = Function('return this')();\n  console.log(typeof g.setTimeout, g === n);\n})();\n",
+            "function true",
+        ),
         ("var x = 7;\nvar { x: y } = globalThis;\nconsole.log(y);\n", "7"),
         ("var x = 7;\nconsole.log('x' in globalThis);\n", "true"),
         ("var x = 7;\nconsole.log((0, eval)('x'));\n", "7"),

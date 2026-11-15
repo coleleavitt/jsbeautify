@@ -98,6 +98,24 @@ fn isolated_script_aliasing_the_global_object_keeps_its_globals() {
     assert_eq!(global_names(&out), global_names(GLOBAL_OBJECT_ALIAS), "{out}");
 }
 
+/// Reads through the global object can only name the script's own top-level
+/// bindings. A script with none (webpack's single IIFE) stays isolated even
+/// though its runtime reads `globalThis` and `Function("return this")()`.
+#[test]
+fn isolated_script_without_top_level_bindings_ignores_global_reads() {
+    let iife = "(() => { var g = globalThis; var n = Function('return this')(); console.log(typeof g.setTimeout, g === n); })();";
+    let isolated = deobfuscate(iife, ParseGoal::Auto, true);
+    assert!(
+        !isolated.trim_start().starts_with("(() =>"),
+        "the IIFE stays wrapped:\n{isolated}"
+    );
+    let toplevel = "var x = 1; var g = globalThis; console.log(g.x);";
+    assert_eq!(
+        deobfuscate(toplevel, ParseGoal::Auto, true),
+        deobfuscate(toplevel, ParseGoal::Auto, false)
+    );
+}
+
 #[test]
 fn isolated_script_lets_each_pass_fire() {
     for (pass, code) in PASS_SAMPLES {

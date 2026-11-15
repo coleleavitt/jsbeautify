@@ -134,7 +134,8 @@ impl ParseGoal {
 /// Whether a script may read one of its own top-level bindings through the
 /// global object. `--isolated` only promises that other scripts do not.
 ///
-/// The rule is deliberately simple: the script counts as reading them when it
+/// A script without top-level bindings has nothing to read. Otherwise the
+/// rule is deliberately simple: the script counts as reading them when it
 /// uses an unresolved global-object name (`globalThis`, `window`, `self`,
 /// `global`, `frames`, `top`, `parent`) or a top-level `this` in any way
 /// other than `.name` with a name that is not one of its top-level bindings
@@ -148,6 +149,11 @@ fn reads_own_globals(program: &Program<'_>) -> bool {
         .keys()
         .map(oxc_str::Ident::as_str)
         .collect();
+    // Without top-level bindings, no read through the global object can name
+    // one (a webpack bundle's single IIFE).
+    if globals.is_empty() {
+        return false;
+    }
     let mut reads = GlobalReads {
         scoping: &scoping,
         globals: &globals,
@@ -329,6 +335,8 @@ mod tests {
             "var a = 1; function f() { return this.a; }",
             "var a = 1; class C { m() { return this.a; } }",
             "var a = 1; typeof window === 'undefined';",
+            // No top-level binding for a global-object read to name.
+            "(function () { var a = 1; return [globalThis, this, Function('return this')()]; })();",
         ] {
             assert_eq!(isolated_kind(code), "commonjs", "{code}");
         }
@@ -350,6 +358,7 @@ mod tests {
             "var x = 1; new Function('return x')();",
             "var x = 1; Function('return this')().x;",
             "var x = 1; var w = window; w.x;",
+            "var x = 1; (function () { return globalThis; })();",
         ] {
             assert_eq!(isolated_kind(code), "script", "{code}");
         }
