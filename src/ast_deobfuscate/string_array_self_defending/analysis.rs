@@ -208,10 +208,7 @@ impl<'a> Analysis<'_, '_, 'a> {
             .collect();
         // A wrapper is only read through a decoder; a variable may also be
         // read directly.
-        let array_refs = scoping.get_resolved_reference_ids(array.symbol);
-        if decoders.len() > MAX_DECODERS
-            || (decoders.is_empty() && (array.declared_at.is_none() || array_refs.is_empty()))
-        {
+        if decoders.len() > MAX_DECODERS || (decoders.is_empty() && array.declared_at.is_none()) {
             return None;
         }
         let helpers = || decoders.iter().filter_map(|decoder| decoder.helper);
@@ -246,6 +243,11 @@ impl<'a> Analysis<'_, '_, 'a> {
             }
             _ => return None,
         };
+        // Only an array that a decoder reads or a proven rotation reorders is
+        // obfuscation; a plain array of strings stays as written.
+        if decoders.is_empty() && rotation.is_none() {
+            return None;
+        }
 
         // Statements up to here run no code but the rotation, so variables
         // they declare are set before any decoder call. A rotation must come

@@ -556,10 +556,11 @@ fn string_index_concatenated_by_plus_is_not_converted() {
 }
 
 #[test]
-fn inlines_element_reads_of_an_array_nothing_changes() {
+fn inlines_element_reads_of_a_decoded_array_nothing_changes() {
     let (output, pass) = run("
         var arr = ['hello', 'world', 'log'];
-        console[arr[2]](arr[0], (arr[1]), arr[0x1].length, arr.length);
+        function d(i) { return arr[i]; }
+        console[d(2)](arr[0], (arr[1]), arr[0x1].length, arr.length);
     ");
     assert_eq!(pass.inlined(), 4, "{output}");
     assert!(
@@ -589,14 +590,17 @@ fn element_reads_of_a_changed_or_escaping_array_bail() {
         "for (arr[0] in o); f(arr[1]);",
         "arr = []; f(arr[0]);",
     ] {
-        let (output, pass) = run(&format!("var arr = ['a', 'b'];\n{uses}"));
+        let (output, pass) = run(&format!(
+            "var arr = ['a', 'b'];\nfunction d(i) {{ return arr[i]; }}\n{uses}"
+        ));
         assert!(!pass.changed(), "{uses}:\n{output}");
     }
 }
 
 #[test]
 fn element_reads_in_a_with_body_stay() {
-    let (output, pass) = run("var arr = ['a', 'b']; with (o) { f(arr[0]); } f(arr[1]);");
+    let (output, pass) =
+        run("var arr = ['a', 'b']; function d(i) { return arr[i]; } with (o) { f(arr[0]); } f(arr[1]);");
     assert_eq!(pass.inlined(), 1, "{output}");
     assert!(output.contains(r#"with(o){f(arr[0]);}f("b");"#), "{output}");
 }
@@ -714,7 +718,7 @@ fn decodes_arrays_and_decoders_local_to_a_function() {
             const alias = _0xdec;
             console[_0xdec(0x65)](alias(0x64), _0x1a2b[1]);
         }
-        const arrow = () => { var a = ['x', 'y']; return a[1]; };
+        const arrow = () => { var a = ['x', 'y']; function d(i) { return a[i]; } return a[1]; };
     ");
     assert_eq!(pass.inlined(), 4, "{output}");
     assert_eq!(pass.removed_rotations(), 1, "{output}");
@@ -747,7 +751,7 @@ fn script_direct_reads_bail_on_global_object_writes() {
         "[].constructor.constructor('arr.reverse()')();",
     ] {
         let (output, pass) = run_as(
-            &format!("var arr = ['x', 'y'];\n{body}\nf(arr[0]);"),
+            &format!("var arr = ['x', 'y'];\nfunction d(i) {{ return arr[i]; }}\n{body}\nf(arr[0]);"),
             SourceType::script(),
         );
         assert!(!pass.changed(), "{body}:\n{output}");
@@ -760,4 +764,28 @@ fn function_inside_with_is_left_alone() {
     let (output, pass) =
         run("with (o) { (function () { var a = ['Zm9v']; function d(i) { return atob(a[i]); } f(d(0), a[0]); })(); }");
     assert!(!pass.changed(), "{output}");
+}
+
+#[test]
+fn plain_string_arrays_stay_as_written() {
+    // No decoder reads them and no rotation reorders them, so they are not
+    // obfuscation, however their elements are read.
+    let (output, pass) = run("
+        var days = ['Mon', 'Tue'];
+        f(days[0], days.length);
+        function g() { const names = ['a', 'b']; return names[1]; }
+    ");
+    assert!(!pass.changed(), "{output}");
+}
+
+#[test]
+fn rotated_array_without_a_decoder_inlines_its_reads() {
+    let (output, pass) = run("
+        var _0xarr = ['a', 'b', 'c'];
+        (function (a, n) { var r = function (k) { while (--k) { a.push(a.shift()); } }; r(++n); })(_0xarr, 1);
+        f(_0xarr[0], _0xarr[2]);
+    ");
+    assert_eq!(pass.inlined(), 2, "{output}");
+    assert_eq!(pass.removed_rotations(), 1, "{output}");
+    assert!(output.contains(r#"f("b","a")"#), "{output}");
 }

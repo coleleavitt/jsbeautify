@@ -17,7 +17,8 @@
 //! (`return h(a[i], 'key')`) whose body is an XOR or RC4 loop over char
 //! codes; helpers are recognised by their body, never by their name (see
 //! `decoding`). An array may have several decoders, and code may also read a
-//! variable array directly (`a[2]`).
+//! variable array directly (`a[2]`) once a decoder or a rotation shows it is
+//! obfuscated; a plain array of strings is left as written.
 //!
 //! The pass matches the pieces through oxc symbols, solves the rotation
 //! statically, and replaces each `D(<number literal>)` call, made directly

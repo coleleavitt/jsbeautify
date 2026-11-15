@@ -181,15 +181,15 @@ fn script_cases() -> Vec<(&'static str, String)> {
     vec![
         (
             "array reversed through a sloppy function's this",
-            "var _0xarr = ['x', 'y'];\n(function () { this._0xarr.reverse(); })();\nconsole.log(_0xarr[0]);\n".to_string(),
+            "var _0xarr = ['x', 'y'];\nfunction _0xdec(i) { return _0xarr[i]; }\n(function () { this._0xarr.reverse(); })();\nconsole.log(_0xarr[0], _0xdec(1));\n".to_string(),
         ),
         (
             "array reversed through Function from .constructor",
-            "var _0xarr = ['x', 'y'];\n[].constructor.constructor('_0xarr.reverse()')();\nconsole.log(_0xarr[0]);\n".to_string(),
+            "var _0xarr = ['x', 'y'];\nfunction _0xdec(i) { return _0xarr[i]; }\n[].constructor.constructor('_0xarr.reverse()')();\nconsole.log(_0xarr[0], _0xdec(1));\n".to_string(),
         ),
         (
             "array reversed by a prototype getter",
-            "var _0xarr = ['x', 'y'];\nObject.defineProperty(Array.prototype, 'evil', { get() { this.reverse(); } });\n_0xarr.evil;\nconsole.log(_0xarr[0]);\n".to_string(),
+            "var _0xarr = ['x', 'y'];\nfunction _0xdec(i) { return _0xarr[i]; }\nObject.defineProperty(Array.prototype, 'evil', { get() { this.reverse(); } });\n_0xarr.evil;\nconsole.log(_0xarr[0], _0xdec(1));\n".to_string(),
         ),
         (
             "atob read through a with object in a function",
