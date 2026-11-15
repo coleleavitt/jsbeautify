@@ -223,3 +223,64 @@ fn prunes_cases_no_call_reaches() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A dispatcher whose only call reaches `A` and then `C`; `B` never runs
+/// but declares what `C` uses.
+fn shared_scope(dead_case: &str, case_c: &str, after: &str) -> String {
+    format!(
+        r#"var x = "outer";
+(function () {{
+  var A = 1, B = 2, C = 3, END = 9;
+  var F = function (s, a) {{
+    var steps = 0;
+    do {{
+      if (++steps > 20) throw new Error("no exit");
+      switch (s) {{
+        case A: s = C; break;
+        case B: {dead_case} break;
+        case C: {case_c} s = END; break;
+      }}
+    }} while (s != END);
+  }};
+  F(A, []);
+}})();
+{after}
+"#
+    )
+}
+
+#[test]
+fn keeps_declarations_of_unreachable_cases() {
+    let dir = temp_dir("declarations");
+    let cases = [
+        (
+            shared_scope(r#"function h() { return "h"; }"#, r#"console.log("C", h());"#, ""),
+            "C h\n",
+        ),
+        (
+            shared_scope(
+                "let x = 1;",
+                r#"try { x = 5; console.log("C", x); } catch (e) { console.log("C", e.name); }"#,
+                "console.log(x);",
+            ),
+            "C ReferenceError\nouter\n",
+        ),
+        (shared_scope("var x = 1;", "x = 5;", "console.log(x);"), "outer\n"),
+        (
+            shared_scope("{ function x() {} }", r#"console.log("C", typeof x);"#, ""),
+            "C undefined\n",
+        ),
+    ];
+    for (code, expected) in cases {
+        if let Some(stdout) = node_stdout(&dir, &code) {
+            assert_eq!(stdout, expected, "input under node:\n{code}");
+        }
+        for flags in [&["-d"][..], &["-d", "--isolated"]] {
+            let out = deobfuscate(&dir, &code, flags);
+            if let Some(stdout) = node_stdout(&dir, &out) {
+                assert_eq!(stdout, expected, "{flags:?}:\n{out}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

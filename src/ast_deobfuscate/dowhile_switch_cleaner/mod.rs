@@ -9,7 +9,8 @@
 //!    the next case too when its body can fall through;
 //! 4. repeat until nothing new is reachable.
 //!
-//! A dispatcher with no known call keeps every case.
+//! A dispatcher with no known call keeps every case, and an unreachable
+//! case that declares a binding stays: the reachable cases share its scope.
 
 use oxc_ast::ast::{BindingPattern, Expression, Program, VariableDeclarator};
 use oxc_semantic::Scoping;

@@ -194,3 +194,24 @@ fn prunes_a_switch_that_is_the_loop_body() {
     assert_eq!(pruned, 1, "{out}");
     assert!(out.contains("case A:") && !out.contains("case B:"), "{out}");
 }
+
+#[test]
+fn keeps_unreachable_cases_that_declare_bindings() {
+    for (dead, declares) in [
+        ("function h() {}", true),
+        ("let x = 1;", true),
+        ("const x = 1;", true),
+        ("class K {}", true),
+        ("var x = 1;", true),
+        ("if (a) { for (var i in a) {} }", true),
+        ("{ function h() {} }", true),
+        ("{ let x = 1; }", false),
+        ("var f = null; f = function () { var y; };", true),
+        ("(function () { var y; function g() {} })();", false),
+        ("(() => { var y; })();", false),
+    ] {
+        let code = dispatcher(&format!("case A: s = EXIT; break; case B: {dead} break;"), "F(A, []);");
+        let (out, pruned) = run(&code);
+        assert_eq!(pruned, usize::from(!declares), "{dead}\n{out}");
+    }
+}
