@@ -55,18 +55,31 @@ pub fn initialized_early(program: &Program<'_>, scoping: &Scoping) -> FxHashSet<
     };
     owners.visit_program(program);
     let annex_b = annex_b_shadowed_symbols(program, scoping);
-    let global_owners = owners
+    // Everything a function earlier code may call without naming it can
+    // reach, closed over once per program.
+    let mut global_reach = Reached {
+        references: &owners.references,
+        global_reach: None,
+        symbols: FxHashSet::default(),
+        expanded: FxHashSet::default(),
+        unnamed_calls: false,
+        escaped: Vec::new(),
+    };
+    let global_owners: Vec<SymbolId> = owners
         .references
         .keys()
         .copied()
         .filter(|&symbol| annex_b.contains(&symbol) || is_global_binding(program.source_type, scoping, symbol))
         .collect();
+    let mut budget = 8 * program.span.size() as usize;
+    global_reach.extend(global_owners, &mut budget);
+    let global_reach = global_reach.symbols;
     let mut early = Early {
         scoping,
         owners: &owners,
-        global_owners,
+        global_reach: &global_reach,
         found: FxHashSet::default(),
-        budget: 8 * program.span.size() as usize,
+        budget,
     };
     let requests_modules = program.body.iter().any(|stmt| {
         matches!(
@@ -252,8 +265,9 @@ impl<'a> Visit<'a> for Owners<'_> {
 struct Early<'s, 'o> {
     scoping: &'s Scoping,
     owners: &'o Owners<'s>,
-    /// Functions earlier code may call without naming them.
-    global_owners: Vec<SymbolId>,
+    /// The bindings functions earlier code may call without naming them
+    /// can reach.
+    global_reach: &'o FxHashSet<SymbolId>,
     found: FxHashSet<SymbolId>,
     budget: usize,
 }
@@ -263,6 +277,7 @@ impl<'s, 'o> Early<'s, 'o> {
         let owners: &'o Owners<'s> = self.owners;
         Reached {
             references: &owners.references,
+            global_reach: Some(self.global_reach),
             symbols: FxHashSet::default(),
             expanded: FxHashSet::default(),
             unnamed_calls: false,
@@ -343,7 +358,7 @@ impl<'s, 'o> Early<'s, 'o> {
             .is_none_or(|&(first, last)| start <= first && last <= end);
         if !inside {
             reached.escaped.push(symbol);
-        } else if self.budget > 0 && !self.owners.params.contains(&symbol) && !reached.symbols.contains(&symbol) {
+        } else if self.budget > 0 && !self.owners.params.contains(&symbol) && !reached.contains(symbol) {
             self.found.insert(symbol);
         }
     }
@@ -358,12 +373,9 @@ impl<'s, 'o> Early<'s, 'o> {
         visit(&mut collect);
         self.budget = collect.budget;
         collect.symbols.append(&mut reached.escaped);
-        if !reached.unnamed_calls {
-            // Any code may call a function bound to a global, or an Annex B
-            // block function, without naming it.
-            reached.unnamed_calls = true;
-            collect.symbols.extend(self.global_owners.iter().copied());
-        }
+        // Any code may call a function bound to a global, or an Annex B
+        // block function, without naming it.
+        reached.unnamed_calls = true;
         reached.extend(collect.symbols, &mut self.budget);
     }
 
@@ -371,7 +383,7 @@ impl<'s, 'o> Early<'s, 'o> {
         match stmt {
             Statement::VariableDeclaration(decl) => decl.declarations.iter().any(|declarator| {
                 matches!(declarator.id, BindingPattern::BindingIdentifier(_))
-                    && declarator.init.as_ref().is_some_and(is_inert_value)
+                    && declarator.init.as_ref().is_some_and(|init| is_inert_value(init))
             }),
             Statement::ExpressionStatement(stmt) => self.inert_assignment(&stmt.expression).is_some(),
             _ => false,
@@ -461,9 +473,12 @@ impl<'a> Visit<'a> for Early<'_, '_> {
 /// functions among them.
 struct Reached<'r> {
     references: &'r FxHashMap<SymbolId, Vec<SymbolId>>,
+    /// What any code reaches through functions it may call without naming
+    /// them, counted once `unnamed_calls` is set.
+    global_reach: Option<&'r FxHashSet<SymbolId>>,
     symbols: FxHashSet<SymbolId>,
     expanded: FxHashSet<SymbolId>,
-    /// The functions code may call without naming them were added.
+    /// Code ran, so `global_reach` counts as reached.
     unnamed_calls: bool,
     /// Bindings set to a function that code outside the list may call once
     /// control leaves it, added when the next code runs.
@@ -471,9 +486,20 @@ struct Reached<'r> {
 }
 
 impl Reached<'_> {
+    fn in_global_reach(&self, symbol: SymbolId) -> bool {
+        self.unnamed_calls && self.global_reach.is_some_and(|reach| reach.contains(&symbol))
+    }
+
+    fn contains(&self, symbol: SymbolId) -> bool {
+        self.symbols.contains(&symbol) || self.in_global_reach(symbol)
+    }
+
     fn extend(&mut self, symbols: Vec<SymbolId>, budget: &mut usize) {
         let mut pending = symbols;
         while let Some(symbol) = pending.pop() {
+            if self.in_global_reach(symbol) {
+                continue;
+            }
             self.symbols.insert(symbol);
             if let Some(referenced) = self.references.get(&symbol)
                 && self.expanded.insert(symbol)
@@ -482,7 +508,7 @@ impl Reached<'_> {
                 if *budget == 0 {
                     return;
                 }
-                pending.extend(referenced.iter().copied().filter(|s| !self.symbols.contains(s)));
+                pending.extend(referenced.iter().copied().filter(|&s| !self.contains(s)));
             }
         }
     }
@@ -519,6 +545,7 @@ mod tests {
     use oxc_span::SourceType;
 
     use super::initialized_early;
+    use crate::ast_deobfuscate::scaling::assert_near_linear;
     use crate::ast_deobfuscate::semantic;
 
     /// The names of the bindings `initialized_early` returns, sorted.
@@ -626,5 +653,30 @@ mod tests {
                 "{request}"
             );
         }
+    }
+
+    #[test]
+    fn script_globals_are_closed_over_once() {
+        // Every block runs code, so each one reaches what the global functions
+        // reach; that closure must not be recomputed per block.
+        assert_near_linear("initialized_early", 1000, |n| {
+            let code = (0..n)
+                .map(|i| {
+                    format!(
+                        "function g{i}() {{ return g{}; }} {{ h(); var v{i} = function () {{}}; }}\n",
+                        i + 1
+                    )
+                })
+                .collect::<Vec<_>>()
+                .concat();
+            let allocator = Allocator::default();
+            let program = Parser::new(&allocator, &code, SourceType::script()).parse().program;
+            let scoping = semantic::scoping(&program);
+            let started = std::time::Instant::now();
+            let early = initialized_early(&program, &scoping);
+            let elapsed = started.elapsed();
+            assert_eq!(early.len(), n);
+            elapsed
+        });
     }
 }
