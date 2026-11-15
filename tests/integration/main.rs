@@ -24,6 +24,7 @@ mod nesting;
 mod obfuscator;
 mod project;
 mod script_mode;
+mod string_array_decoders;
 mod string_folding;
 mod turbopack;
 mod webpack_modules;

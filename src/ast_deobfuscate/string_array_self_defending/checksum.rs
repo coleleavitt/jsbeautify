@@ -9,7 +9,8 @@ use oxc_ast::ast::{Argument, BinaryOperator, CallExpression, Expression, UnaryOp
 use oxc_semantic::Scoping;
 use oxc_syntax::symbol::SymbolId;
 
-use super::shape::reference_symbol;
+use super::decoding::is_global;
+use super::shape::{Decoder, reference_symbol};
 
 /// Upper bound on the compiled checksum's length.
 const MAX_OPS: usize = 4_096;
@@ -19,8 +20,9 @@ const MAX_DEPTH: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
     Number(f64),
-    /// `parseInt(decoder(arg))`: pushes the parsed element at array index
-    /// `arg + offset`, or `NaN` when that index reads `undefined`.
+    /// `parseInt(decoder(arg))`: pushes the parsed decoded element at the
+    /// array index the decoder reads for `arg`, or `NaN` when that index
+    /// reads `undefined`.
     Decode(f64),
     Negate,
     Add,
@@ -60,16 +62,25 @@ impl Checksum {
     /// loop forever), a full search would exceed `work_budget` (operations
     /// evaluated, shared by the program), or a term cannot be evaluated
     /// exactly.
-    pub(super) fn solve(&self, strings: &[String], offset: f64, target: f64, work_budget: &mut usize) -> Option<usize> {
+    pub(super) fn solve(
+        &self,
+        strings: &[String],
+        decoder: &Decoder,
+        target: f64,
+        work_budget: &mut usize,
+    ) -> Option<usize> {
         let len = strings.len();
         *work_budget = work_budget.checked_sub(self.ops.len().saturating_mul(len))?;
         if len == 0 {
             return None;
         }
-        let parsed: Vec<Option<f64>> = strings.iter().map(|s| parse_int(s)).collect();
+        let parsed: Vec<Option<f64>> = strings
+            .iter()
+            .map(|s| decoder.decoding.apply(s).and_then(|value| parse_int(&value)))
+            .collect();
         let mut stack = Vec::with_capacity(self.ops.len());
         (0..len).find_map(|rotation| {
-            let value = self.evaluate(&parsed, offset, rotation, &mut stack);
+            let value = self.evaluate(&parsed, decoder, rotation, &mut stack);
             match value {
                 Ok(value) if value == target => Some(Some(rotation)),
                 Ok(_) => None,
@@ -78,12 +89,18 @@ impl Checksum {
         })?
     }
 
-    fn evaluate(&self, parsed: &[Option<f64>], offset: f64, rotation: usize, stack: &mut Vec<f64>) -> Result<f64, ()> {
+    fn evaluate(
+        &self,
+        parsed: &[Option<f64>],
+        decoder: &Decoder,
+        rotation: usize,
+        stack: &mut Vec<f64>,
+    ) -> Result<f64, ()> {
         stack.clear();
         for op in &self.ops {
             let value = match *op {
                 Op::Number(value) => value,
-                Op::Decode(arg) => match array_index(arg + offset, parsed.len()) {
+                Op::Decode(arg) => match array_index(decoder.index(arg), parsed.len()) {
                     Some(index) => parsed[(index + rotation) % parsed.len()].ok_or(())?,
                     None => f64::NAN,
                 },
@@ -168,11 +185,7 @@ impl Compiler<'_> {
         let Expression::Identifier(parse_int) = &call.callee else {
             return None;
         };
-        let parse_int_ref = parse_int.reference_id.get()?;
-        if call.optional
-            || parse_int.name != "parseInt"
-            || self.scoping.get_reference(parse_int_ref).symbol_id().is_some()
-        {
+        if call.optional || !is_global(self.scoping, parse_int, "parseInt") {
             return None;
         }
         let [Argument::CallExpression(inner)] = call.arguments.as_slice() else {

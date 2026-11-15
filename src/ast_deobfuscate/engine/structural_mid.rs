@@ -20,8 +20,7 @@ impl AstDeobfuscator {
         self.run_dead_var_and_cff(allocator, program)
     }
 
-    /// Phases 0.999–3. Returns the scoping of the program they leave; the
-    /// legacy string-array phases only detect, so they share Phase 1's scoping.
+    /// Phases 0.999–3. Returns the scoping of the program they leave.
     fn run_string_array_and_decoder_phases<'a>(
         &mut self,
         allocator: &'a Allocator,
@@ -53,39 +52,19 @@ impl AstDeobfuscator {
         );
         eprintln!("[DEOBFUSCATE] Phase 1: control_flow_unflattener DONE");
 
-        eprintln!("[DEOBFUSCATE] Phase 2: SemanticBuilder for string_array_rotation");
+        eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for dispatcher_inliner");
         let scoping = semantic::refresh(program, ctx.into_scoping(), self.control_flow_unflattener.changed());
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
 
-        eprintln!("[DEOBFUSCATE] Phase 2: Running string_array_rotation");
-        traverse_mut_with_ctx(&mut self.string_array_rotation, program, &mut ctx);
-        let (arrays, rotations) = self.string_array_rotation.detected();
-        eprintln!("[DEOBFUSCATE] Phase 2: Found {arrays} string arrays, {rotations} rotation IIFEs");
-        eprintln!("[DEOBFUSCATE] Phase 2: string_array_rotation DONE");
-
-        let (mut state, scoping) = ctx.into_state_and_scoping();
-        self.string_array_rotation.finalize(&mut state);
-
-        mem_ck("enter Phase 3 (decoder/string-array)");
-        eprintln!("[DEOBFUSCATE] Phase 3: SemanticBuilder for decoder/string_array/dispatcher");
-        let mut ctx = ReusableTraverseCtx::new(state, scoping, allocator);
-
-        eprintln!("[DEOBFUSCATE] Phase 3: Running decoder_inliner");
-        traverse_mut_with_ctx(&mut self.decoder_inliner, program, &mut ctx);
-        eprintln!("[DEOBFUSCATE] Phase 3: Running string_array_inliner");
-        traverse_mut_with_ctx(&mut self.string_array_inliner, program, &mut ctx);
+        mem_ck("enter Phase 3 (dispatcher)");
         eprintln!("[DEOBFUSCATE] Phase 3: Running dispatcher_inliner");
         traverse_mut_with_ctx(&mut self.dispatcher_inliner, program, &mut ctx);
         eprintln!(
-            "[DEOBFUSCATE] Phase 3: Inlined {} decoder calls, {} string-array accesses, {} dispatcher calls",
-            self.decoder_inliner.rewrites(),
-            self.string_array_inliner.rewrites(),
+            "[DEOBFUSCATE] Phase 3: Inlined {} dispatcher calls",
             self.dispatcher_inliner.rewrites()
         );
         eprintln!("[DEOBFUSCATE] Phase 3: DONE");
-        let inlined =
-            self.decoder_inliner.rewrites() + self.string_array_inliner.rewrites() + self.dispatcher_inliner.rewrites();
-        semantic::refresh(program, ctx.into_scoping(), inlined > 0)
+        semantic::refresh(program, ctx.into_scoping(), self.dispatcher_inliner.rewrites() > 0)
     }
 
     /// Phases 4–5e. Each proxy collector only reads, so it shares the scoping

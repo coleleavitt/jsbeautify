@@ -1,11 +1,10 @@
 use super::{
     AlgebraicSimplifier, ArrayCoerceFold, ArrayUnpacker, AstDeobfuscator, BeautifyError, BooleanLiteralConverter,
-    CommaReturnSimplifier, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DecoderInliner,
-    DispatcherInliner, DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap,
-    JsonParseEvaluator, Layout, MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator,
-    OptionalChainingNormalizer, Result, SelfDefendingStringArray, SequenceExpressionSplitter, StringArrayInliner,
-    StringArrayRotation, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse, TryCatchRemover, VariableRenamer,
-    VoidReplacer, encrypted_eval, semantic_baseline,
+    CommaReturnSimplifier, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DispatcherInliner,
+    DynamicPropertyConverter, EmptyStatementCleanup, ExpressionSimplifier, IifeUnwrap, JsonParseEvaluator, Layout,
+    MultiVarSplitter, NullishCoalescingSimplifier, ObjectSparsingConsolidator, OptionalChainingNormalizer, Result,
+    SelfDefendingStringArray, SequenceExpressionSplitter, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
+    TryCatchRemover, VariableRenamer, VoidReplacer, encrypted_eval, semantic_baseline,
 };
 use crate::ParseGoal;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -23,10 +22,7 @@ impl AstDeobfuscator {
     pub fn new() -> Self {
         Self {
             control_flow_unflattener: ControlFlowUnflattener::new(),
-            string_array_rotation: StringArrayRotation::new(),
             self_defending_string_array: SelfDefendingStringArray::new(),
-            decoder_inliner: DecoderInliner::new(),
-            string_array_inliner: StringArrayInliner::new(),
             dispatcher_inliner: DispatcherInliner::new(),
             constant_folder: ConstantFolder::new(),
             expression_simplifier: ExpressionSimplifier::new(),

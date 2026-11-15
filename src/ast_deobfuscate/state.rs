@@ -4,8 +4,6 @@ use rustc_hash::FxHashMap;
 pub struct DeobfuscateState {
     pub changed: bool,
     pub dispatchers: FxHashMap<String, DispatcherInfo>,
-    pub string_arrays: FxHashMap<String, StringArrayInfo>,
-    pub decoders: FxHashMap<String, DecoderInfo>,
 }
 
 impl DeobfuscateState {
@@ -14,8 +12,6 @@ impl DeobfuscateState {
         Self {
             changed: false,
             dispatchers: FxHashMap::default(),
-            string_arrays: FxHashMap::default(),
-            decoders: FxHashMap::default(),
         }
     }
 }
@@ -45,41 +41,4 @@ pub enum ReturnValue {
     String(String),
     Bool(bool),
     Null,
-}
-
-#[derive(Debug, Clone)]
-pub struct StringArrayInfo {
-    pub var_name: String,
-    pub strings: Vec<String>,
-    pub rotated: bool,
-    pub rotation_count: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct DecoderInfo {
-    pub function_name: String,
-    pub array_name: String,
-    pub offset: i32,
-    pub offset_operation: OffsetOperation,
-    pub decoder_type: DecoderType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OffsetOperation {
-    None,
-    Subtract,
-    Add,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DecoderType {
-    Simple,
-    Base64,
-    /// The key's UTF-16 code units, which the decoder XORs with the value's.
-    Xor {
-        key: Vec<u16>,
-    },
-    Rc4 {
-        key: Vec<u8>,
-    },
 }

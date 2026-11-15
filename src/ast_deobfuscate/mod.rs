@@ -64,8 +64,6 @@ pub(crate) mod control_flow_unflatten;
 pub(crate) mod dead_code;
 #[allow(dead_code)]
 pub(crate) mod dead_var_elimination;
-#[allow(dead_code)]
-pub(crate) mod decoder_inline;
 pub(crate) mod default_export;
 #[allow(dead_code)]
 pub(crate) mod deterministic_rename;
@@ -116,9 +114,6 @@ pub(crate) mod short_circuit_to_if;
 pub mod sourcemap_rename;
 pub(crate) mod state;
 pub(crate) mod statement_split;
-#[allow(dead_code)]
-pub(crate) mod string_array_inline;
-pub(crate) mod string_array_rotation;
 pub(crate) mod string_array_self_defending;
 pub(crate) mod switch_true_converter;
 #[allow(dead_code)]
@@ -161,7 +156,6 @@ pub(crate) use constant_folding::ConstantFolder;
 pub(crate) use control_flow_unflatten::ControlFlowUnflattener;
 pub(crate) use dead_code::DeadCodeEliminator;
 pub(crate) use dead_var_elimination::{DeadVarCollector, DeadVarEliminator, DeadVarSweepResult, eliminate_dead_vars};
-pub(crate) use decoder_inline::DecoderInliner;
 pub(crate) use deterministic_rename::DeterministicRenamer;
 pub(crate) use dispatch_inliner::{DispatchInlinerCollector, DispatchInlinerRewriter};
 pub(crate) use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, DispatcherMap};
@@ -191,8 +185,6 @@ pub(crate) use self_init_accessor::SelfInitAccessorFlattener;
 pub(crate) use sequence_expression_split::SequenceExpressionSplitter;
 pub(crate) use state::DeobfuscateState;
 pub(crate) use statement_split::StatementSplitNormalizer;
-pub(crate) use string_array_inline::StringArrayInliner;
-pub(crate) use string_array_rotation::StringArrayRotation;
 pub(crate) use string_array_self_defending::SelfDefendingStringArray;
 pub(crate) use switch_true_converter::SwitchTrueConverter;
 pub(crate) use ternary::TernarySimplifier;

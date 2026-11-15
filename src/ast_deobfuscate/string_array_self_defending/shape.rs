@@ -2,15 +2,17 @@
 //! string array, resolved through oxc's symbols.
 
 use oxc_ast::ast::{
-    Argument, ArrayExpressionElement, AssignmentOperator, AssignmentTarget, BinaryOperator, BindingPattern,
-    CallExpression, Expression, ExpressionStatement, Function, IdentifierReference, SimpleAssignmentTarget, Statement,
-    UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind, WhileStatement,
+    Argument, ArrayExpressionElement, AssignmentOperator, AssignmentTarget, BinaryExpression, BinaryOperator,
+    BindingPattern, CallExpression, Expression, ExpressionStatement, Function, IdentifierReference,
+    SimpleAssignmentTarget, Statement, UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind,
+    WhileStatement,
 };
 use oxc_semantic::Scoping;
 use oxc_syntax::reference::ReferenceId;
 use oxc_syntax::symbol::SymbolId;
 
 use super::checksum::Checksum;
+use super::decoding::{Decoding, Helpers, distinct, match_decoding};
 use crate::ast_deobfuscate::webpack::shapes::simple_params;
 
 /// The string array: a self-replacing wrapper function, `function W() {
@@ -28,24 +30,43 @@ pub(super) struct StringArray {
 
 /// `function D(i, k) { i = i - OFFSET; const s = W(); let v = s[i]; return v; }`,
 /// or `var D = function (i) { i = i - OFFSET; var v = a[i]; return v; }`; the
-/// offset is optional, and `return s[i];` may replace the temporary.
+/// offset is optional, `return s[i];` may replace the temporary, the read may
+/// add its own offset (`s[i - OFFSET]`), and the element may go through a
+/// [`Decoding`] (`return atob(s[i]);`, `return xor(s[i], 'key');`).
 pub(super) struct Decoder {
     pub(super) symbol: SymbolId,
     /// The reference to the array (or its wrapper) in the body.
     pub(super) array_ref: ReferenceId,
-    /// Added to a call's argument to get the array index.
+    /// Added to a call's argument by `i = i ± OFFSET`.
     pub(super) offset: f64,
-    /// `i = i - OFFSET` converts a string argument to a number.
+    /// Added after `offset` by the read `s[i ± OFFSET]`.
+    pub(super) read_offset: f64,
+    /// The first offset applied is a subtraction, which converts a string
+    /// argument to a number.
     pub(super) coerces_strings: bool,
+    pub(super) decoding: Decoding,
+    /// The helper function the decoding calls, and the program-body index of
+    /// its declaration when it is a variable.
+    pub(super) helper: Option<(SymbolId, Option<usize>)>,
     /// The program-body index of a variable's declaration; `None` for a
     /// function declaration.
     pub(super) declared_at: Option<usize>,
+}
+
+impl Decoder {
+    /// The array index the decoder reads for the number argument `arg`, in
+    /// the order JavaScript adds the offsets.
+    pub(super) fn index(&self, arg: f64) -> f64 {
+        arg + self.offset + self.read_offset
+    }
 }
 
 pub(super) struct Rotation {
     /// The array (or wrapper) passed to the IIFE.
     pub(super) array_ref: ReferenceId,
     pub(super) kind: RotationKind,
+    /// The index of the decoder a checksum calls.
+    pub(super) decoder: Option<usize>,
 }
 
 pub(super) enum RotationKind {
@@ -61,9 +82,11 @@ pub(super) enum RotationKind {
 impl Rotation {
     /// The number of `push(shift())` steps it performs before returning.
     /// A checksum search spends `work_budget`.
-    pub(super) fn steps(&self, strings: &[String], offset: f64, work_budget: &mut usize) -> Option<usize> {
+    pub(super) fn steps(&self, strings: &[String], decoders: &[Decoder], work_budget: &mut usize) -> Option<usize> {
         match &self.kind {
-            RotationKind::Checksum { checksum, target } => checksum.solve(strings, offset, *target, work_budget),
+            RotationKind::Checksum { checksum, target } => {
+                checksum.solve(strings, &decoders[self.decoder?], *target, work_budget)
+            }
             // `while (--k)` runs `k - 1` times, and forever unless `k` is a
             // positive integer. A count past `MAX_COUNTDOWN` would keep the
             // input spinning for so long that the output must spin too.
@@ -85,14 +108,14 @@ pub(super) fn reference_symbol(scoping: &Scoping, ident: &IdentifierReference<'_
     scoping.get_reference(ident.reference_id.get()?).symbol_id()
 }
 
-fn binding_symbol(pattern: &BindingPattern<'_>) -> Option<SymbolId> {
+pub(super) fn binding_symbol(pattern: &BindingPattern<'_>) -> Option<SymbolId> {
     match pattern {
         BindingPattern::BindingIdentifier(id) => id.symbol_id.get(),
         _ => None,
     }
 }
 
-fn is_identifier_of(expr: &Expression<'_>, scoping: &Scoping, symbol: SymbolId) -> bool {
+pub(super) fn is_identifier_of(expr: &Expression<'_>, scoping: &Scoping, symbol: SymbolId) -> bool {
     matches!(expr, Expression::Identifier(id) if reference_symbol(scoping, id) == Some(symbol))
 }
 
@@ -109,7 +132,7 @@ fn call_without_args_of(expr: &Expression<'_>, scoping: &Scoping, symbol: Symbol
         .flatten()
 }
 
-const fn is_plain(func: &Function<'_>) -> bool {
+pub(super) const fn is_plain(func: &Function<'_>) -> bool {
     !func.r#async && !func.generator
 }
 
@@ -248,21 +271,23 @@ pub(super) fn match_decoder(
     candidate: &DecoderCandidate<'_, '_>,
     scoping: &Scoping,
     array: &StringArray,
+    helpers: &Helpers<'_, '_, '_>,
 ) -> Option<Decoder> {
     let func = candidate.func;
     let params = simple_params(&func.params)?;
-    if !is_plain(func) || !(1..=2).contains(&params.len()) {
+    // A repeated parameter name binds the last argument.
+    if !is_plain(func) || !(1..=2).contains(&params.len()) || !distinct(&params) {
         return None;
     }
     let index = params[0];
     let mut statements = func.body.as_ref()?.statements.as_slice();
 
-    let (offset, coerces_strings) = match statements {
+    let statement_offset = match statements {
         [Statement::ExpressionStatement(shift), rest @ ..] => {
             statements = rest;
-            match_offset(&shift.expression, scoping, index)?
+            Some(match_offset(&shift.expression, scoping, index)?)
         }
-        _ => (0.0, false),
+        _ => None,
     };
     // A wrapper is called into a local; a variable is read directly.
     let (source, wrapper_call) = if array.declared_at.is_none() {
@@ -276,21 +301,8 @@ pub(super) fn match_decoder(
         (array.symbol, None)
     };
 
-    let read_ref = |expr: &Expression<'_>| match expr {
-        Expression::ComputedMemberExpression(member)
-            if !member.optional && is_identifier_of(&member.expression, scoping, index) =>
-        {
-            match &member.object {
-                Expression::Identifier(object) if reference_symbol(scoping, object) == Some(source) => {
-                    object.reference_id.get()
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    let read = match statements {
-        [Statement::ReturnStatement(ret)] => read_ref(ret.argument.as_ref()?)?,
+    let returned = match statements {
+        [Statement::ReturnStatement(ret)] => ret.argument.as_ref()?,
         [
             Statement::VariableDeclaration(value_decl),
             Statement::ReturnStatement(ret),
@@ -303,17 +315,50 @@ pub(super) fn match_decoder(
             {
                 return None;
             }
-            read_ref(init)?
+            init
         }
         _ => return None,
     };
+    let decoded = match_decoding(returned, scoping, helpers)?;
+    let (read, read_offset) = match_read(decoded.read, scoping, source, index)?;
+    // The first operation on a string argument decides whether it becomes a
+    // number: `-` converts it, `+` concatenates.
+    let coerces_strings = statement_offset.or(read_offset).is_some_and(|(_, coerces)| coerces);
     Some(Decoder {
         symbol: candidate.symbol,
         array_ref: wrapper_call.unwrap_or(read),
-        offset,
+        offset: statement_offset.map_or(0.0, |(amount, _)| amount),
+        read_offset: read_offset.map_or(0.0, |(amount, _)| amount),
         coerces_strings,
+        decoding: decoded.decoding,
+        helper: decoded.helper,
         declared_at: candidate.declared_at,
     })
+}
+
+/// `source[i]` or `source[i ± N]`: the reference to `source`, and the offset
+/// as [`match_offset`] reports it.
+fn match_read(
+    expr: &Expression<'_>,
+    scoping: &Scoping,
+    source: SymbolId,
+    index: SymbolId,
+) -> Option<(ReferenceId, Option<(f64, bool)>)> {
+    let Expression::ComputedMemberExpression(member) = expr else {
+        return None;
+    };
+    let Expression::Identifier(object) = &member.object else {
+        return None;
+    };
+    if member.optional || reference_symbol(scoping, object) != Some(source) {
+        return None;
+    }
+    let offset = match &member.expression {
+        Expression::BinaryExpression(binary) => Some(match_shift(binary, scoping, index)?),
+        index_expr if is_identifier_of(index_expr, scoping, index) => None,
+        _ => return None,
+    };
+    Some((object.reference_id.get()?, offset))
 }
 
 /// `i = i - N` or `i = i + N`, as the signed amount added to `i` and whether
@@ -328,13 +373,18 @@ fn match_offset(expr: &Expression<'_>, scoping: &Scoping, index: SymbolId) -> Op
     let Expression::BinaryExpression(binary) = &assign.right else {
         return None;
     };
+    if assign.operator != AssignmentOperator::Assign || reference_symbol(scoping, target) != Some(index) {
+        return None;
+    }
+    match_shift(binary, scoping, index)
+}
+
+/// `i - N` or `i + N`, as [`match_offset`] reports it.
+fn match_shift(binary: &BinaryExpression<'_>, scoping: &Scoping, index: SymbolId) -> Option<(f64, bool)> {
     let Expression::NumericLiteral(amount) = &binary.right else {
         return None;
     };
-    if assign.operator != AssignmentOperator::Assign
-        || reference_symbol(scoping, target) != Some(index)
-        || !is_identifier_of(&binary.left, scoping, index)
-    {
+    if !is_identifier_of(&binary.left, scoping, index) {
         return None;
     }
     match binary.operator {
@@ -348,7 +398,7 @@ pub(super) fn match_rotation(
     stmt: &ExpressionStatement<'_>,
     scoping: &Scoping,
     array: &StringArray,
-    decoder: &Decoder,
+    decoders: &[Decoder],
 ) -> Option<Rotation> {
     let Expression::CallExpression(call) = stmt.expression.without_parentheses() else {
         return None;
@@ -363,18 +413,29 @@ pub(super) fn match_rotation(
     let [array_param, number_param] = params.as_slice() else {
         return None;
     };
-    if call.optional || !is_plain(func) || reference_symbol(scoping, array_arg) != Some(array.symbol) {
+    if call.optional
+        || !is_plain(func)
+        || array_param == number_param
+        || reference_symbol(scoping, array_arg) != Some(array.symbol)
+    {
         return None;
     }
     let statements = func.body.as_ref()?.statements.as_slice();
-    let kind = if array.declared_at.is_none() {
-        match_checksum_body(statements, scoping, *array_param, *number_param, number.value, decoder)?
+    let (kind, decoder) = if array.declared_at.is_none() {
+        decoders.iter().enumerate().find_map(|(index, decoder)| {
+            match_checksum_body(statements, scoping, *array_param, *number_param, number.value, decoder)
+                .map(|kind| (kind, Some(index)))
+        })?
     } else {
-        match_countdown_body(statements, scoping, *array_param, *number_param, number.value)?
+        (
+            match_countdown_body(statements, scoping, *array_param, *number_param, number.value)?,
+            None,
+        )
     };
     Some(Rotation {
         array_ref: array_arg.reference_id.get()?,
         kind,
+        decoder,
     })
 }
 
@@ -573,7 +634,7 @@ fn is_rotate_step(stmts: &[Statement<'_>], scoping: &Scoping, array: SymbolId) -
 }
 
 /// `array.method(...)` or `array['method'](...)`, not optional.
-fn is_method_call(call: &CallExpression<'_>, scoping: &Scoping, array: SymbolId, method: &str) -> bool {
+pub(super) fn is_method_call(call: &CallExpression<'_>, scoping: &Scoping, array: SymbolId, method: &str) -> bool {
     if call.optional {
         return false;
     }

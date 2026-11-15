@@ -27,7 +27,7 @@ use super::{
     BooleanLiteralConverter, BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer,
     BunRuntimeCollector, BunRuntimeRenamer, BunSyntaxNormalizer, BundleRuntime, Bundler, CallProxyCollector,
     CallProxyInliner, CallThisSimplifier, CffUnflattener, ClassNameCollector, ClassNameRenamer, CommaReturnSimplifier,
-    ConcatCanonicaliser, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DecoderInliner, DeobfuscateState,
+    ConcatCanonicaliser, ConstantFolder, ControlFlowUnflattener, DeadCodeEliminator, DeobfuscateState,
     DispatchInlinerCollector, DispatchInlinerRewriter, DispatcherDetector, DispatcherInliner, DisplayNameCollector,
     DoWhileSwitchCleaner, DynConcatResolver, DynamicPropertyConverter, EmptyStatementCleanup, ExportNameCollector,
     ExportNameRenamer, ExpressionSimplifier, FromCharCodeFolder, FunctionCollector, FunctionInliner, IifeUnwrap,
@@ -35,11 +35,11 @@ use super::{
     MethodCallForwarderInliner, MinifierIdiomReverser, MultiVarSplitter, NullishCoalescingSimplifier,
     ObjectSparsingConsolidator, OperatorProxyCollector, OperatorProxyInliner, OptionalChainingNormalizer,
     ParamHeuristicRenamer, ReturnSequenceSplitter, SelfDefendingStringArray, SelfInitAccessorFlattener,
-    SequenceExpressionSplitter, StatementSplitNormalizer, StringArrayInliner, StringArrayRotation, SwitchTrueConverter,
-    TernarySimplifier, TernaryToIfElse, TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector,
-    UnaryProxyInliner, VariableRenamer, VoidReplacer, WindowAliasCollector, WindowAliasPropagator,
-    annotate_namespace_modules, annotate_runtime, annotate_ts_enums, bun, collect_case_bodies, eliminate_dead_vars,
-    encrypted_eval, expand_arrow_sequences, flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards,
+    SequenceExpressionSplitter, StatementSplitNormalizer, SwitchTrueConverter, TernarySimplifier, TernaryToIfElse,
+    TrampolineCollector, TrampolineInliner, TryCatchRemover, UnaryProxyCollector, UnaryProxyInliner, VariableRenamer,
+    VoidReplacer, WindowAliasCollector, WindowAliasPropagator, annotate_namespace_modules, annotate_runtime,
+    annotate_ts_enums, bun, collect_case_bodies, eliminate_dead_vars, encrypted_eval, expand_arrow_sequences,
+    flatten_top_level_cjs_wrapper, heuristic_rename, rename_guards,
 };
 use annotations::annotate_webpack_modules;
 use checkpoint::{
@@ -53,10 +53,7 @@ pub use trace::{ast_trace_enabled, deob_trace_enabled};
 #[allow(clippy::struct_excessive_bools)]
 pub struct AstDeobfuscator {
     control_flow_unflattener: ControlFlowUnflattener,
-    string_array_rotation: StringArrayRotation,
     self_defending_string_array: SelfDefendingStringArray,
-    decoder_inliner: DecoderInliner,
-    string_array_inliner: StringArrayInliner,
     dispatcher_inliner: DispatcherInliner,
     constant_folder: ConstantFolder,
     expression_simplifier: ExpressionSimplifier,

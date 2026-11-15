@@ -158,7 +158,7 @@ fn decoders_work_on_char_codes() {
         (
             "rc4 non-ASCII",
             decoder_program(r#""kq6d", "b""#, RC4, r#"rc4Decode(_0xarr[i], "abcdefgh")"#),
-            false,
+            true,
         ),
     ];
     for (name, src, decoded) in cases {

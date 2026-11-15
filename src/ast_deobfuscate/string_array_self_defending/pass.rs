@@ -8,7 +8,7 @@ use crate::ast_deobfuscate::state::DeobfuscateState;
 use super::Ctx;
 use super::analysis::{Plan, address, analyze};
 
-/// Inlines javascript-obfuscator's string-array decoder calls and removes the
+/// Inlines string-array decoder calls and element reads, and removes the
 /// rotation IIFE and decoder aliases they leave unused.
 #[derive(Default)]
 pub struct SelfDefendingStringArray {
@@ -46,13 +46,16 @@ impl<'a> Traverse<'a, DeobfuscateState> for SelfDefendingStringArray {
     }
 
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut Ctx<'a>) {
-        let Expression::CallExpression(call) = expr else {
+        // A decoder call is planned by its callee, an element read by its object.
+        let target = match expr {
+            Expression::CallExpression(call) => &call.callee,
+            Expression::ComputedMemberExpression(member) => &member.object,
+            _ => return,
+        };
+        let Expression::Identifier(id) = target else {
             return;
         };
-        let Expression::Identifier(callee) = &call.callee else {
-            return;
-        };
-        let Some(value) = callee
+        let Some(value) = id
             .reference_id
             .get()
             .and_then(|reference| self.plan.replacements.remove(&reference))
