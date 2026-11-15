@@ -6,6 +6,7 @@ use rustc_hash::FxHashMap;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::Ctx;
+use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
 
 /// Renames helper bindings and their resolved references to canonical names,
 /// keyed by `SymbolId` so shadowing bindings with the same text are untouched.
@@ -37,6 +38,21 @@ impl BunRuntimeRenamer {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for BunRuntimeRenamer {
+    fn enter_assignment_target_property(
+        &mut self,
+        prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        expand_renamed_shorthand(prop, ctx, |binding| {
+            binding
+                .reference_id
+                .get()
+                .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+                .and_then(|symbol| self.map.get(&symbol))
+                .is_some_and(|name| name != binding.name.as_str())
+        });
+    }
+
     fn exit_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
         if let Some(symbol) = ident.symbol_id.get()
             && let Some(name) = self.map.get(&symbol)

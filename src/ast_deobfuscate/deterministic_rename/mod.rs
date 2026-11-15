@@ -15,6 +15,7 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 mod identifiers;
 mod names;
 
+use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
 use identifiers::extract_identifiers;
 use names::{GLOBALS, JS_KEYWORDS};
 
@@ -125,6 +126,14 @@ impl Default for DeterministicRenamer {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for DeterministicRenamer {
+    fn enter_assignment_target_property(
+        &mut self,
+        prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        expand_renamed_shorthand(prop, ctx, |binding| self.try_rename(binding.name.as_str()).is_some());
+    }
+
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
         let old_name = ident.name.as_str();
         if let Some(new_name) = self.try_rename(old_name) {

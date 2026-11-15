@@ -7,6 +7,7 @@ use rustc_hash::FxHashMap;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::ast_matcher::{StatementInfo, StatementMatcher};
+use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -104,6 +105,17 @@ impl Default for CanonicalNamer {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for CanonicalNamer {
+    fn enter_assignment_target_property(
+        &mut self,
+        prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        expand_renamed_shorthand(prop, ctx, |binding| {
+            self.get_canonical_at(binding.span.start, binding.span.end)
+                .is_some_and(|name| name != binding.name.as_str())
+        });
+    }
+
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
         if let Some(canonical) = self.get_canonical_at(ident.span.start, ident.span.end)
             && canonical != ident.name.as_str()

@@ -112,6 +112,7 @@ pub(crate) mod self_init_accessor;
 pub(crate) mod semantic;
 pub(crate) mod sequence_expression_split;
 pub(crate) mod short_circuit_to_if;
+pub(crate) mod shorthand_targets;
 pub mod sourcemap_rename;
 pub(crate) mod state;
 pub(crate) mod statement_split;

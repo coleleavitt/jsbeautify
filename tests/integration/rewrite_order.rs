@@ -1,6 +1,6 @@
-//! Rewrites that move or merge code keep its order observable: a value
-//! read earlier, a binding resolved by name, or a cache hoisted to another
-//! scope must not change what the program prints.
+//! Rewrites that move, merge or rename code keep what the program prints: a
+//! value read earlier, a binding resolved by name, a cache hoisted to another
+//! scope, or a renamed shorthand destructuring target must not change it.
 
 use std::path::Path;
 use std::process::Command;
@@ -138,13 +138,23 @@ const CASES: &[(&str, &str)] = &[
         r"(function () { var g = global; console.log(g.Math.max(1, 2), typeof g.setTimeout); })();",
         "2 function",
     ),
+    // renaming: a shorthand destructuring target keeps its property key
+    (
+        r"(function () { var g = 1, h = 5, k; ({ g } = { g: 2 }); ({ h = 7, k = 8 } = { k: 9 }); var o = { g, h }; console.log(g, h, k, o.g, o.h); })();",
+        "2 7 9 2 7",
+    ),
+    // renaming: a webpack module parameter in a shorthand target keeps its key
+    (
+        r"webpackJsonp([0],{1:function(e,t){({e}={e:5});t.v=e;console.log(e)}}); function webpackJsonp(c, m) { for (var k in m) m[k]({}, {}); }",
+        "5",
+    ),
 ];
 
 #[test]
 fn reordering_rewrites_keep_their_behavior() {
     let dir = std::env::temp_dir().join(format!("jsb-rewrite-order-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    for flags in [&["-d"][..], &["-d", "--isolated"]] {
+    for flags in [&["-d"][..], &["-d", "--isolated"], &["-d", "--rename-vars"]] {
         for &(input, expected) in CASES {
             let output = deobfuscate(&dir, input, flags);
             let Some(input_stdout) = node_stdout(&dir, input) else {

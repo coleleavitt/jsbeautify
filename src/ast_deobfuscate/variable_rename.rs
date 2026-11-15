@@ -4,6 +4,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::rename_guards::is_global_symbol;
+use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -108,6 +109,21 @@ impl Default for VariableRenamer {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
+    fn enter_assignment_target_property(
+        &mut self,
+        prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        expand_renamed_shorthand(prop, ctx, |binding| {
+            binding
+                .reference_id
+                .get()
+                .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+                .and_then(|symbol| self.rename_for(symbol, ctx))
+                .is_some_and(|name| name != binding.name.as_str())
+        });
+    }
+
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
         if let Some(symbol) = ident.symbol_id.get()
             && let Some(new_name) = self.rename_for(symbol, ctx)

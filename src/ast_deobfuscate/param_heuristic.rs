@@ -17,6 +17,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -68,6 +69,21 @@ impl Default for ParamHeuristicRenamer {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
+    fn enter_assignment_target_property(
+        &mut self,
+        prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
+        ctx: &mut Ctx<'a>,
+    ) {
+        expand_renamed_shorthand(prop, ctx, |binding| {
+            binding
+                .reference_id
+                .get()
+                .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+                .and_then(|symbol| self.renames.get(&symbol))
+                .is_some_and(|name| name != binding.name.as_str())
+        });
+    }
+
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
         // Only rename if the function has a readable name (5+ chars)
         let has_readable_name = func.id.as_ref().is_some_and(|id| {
