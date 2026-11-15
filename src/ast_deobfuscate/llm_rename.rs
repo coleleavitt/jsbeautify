@@ -25,10 +25,10 @@ use oxc_traverse::{ReusableTraverseCtx, Traverse, TraverseCtx, traverse_mut_with
 use rustc_hash::FxHashMap;
 
 use crate::ast_deobfuscate::bun::local_renamer::{
-    LocalRenameMap, LocalRenamer, RenameMode, is_likely_generated_alias, is_meaningful_short, is_usable_base,
-    plan_local_renames,
+    LocalRenameMap, RenameMode, is_likely_generated_alias, is_meaningful_short, is_usable_base, plan_local_renames,
 };
 use crate::ast_deobfuscate::heuristic_rename::HeuristicNameCollector;
+use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -248,7 +248,7 @@ fn apply_llm_names_on_current_stack(
     }
     let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    let mut renamer = LocalRenamer::new(plan);
+    let mut renamer = SymbolRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
     Codegen::new().build(&prog).code
 }

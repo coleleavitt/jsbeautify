@@ -1,6 +1,6 @@
 use super::{
-    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, TraceSpan, bun, deob_trace_enabled,
-    heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, DeobfuscateState, Program, ReusableTraverseCtx, SymbolRenamer, TraceSpan, bun,
+    deob_trace_enabled, heuristic_rename, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::semantic;
 use oxc_semantic::Scoping;
@@ -86,13 +86,12 @@ impl AstDeobfuscator {
         let _trace = TraceSpan::new("Phase 12.5: apply local renames");
         let plan_len = plan.len();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut renamer = bun::local_renamer::LocalRenamer::new(plan);
+        let mut renamer = SymbolRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
         eprintln!(
-            "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names ({} refs, {} function ids, {} planned, {} guarded)",
-            renamer.renamed(),
+            "[DEOBFUSCATE] Phase 12.5: Renamed {} single-char local bindings to slot names ({} refs, {} planned, {} guarded)",
+            renamer.renamed_decls(),
             renamer.renamed_refs(),
-            renamer.renamed_functions(),
             plan_len,
             guarded_len
         );

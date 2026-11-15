@@ -47,12 +47,10 @@ mod descriptor;
 mod lowering;
 mod matchers;
 mod reexport;
-mod renamer;
 mod string_search;
 mod types;
 
 pub use collector::BunRuntimeCollector;
-pub use renamer::BunRuntimeRenamer;
 pub use types::{BunHelper, BunHelperMap, BundleRuntime, Bundler};
 
 /// Parses `source` and detects its runtime helpers and the bundler they
@@ -85,6 +83,7 @@ pub fn with_bundle_runtime<T: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
@@ -118,7 +117,7 @@ mod tests {
             .collect();
         let map = collector.into_map();
 
-        let mut renamer = BunRuntimeRenamer::new(plan);
+        let mut renamer = SymbolRenamer::new(plan);
         let scoping = semantic::scoping(&prog);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
         traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);

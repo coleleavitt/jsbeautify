@@ -57,7 +57,23 @@ const CASES: &[(&str, &str)] = &[
         "var webpackJsonp = function(c, m) { for (var k in m) m[k]({}, {}, null) };\nwebpackJsonp([0], { 1: function(__proto__, t, n) { t.o = { __proto__ }; console.log(Object.keys(t.o).join(), Object.getPrototypeOf(t.o) === Object.prototype) } });",
         "__proto__ true",
     ),
+    (
+        ESBUILD_BUNDLE,
+        "init\n5 6 {\"s\":5} 5 2 CodecError 7 c,m,r 10|{\"n\":10,\"t\":4}",
+    ),
 ];
+
+/// An esbuild bundle whose runtime helpers, `__export` locals, error class,
+/// lazy module handles and slot locals are each renamed by symbol, and
+/// spelled in shorthand properties.
+const ESBUILD_BUNDLE: &str = "var d=Object.defineProperty;var X=(e,t)=>{for(var n in t)d(e,n,{get:t[n],enumerable:!0})};\
+    var E=(e,t)=>()=>(e&&(t=e(e=0)),t);var C=(e,t)=>()=>(t||e((t={exports:{}}).exports,t),t.exports);\
+    var a={};X(a,{counter:()=>s,report:()=>p});var s=1;function p(s){return s+1}\
+    var c=class extends Error{constructor(){super(\"x\"),this.name=\"CodecError\"}};\
+    var m=E(()=>{console.log(\"init\")});var r=C((q,o)=>{o.exports={v:7}});\
+    function u(e,t){var n=e*2;({n}={n:n+t});return [n,JSON.stringify({n,t})]}\
+    (function(){({s,c}={s:5,c});m();var k=r();console.log(s,p(s),JSON.stringify({s}),a.counter,a.report(1),\
+    new c().name,k.v,Object.keys({c,m,r}).join(),u(3,4).join(\"|\"))})();";
 
 #[test]
 fn renamed_shorthand_properties_keep_their_behavior() {
@@ -80,4 +96,26 @@ fn renamed_shorthand_properties_keep_their_behavior() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn every_symbol_rename_of_an_esbuild_bundle_keeps_its_shorthand_keys() {
+    let dir = std::env::temp_dir().join(format!("jsb-bundle-renames-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let output = run_jsbeautify(&dir, &["-d", "--isolated"], ESBUILD_BUNDLE);
+    let _ = std::fs::remove_dir_all(&dir);
+    for renamed in [
+        "var __export = ",
+        "var counter = 1",
+        "function report(",
+        "var CodecError = class",
+        "var init_1 = __esm(",
+        "var require_1 = __commonJS(",
+        "({s: counter, c: CodecError} = {",
+        "m: init_1,",
+        "r: require_1",
+        "({n: v3} = {",
+    ] {
+        assert!(output.contains(renamed), "{renamed}\n{output}");
+    }
 }

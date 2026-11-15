@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::{DeobfuscateState, semantic};
 #[cfg(test)]
@@ -37,7 +38,7 @@ fn run(code: &str) -> String {
 
     let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    let mut renamer = LocalRenamer::new(plan);
+    let mut renamer = SymbolRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
     Codegen::new().build(&prog).code
 }
@@ -72,7 +73,7 @@ fn run_readable(code: &str) -> String {
 
     let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    let mut renamer = LocalRenamer::new(plan);
+    let mut renamer = SymbolRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
     Codegen::new().build(&prog).code
 }

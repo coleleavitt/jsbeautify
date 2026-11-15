@@ -1,5 +1,6 @@
 use super::*;
 use crate::ast_deobfuscate::bun::{BunHelper, BunRuntimeCollector};
+use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
 use crate::ast_deobfuscate::{DeobfuscateState, semantic};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
@@ -48,7 +49,7 @@ fn collect_and_rename(code: &str) -> (String, usize) {
         .collect();
     let map = make_names_unique(map, &scoping, &reserved);
 
-    let mut renamer = ExportNameRenamer::new(map);
+    let mut renamer = SymbolRenamer::new(map);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
 

@@ -27,8 +27,9 @@ use rustc_hash::FxHashMap;
 use std::hash::BuildHasher;
 
 use crate::Result;
-use crate::ast_deobfuscate::bun::local_renamer::{LocalRenameMap, LocalRenamer, RenameMode, plan_local_renames};
+use crate::ast_deobfuscate::bun::local_renamer::{LocalRenameMap, RenameMode, plan_local_renames};
 use crate::ast_deobfuscate::heuristic_rename::HeuristicNameCollector;
+use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -166,7 +167,7 @@ fn apply_names_by_position_on_current_stack<S: BuildHasher>(
     }
     let scoping = semantic::scoping(&prog);
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &alloc);
-    let mut renamer = LocalRenamer::new(plan);
+    let mut renamer = SymbolRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, &mut prog, &mut ctx);
     Codegen::new().build(&prog).code
 }

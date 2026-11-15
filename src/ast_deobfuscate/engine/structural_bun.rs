@@ -1,8 +1,8 @@
 use super::{
-    Allocator, AstDeobfuscator, BunHelper, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector,
-    BunRuntimeRenamer, BundleRuntime, Bundler, ClassNameCollector, ClassNameRenamer, DeobfuscateState,
-    DisplayNameCollector, ExportNameCollector, ExportNameRenamer, ParamHeuristicRenamer, Program, ReusableTraverseCtx,
-    bun, flatten_top_level_cjs_wrapper, mem_ck, rename_guards, traverse_mut_with_ctx,
+    Allocator, AstDeobfuscator, BunHelper, BunModuleHandleCollector, BunRuntimeCollector, BundleRuntime, Bundler,
+    ClassNameCollector, DeobfuscateState, DisplayNameCollector, ExportNameCollector, ParamHeuristicRenamer, Program,
+    ReusableTraverseCtx, SymbolRenamer, bun, flatten_top_level_cjs_wrapper, mem_ck, rename_guards,
+    traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::semantic;
 use oxc_semantic::Scoping;
@@ -97,9 +97,12 @@ impl AstDeobfuscator {
                     .collect();
                 let class_map = bun::export_renamer::make_names_unique(class_map, &scoping, &reserved);
                 let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-                let mut renamer = ClassNameRenamer::new(class_map);
+                let mut renamer = SymbolRenamer::new(class_map);
                 traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
-                eprintln!("[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers", renamer.renamed());
+                eprintln!(
+                    "[DEOBFUSCATE] Phase 0.97: Renamed {} identifiers",
+                    renamer.total_renamed()
+                );
                 None
             }
         };
@@ -192,7 +195,7 @@ fn rename_runtime_helpers<'a>(
             })
             .collect();
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut renamer = BunRuntimeRenamer::new(plan);
+        let mut renamer = SymbolRenamer::new(plan);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 0.9: Renamed {} declarations, {} references",
@@ -275,7 +278,7 @@ fn rename_exports<'a>(
             .collect();
         let export_map = bun::export_renamer::make_names_unique(export_map, &scoping, &reserved);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut renamer = ExportNameRenamer::new(export_map);
+        let mut renamer = SymbolRenamer::new(export_map);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 0.95: Renamed {} declarations + {} references = {} total",
@@ -324,7 +327,7 @@ fn rename_module_handles<'a>(
             module_handles.len()
         );
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-        let mut renamer = BunModuleHandleRenamer::new(module_handles);
+        let mut renamer = SymbolRenamer::new(module_handles);
         traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
         eprintln!(
             "[DEOBFUSCATE] Phase 0.99: Renamed {} declarations, {} references",

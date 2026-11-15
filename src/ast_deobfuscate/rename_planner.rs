@@ -24,7 +24,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ast_deobfuscate::ExportNameRenamer;
+use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
@@ -74,7 +74,7 @@ pub fn rename_unguarded<'a>(
     let names = assign_names(plan, guarded, annex_b, &scoping);
     let planned = names.len();
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut renamer = ExportNameRenamer::new(names);
+    let mut renamer = SymbolRenamer::new(names);
     traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
     RenameCounts {
         planned,

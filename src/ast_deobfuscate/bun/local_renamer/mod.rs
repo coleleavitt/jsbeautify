@@ -32,12 +32,10 @@ pub type LocalRenameMap = FxHashMap<SymbolId, String>;
 
 mod names;
 mod planner;
-mod renamer;
 mod types;
 
 pub use names::{is_likely_generated_alias, is_meaningful_short, is_usable_base};
 pub use planner::{plan_local_renames, plan_local_renames_with_stats};
-pub use renamer::LocalRenamer;
 pub use types::{LocalRenamePlanStats, RenameMode};
 
 #[cfg(test)]

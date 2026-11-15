@@ -105,6 +105,7 @@ pub(crate) mod param_heuristic;
 pub(crate) mod pass;
 pub(crate) mod post_annotations;
 pub mod project;
+pub(crate) mod rename_apply;
 pub(crate) mod rename_guards;
 pub(crate) mod rename_planner;
 pub(crate) mod return_sequence_split;
@@ -147,14 +148,13 @@ pub(crate) use array_coerce_fold::ArrayCoerceFold;
 pub(crate) use array_unpack::ArrayUnpacker;
 pub(crate) use boolean_literals::BooleanLiteralConverter;
 pub(crate) use bun::{
-    BunHelper, BunHelperMap, BunModuleHandleCollector, BunModuleHandleRenamer, BunRuntimeCollector, BunRuntimeRenamer,
-    BunSyntaxNormalizer, BundleRuntime, Bundler, ExportNameCollector, ExportNameRenamer, annotate_runtime,
-    flatten_top_level_cjs_wrapper,
+    BunHelper, BunHelperMap, BunModuleHandleCollector, BunRuntimeCollector, BunSyntaxNormalizer, BundleRuntime,
+    Bundler, ExportNameCollector, annotate_runtime, flatten_top_level_cjs_wrapper,
 };
 pub(crate) use call_proxy::{CallProxyCollector, CallProxyInliner};
 pub(crate) use call_this_simplifier::CallThisSimplifier;
 pub(crate) use cff_unflattener::{CffUnflattener, collect_case_bodies};
-pub(crate) use class_name_renamer::{ClassNameCollector, ClassNameRenamer, DisplayNameCollector};
+pub(crate) use class_name_renamer::{ClassNameCollector, DisplayNameCollector};
 pub(crate) use comma_return_simplifier::CommaReturnSimplifier;
 pub(crate) use concat_canonicaliser::ConcatCanonicaliser;
 pub(crate) use constant_folding::ConstantFolder;
@@ -185,6 +185,7 @@ pub(crate) use operator_proxy::{OperatorProxyCollector, OperatorProxyInliner};
 pub(crate) use optional_chaining_normalizer::OptionalChainingNormalizer;
 pub(crate) use param_heuristic::ParamHeuristicRenamer;
 pub(crate) use post_annotations::{annotate_namespace_modules, annotate_ts_enums, expand_arrow_sequences};
+pub(crate) use rename_apply::SymbolRenamer;
 pub(crate) use return_sequence_split::ReturnSequenceSplitter;
 pub(crate) use self_init_accessor::SelfInitAccessorFlattener;
 pub(crate) use sequence_expression_split::SequenceExpressionSplitter;

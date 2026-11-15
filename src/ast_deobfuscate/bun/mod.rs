@@ -14,11 +14,10 @@ pub mod runtime;
 pub mod syntax_normalizer;
 
 pub use cjs_flatten::flatten_top_level_cjs_wrapper;
-pub use export_renamer::{ExportNameCollector, ExportNameRenamer};
+pub use export_renamer::ExportNameCollector;
 pub use module_annotator::annotate_runtime;
-pub use module_handles::{BunModuleHandleCollector, BunModuleHandleRenamer};
+pub use module_handles::BunModuleHandleCollector;
 pub use runtime::{
-    BunHelper, BunHelperMap, BunRuntimeCollector, BunRuntimeRenamer, BundleRuntime, Bundler, detect_bundle_runtime,
-    with_bundle_runtime,
+    BunHelper, BunHelperMap, BunRuntimeCollector, BundleRuntime, Bundler, detect_bundle_runtime, with_bundle_runtime,
 };
 pub use syntax_normalizer::BunSyntaxNormalizer;

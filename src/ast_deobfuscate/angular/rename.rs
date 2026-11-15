@@ -7,8 +7,8 @@ use oxc_traverse::{ReusableTraverseCtx, traverse_mut_with_ctx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::bun::export_renamer::make_names_unique;
-use crate::ast_deobfuscate::class_name_renamer::ClassNameRenamer;
 use crate::ast_deobfuscate::default_export::is_minified;
+use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
 use crate::ast_deobfuscate::rename_guards::RenameGuardCollector;
 use crate::ast_deobfuscate::semantic;
 use crate::ast_deobfuscate::state::DeobfuscateState;
@@ -60,9 +60,9 @@ pub fn rename_angular_symbols<'a>(
     }
 
     let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
-    let mut renamer = ClassNameRenamer::new(plan);
+    let mut renamer = SymbolRenamer::new(plan);
     traverse_mut_with_ctx(&mut renamer, program, &mut ctx);
-    (renamer.renamed(), None)
+    (renamer.total_renamed(), None)
 }
 
 fn plan_renames(

@@ -1,7 +1,7 @@
 //! Module wrapper handle renaming for the lazy `__esm` / `__commonJS`
 //! wrappers that esbuild and Bun emit.
 
-use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, Ident, IdentifierReference, VariableDeclarator};
+use oxc_ast::ast::{BindingIdentifier, BindingPattern, Expression, VariableDeclarator};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -10,7 +10,6 @@ use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::BunHelper;
-use crate::ast_deobfuscate::shorthand_targets::{expand_renamed_proto_shorthand, expand_renamed_shorthand};
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 pub type BunModuleHandleMap = FxHashMap<SymbolId, String>;
@@ -113,87 +112,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for BunModuleHandleCollector {
     }
 }
 
-pub struct BunModuleHandleRenamer {
-    map: BunModuleHandleMap,
-    renamed_decls: usize,
-    renamed_refs: usize,
-}
-
-impl BunModuleHandleRenamer {
-    #[must_use]
-    pub const fn new(map: BunModuleHandleMap) -> Self {
-        Self {
-            map,
-            renamed_decls: 0,
-            renamed_refs: 0,
-        }
-    }
-
-    #[must_use]
-    pub const fn renamed_decls(&self) -> usize {
-        self.renamed_decls
-    }
-
-    #[must_use]
-    pub const fn renamed_refs(&self) -> usize {
-        self.renamed_refs
-    }
-
-    /// Whether this pass gives `binding` a new name.
-    fn renames(&self, binding: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> bool {
-        binding
-            .reference_id
-            .get()
-            .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
-            .and_then(|symbol| self.map.get(&symbol))
-            .is_some_and(|name| name != binding.name.as_str())
-    }
-}
-
-impl<'a> Traverse<'a, DeobfuscateState> for BunModuleHandleRenamer {
-    fn enter_assignment_target_property(
-        &mut self,
-        prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
-        ctx: &mut Ctx<'a>,
-    ) {
-        expand_renamed_shorthand(prop, ctx, |binding| self.renames(binding, ctx));
-    }
-
-    fn enter_object_property(&mut self, prop: &mut oxc_ast::ast::ObjectProperty<'a>, ctx: &mut Ctx<'a>) {
-        expand_renamed_proto_shorthand(prop, ctx, |binding| self.renames(binding, ctx));
-    }
-
-    fn exit_binding_identifier(&mut self, ident: &mut oxc_ast::ast::BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
-        let Some(symbol_id) = ident.symbol_id.get() else {
-            return;
-        };
-        let Some(new_name) = self.map.get(&symbol_id) else {
-            return;
-        };
-        if ident.name.as_str() != new_name {
-            ident.name = Ident::from_str_in(new_name, &ctx.ast);
-            self.renamed_decls += 1;
-        }
-    }
-
-    fn exit_identifier_reference(&mut self, ident: &mut IdentifierReference<'a>, ctx: &mut Ctx<'a>) {
-        let Some(symbol_id) = ctx.scoping().get_reference(ident.reference_id()).symbol_id() else {
-            return;
-        };
-        let Some(new_name) = self.map.get(&symbol_id) else {
-            return;
-        };
-        if ident.name.as_str() != new_name {
-            ident.name = Ident::from_str_in(new_name, &ctx.ast);
-            self.renamed_refs += 1;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast_deobfuscate::bun::BunRuntimeCollector;
+    use crate::ast_deobfuscate::rename_apply::SymbolRenamer;
     use crate::ast_deobfuscate::semantic;
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
@@ -226,7 +149,7 @@ mod tests {
 
         let scoping = semantic::scoping(&program);
         let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
-        let mut renamer = BunModuleHandleRenamer::new(map);
+        let mut renamer = SymbolRenamer::new(map);
         traverse_mut_with_ctx(&mut renamer, &mut program, &mut ctx);
 
         Codegen::new().build(&program).code

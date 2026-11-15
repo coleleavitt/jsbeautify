@@ -24,11 +24,9 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 pub type ClassNameMap = FxHashMap<SymbolId, String>;
 
 mod collectors;
-mod renamer;
 mod util;
 
 pub use collectors::{ClassNameCollector, DisplayNameCollector};
-pub use renamer::ClassNameRenamer;
 pub use util::constructor_this_name;
 
 #[cfg(test)]

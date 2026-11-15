@@ -37,11 +37,9 @@ pub type ExportNameMap = FxHashMap<SymbolId, String>;
 
 mod collector;
 pub(crate) mod names;
-mod renamer;
 mod unique;
 
 pub use collector::ExportNameCollector;
-pub use renamer::ExportNameRenamer;
 pub use unique::make_names_unique;
 
 #[cfg(test)]
