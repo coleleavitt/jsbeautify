@@ -15,7 +15,7 @@ pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 mod identifiers;
 mod names;
 
-use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
+use crate::ast_deobfuscate::shorthand_targets::{expand_renamed_proto_shorthand, expand_renamed_shorthand};
 use identifiers::extract_identifiers;
 use names::{GLOBALS, JS_KEYWORDS};
 
@@ -117,6 +117,11 @@ impl DeterministicRenamer {
     fn try_rename(&mut self, name: &str) -> Option<&str> {
         self.rename_map.get(name).map(String::as_str)
     }
+
+    /// Whether this pass gives `binding` a new name.
+    fn renames(&mut self, binding: &IdentifierReference<'_>) -> bool {
+        self.try_rename(binding.name.as_str()).is_some()
+    }
 }
 
 impl Default for DeterministicRenamer {
@@ -131,7 +136,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for DeterministicRenamer {
         prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
         ctx: &mut Ctx<'a>,
     ) {
-        expand_renamed_shorthand(prop, ctx, |binding| self.try_rename(binding.name.as_str()).is_some());
+        expand_renamed_shorthand(prop, ctx, |binding| self.renames(binding));
+    }
+
+    fn enter_object_property(&mut self, prop: &mut oxc_ast::ast::ObjectProperty<'a>, ctx: &mut Ctx<'a>) {
+        expand_renamed_proto_shorthand(prop, ctx, |binding| self.renames(binding));
     }
 
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {

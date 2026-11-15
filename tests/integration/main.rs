@@ -28,6 +28,7 @@ mod project;
 mod proxy_inlining;
 mod rewrite_order;
 mod script_mode;
+mod shorthand_renames;
 mod string_array_decoders;
 mod string_folding;
 mod turbopack;

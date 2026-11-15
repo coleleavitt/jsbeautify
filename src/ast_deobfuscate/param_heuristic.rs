@@ -17,7 +17,7 @@ use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
+use crate::ast_deobfuscate::shorthand_targets::{expand_renamed_proto_shorthand, expand_renamed_shorthand};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -60,6 +60,16 @@ impl ParamHeuristicRenamer {
     fn is_bun_param(name: &str) -> bool {
         BUN_PARAM_NAMES.contains(&name)
     }
+
+    /// Whether this pass gives `binding` a new name.
+    fn renames(&self, binding: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> bool {
+        binding
+            .reference_id
+            .get()
+            .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+            .and_then(|symbol| self.renames.get(&symbol))
+            .is_some_and(|name| name != binding.name.as_str())
+    }
 }
 
 impl Default for ParamHeuristicRenamer {
@@ -74,14 +84,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for ParamHeuristicRenamer {
         prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
         ctx: &mut Ctx<'a>,
     ) {
-        expand_renamed_shorthand(prop, ctx, |binding| {
-            binding
-                .reference_id
-                .get()
-                .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
-                .and_then(|symbol| self.renames.get(&symbol))
-                .is_some_and(|name| name != binding.name.as_str())
-        });
+        expand_renamed_shorthand(prop, ctx, |binding| self.renames(binding, ctx));
+    }
+
+    fn enter_object_property(&mut self, prop: &mut oxc_ast::ast::ObjectProperty<'a>, ctx: &mut Ctx<'a>) {
+        expand_renamed_proto_shorthand(prop, ctx, |binding| self.renames(binding, ctx));
     }
 
     fn enter_function(&mut self, func: &mut Function<'a>, ctx: &mut Ctx<'a>) {
@@ -244,6 +251,13 @@ mod tests {
             !out.contains(" H") && !out.contains(" $"),
             "old param names should be gone: {out}"
         );
+    }
+
+    #[test]
+    fn shorthand_properties_keep_their_keys() {
+        let out = run("function processData(H) { ({ H } = { H: 1 }); return { H }; }");
+        assert!(out.contains("({H: input} = { H: 1 })"), "got: {out}");
+        assert!(out.contains("return { H: input }"), "got: {out}");
     }
 
     #[test]

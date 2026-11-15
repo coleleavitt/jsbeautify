@@ -4,7 +4,7 @@ use oxc_traverse::{Traverse, TraverseCtx};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast_deobfuscate::rename_guards::is_global_symbol;
-use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
+use crate::ast_deobfuscate::shorthand_targets::{expand_renamed_proto_shorthand, expand_renamed_shorthand};
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
@@ -100,6 +100,16 @@ impl VariableRenamer {
         self.rename_map.insert(symbol, new_name.clone());
         Some(new_name)
     }
+
+    /// Whether this pass gives `binding` a new name.
+    fn renames(&mut self, binding: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> bool {
+        binding
+            .reference_id
+            .get()
+            .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
+            .and_then(|symbol| self.rename_for(symbol, ctx))
+            .is_some_and(|name| name != binding.name.as_str())
+    }
 }
 
 impl Default for VariableRenamer {
@@ -114,14 +124,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for VariableRenamer {
         prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
         ctx: &mut Ctx<'a>,
     ) {
-        expand_renamed_shorthand(prop, ctx, |binding| {
-            binding
-                .reference_id
-                .get()
-                .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id())
-                .and_then(|symbol| self.rename_for(symbol, ctx))
-                .is_some_and(|name| name != binding.name.as_str())
-        });
+        expand_renamed_shorthand(prop, ctx, |binding| self.renames(binding, ctx));
+    }
+
+    fn enter_object_property(&mut self, prop: &mut oxc_ast::ast::ObjectProperty<'a>, ctx: &mut Ctx<'a>) {
+        expand_renamed_proto_shorthand(prop, ctx, |binding| self.renames(binding, ctx));
     }
 
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
@@ -245,6 +252,13 @@ mod tests {
             output.contains("var var_1 = 2"),
             "shadowing local is still renamed: {output}"
         );
+    }
+
+    #[test]
+    fn shorthand_properties_keep_their_keys() {
+        let output = run_rename("function f() { var _0x1 = 1; ({ _0x1 } = { _0x1: 2 }); return { _0x1 }; }");
+        assert!(output.contains("({_0x1: var_1} = { _0x1: 2 })"), "{output}");
+        assert!(output.contains("return { _0x1: var_1 }"), "{output}");
     }
 
     #[test]

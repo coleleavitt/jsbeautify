@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 use super::ast_matcher::{StatementInfo, StatementMatcher};
-use crate::ast_deobfuscate::shorthand_targets::expand_renamed_shorthand;
+use crate::ast_deobfuscate::shorthand_targets::{expand_renamed_proto_shorthand, expand_renamed_shorthand};
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
@@ -96,6 +96,12 @@ impl CanonicalNamer {
     pub const fn canonical_names_generated(&self) -> usize {
         self.canonical_counter
     }
+
+    /// Whether this pass gives `binding` a new name.
+    fn renames(&self, binding: &IdentifierReference<'_>) -> bool {
+        self.get_canonical_at(binding.span.start, binding.span.end)
+            .is_some_and(|name| name != binding.name.as_str())
+    }
 }
 
 impl Default for CanonicalNamer {
@@ -110,10 +116,11 @@ impl<'a> Traverse<'a, DeobfuscateState> for CanonicalNamer {
         prop: &mut oxc_ast::ast::AssignmentTargetProperty<'a>,
         ctx: &mut Ctx<'a>,
     ) {
-        expand_renamed_shorthand(prop, ctx, |binding| {
-            self.get_canonical_at(binding.span.start, binding.span.end)
-                .is_some_and(|name| name != binding.name.as_str())
-        });
+        expand_renamed_shorthand(prop, ctx, |binding| self.renames(binding));
+    }
+
+    fn enter_object_property(&mut self, prop: &mut oxc_ast::ast::ObjectProperty<'a>, ctx: &mut Ctx<'a>) {
+        expand_renamed_proto_shorthand(prop, ctx, |binding| self.renames(binding));
     }
 
     fn enter_binding_identifier(&mut self, ident: &mut BindingIdentifier<'a>, ctx: &mut Ctx<'a>) {
