@@ -8,53 +8,73 @@
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrayExpressionElement, ArrowFunctionExpression, AssignmentOperator, AssignmentTarget, BindingPattern,
-    BlockStatement, Expression, Function, FunctionBody, IdentifierReference, Program, Statement, StaticBlock,
-    SwitchCase, VariableDeclarationKind, VariableDeclarator,
+    ArrayExpressionElement, ArrowFunctionExpression, AssignmentExpression, AssignmentOperator, AssignmentTarget,
+    BindingPattern, BlockStatement, Expression, FormalParameter, Function, FunctionBody, IdentifierReference, Program,
+    Statement, StaticBlock, SwitchCase, SwitchStatement, VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
-use oxc_span::{GetSpan, Span};
 use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Bindings set by a statement at the top level of a function body or the
-/// program before any code that could read them runs.
+use crate::ast_deobfuscate::annex_b::annex_b_shadowed_symbols;
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
+
+/// Bindings set by a statement at the top level of a statement list (a
+/// function body, a block, a static block or the program) before any code
+/// that could read them runs.
 ///
 /// The statement is a `var`, `let` or `const` declarator, or a plain `X = …`
-/// assignment to a `var` of that scope, whose value runs no code: a function,
-/// a literal or an array of literals. The binding counts when no code that
-/// can run before that statement references it: the earlier statements of
-/// the list, with every function they create, and transitively every named
-/// function that code references (called or passed on). No other code can
-/// reach a binding of the list before the statement runs.
+/// assignment to a `var` (not a parameter, which `arguments` reaches), whose
+/// value runs no code: a function, a literal or an array of literals. The
+/// binding counts when every reference to it lies in that list and no code
+/// that can run before the statement references it. That code is the earlier
+/// statements of the list with every function they create, and, followed
+/// transitively, every function a binding they reference names (by a
+/// declaration, a declarator or an assignment). In a classic script, earlier
+/// code may also reach any function bound to a global or an Annex B block
+/// function without naming it (`globalThis.x()`, another script), so all of
+/// those count as referenced; Annex B functions count in any program.
 ///
-/// A module with imports is left out, as a module it imports may call back
-/// into it before its body runs. The analysis does a bounded amount of work
-/// per byte of source; past that, no further binding counts.
+/// A module that imports or re-exports another module is left out at its top
+/// level, as that module may call back into it before its body runs. The
+/// analysis does a bounded amount of work per byte of source; past that, no
+/// further binding counts.
 #[must_use]
 pub fn initialized_early(program: &Program<'_>, scoping: &Scoping) -> FxHashSet<SymbolId> {
     let mut owners = Owners {
         scoping,
         owner: None,
         declared_as: None,
+        tick: 0,
         references: FxHashMap::default(),
         extents: FxHashMap::default(),
+        lists: FxHashMap::default(),
+        params: FxHashSet::default(),
     };
     owners.visit_program(program);
+    let annex_b = annex_b_shadowed_symbols(program, scoping);
+    let global_owners = owners
+        .references
+        .keys()
+        .copied()
+        .filter(|&symbol| annex_b.contains(&symbol) || is_global_binding(program.source_type, scoping, symbol))
+        .collect();
     let mut early = Early {
         scoping,
-        references: &owners.references,
-        extents: &owners.extents,
+        owners: &owners,
+        global_owners,
         found: FxHashSet::default(),
         budget: 8 * program.span.size() as usize,
     };
-    if !program
-        .body
-        .iter()
-        .any(|stmt| matches!(stmt, Statement::ImportDeclaration(_)))
-    {
+    let requests_modules = program.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            Statement::ImportDeclaration(_) | Statement::ExportAllDeclaration(_) | Statement::ExportFromDeclaration(_)
+        )
+    });
+    if !requests_modules {
         early.body(&program.body);
     }
     early.visit_program(program);
@@ -88,17 +108,28 @@ fn is_inert_value(expr: &Expression<'_>) -> bool {
     }
 }
 
-/// For each function a binding names (a declaration, or a declarator
-/// initialised to a function or an arrow), the bindings its body references,
-/// including from the unnamed functions it creates.
+/// The key of a statement list: where its statements are stored.
+fn list_key(body: &[Statement<'_>]) -> usize {
+    body.as_ptr().addr()
+}
+
+/// One walk over the program that records, in visit order, where each
+/// binding is referenced and which statement lists contain which references.
 struct Owners<'s> {
     scoping: &'s Scoping,
     owner: Option<SymbolId>,
-    /// The binding of the declarator whose initialiser is being visited.
+    /// The binding a function about to be visited is declared or assigned as.
     declared_as: Option<SymbolId>,
+    /// Counts references and list boundaries in visit order.
+    tick: u32,
+    /// For each binding that names a function, the bindings that function's
+    /// body references, including from the unnamed functions it creates.
     references: FxHashMap<SymbolId, Vec<SymbolId>>,
-    /// Per binding, the source range its references span.
-    extents: FxHashMap<SymbolId, Span>,
+    /// Per binding, the first and last tick of its references.
+    extents: FxHashMap<SymbolId, (u32, u32)>,
+    /// Per statement list, the ticks it spans.
+    lists: FxHashMap<usize, (u32, u32)>,
+    params: FxHashSet<SymbolId>,
 }
 
 impl Owners<'_> {
@@ -108,21 +139,76 @@ impl Owners<'_> {
         visit(self);
         self.owner = outer;
     }
+
+    fn list(&mut self, body: &[Statement<'_>], visit: impl FnOnce(&mut Self)) {
+        self.tick += 1;
+        let start = self.tick;
+        visit(self);
+        self.tick += 1;
+        self.lists.insert(list_key(body), (start, self.tick));
+    }
+
+    const fn named_function(expr: &Expression<'_>) -> bool {
+        matches!(
+            expr,
+            Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_)
+        )
+    }
 }
 
 impl<'a> Visit<'a> for Owners<'_> {
+    fn visit_program(&mut self, program: &Program<'a>) {
+        self.list(&program.body, |this| walk::walk_program(this, program));
+    }
+
+    fn visit_function_body(&mut self, body: &FunctionBody<'a>) {
+        self.list(&body.statements, |this| walk::walk_function_body(this, body));
+    }
+
+    fn visit_block_statement(&mut self, block: &BlockStatement<'a>) {
+        self.list(&block.body, |this| walk::walk_block_statement(this, block));
+    }
+
+    fn visit_static_block(&mut self, block: &StaticBlock<'a>) {
+        self.list(&block.body, |this| walk::walk_static_block(this, block));
+    }
+
+    fn visit_switch_case(&mut self, case: &SwitchCase<'a>) {
+        self.list(&case.consequent, |this| walk::walk_switch_case(this, case));
+    }
+
+    fn visit_formal_parameter(&mut self, param: &FormalParameter<'a>) {
+        self.params.extend(
+            param
+                .pattern
+                .get_binding_identifiers()
+                .iter()
+                .filter_map(|id| id.symbol_id.get()),
+        );
+        walk::walk_formal_parameter(self, param);
+    }
+
     fn visit_variable_declarator(&mut self, declarator: &VariableDeclarator<'a>) {
         self.visit_binding_pattern(&declarator.id);
         if let Some(init) = &declarator.init {
-            self.declared_as = match (&declarator.id, init) {
-                (
-                    BindingPattern::BindingIdentifier(id),
-                    Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_),
-                ) => id.symbol_id.get(),
+            self.declared_as = match &declarator.id {
+                BindingPattern::BindingIdentifier(id) if Self::named_function(init) => id.symbol_id.get(),
                 _ => None,
             };
             self.visit_expression(init);
         }
+    }
+
+    fn visit_assignment_expression(&mut self, assign: &AssignmentExpression<'a>) {
+        self.visit_assignment_target(&assign.left);
+        self.declared_as = match &assign.left {
+            AssignmentTarget::AssignmentTargetIdentifier(target) if Self::named_function(&assign.right) => target
+                .reference_id
+                .get()
+                .and_then(|reference| self.scoping.get_reference(reference).symbol_id()),
+            _ => None,
+        };
+        self.visit_expression(&assign.right);
     }
 
     fn visit_function(&mut self, func: &Function<'a>, flags: ScopeFlags) {
@@ -141,44 +227,72 @@ impl<'a> Visit<'a> for Owners<'_> {
     }
 
     fn visit_identifier_reference(&mut self, ident: &IdentifierReference<'a>) {
-        let Some(symbol) = self.scoping.get_reference(ident.reference_id()).symbol_id() else {
+        let Some(symbol) = ident
+            .reference_id
+            .get()
+            .and_then(|reference| self.scoping.get_reference(reference).symbol_id())
+        else {
             return;
         };
+        self.tick += 1;
+        let tick = self.tick;
         self.extents
             .entry(symbol)
-            .and_modify(|extent| *extent = extent.merge(ident.span))
-            .or_insert(ident.span);
+            .and_modify(|(first, last)| {
+                *first = (*first).min(tick);
+                *last = (*last).max(tick);
+            })
+            .or_insert((tick, tick));
         if let Some(owner) = self.owner {
             self.references.entry(owner).or_default().push(symbol);
         }
     }
 }
 
-struct Early<'s, 'r> {
+struct Early<'s, 'o> {
     scoping: &'s Scoping,
-    references: &'r FxHashMap<SymbolId, Vec<SymbolId>>,
-    extents: &'r FxHashMap<SymbolId, Span>,
+    owners: &'o Owners<'s>,
+    /// Functions earlier code may call without naming them.
+    global_owners: Vec<SymbolId>,
     found: FxHashSet<SymbolId>,
     budget: usize,
 }
 
-impl Early<'_, '_> {
+impl<'s, 'o> Early<'s, 'o> {
+    fn reached(&self) -> Reached<'o> {
+        let owners: &'o Owners<'s> = self.owners;
+        Reached {
+            references: &owners.references,
+            symbols: FxHashSet::default(),
+            expanded: FxHashSet::default(),
+            unnamed_calls: false,
+            escaped: Vec::new(),
+        }
+    }
+
     /// Records the bindings `body`'s top-level statements set before code
     /// that could read them runs.
     fn body(&mut self, body: &[Statement<'_>]) {
-        let Some(last_setter) = body.iter().rposition(|stmt| self.sets_inert_value(stmt)) else {
+        if body.iter().any(|stmt| self.sets_inert_value(stmt)) {
+            let mut reached = self.reached();
+            self.list(body, &mut reached, false);
+        }
+    }
+
+    /// Runs `body` after the code `reached` stands for, recording the
+    /// bindings it sets early. With `to_end`, every statement is added to
+    /// `reached`, for code that may run after it (a later `case`).
+    fn list(&mut self, body: &[Statement<'_>], reached: &mut Reached<'_>, to_end: bool) {
+        let last_setter = body.iter().rposition(|stmt| self.sets_inert_value(stmt));
+        let end = if to_end {
+            body.len()
+        } else {
+            last_setter.map_or(0, |last| last + 1)
+        };
+        let Some(&list) = self.owners.lists.get(&list_key(body)) else {
             return;
         };
-        let (Some(first), Some(end)) = (body.first(), body.last()) else {
-            return;
-        };
-        let list = Span::new(first.span().start, end.span().end);
-        let mut reached = Reached {
-            references: self.references,
-            symbols: FxHashSet::default(),
-            expanded: FxHashSet::default(),
-        };
-        for stmt in &body[..=last_setter] {
+        for stmt in &body[..end] {
             match stmt {
                 Statement::FunctionDeclaration(_) | Statement::EmptyStatement(_) => {}
                 Statement::VariableDeclaration(decl)
@@ -188,13 +302,13 @@ impl Early<'_, '_> {
                     ) =>
                 {
                     for declarator in &decl.declarations {
-                        self.declarator(declarator, list, &mut reached);
+                        self.declarator(declarator, list, reached);
                     }
                 }
                 Statement::ExpressionStatement(stmt) if let Some(symbol) = self.inert_assignment(&stmt.expression) => {
-                    self.set(symbol, list, &reached);
+                    self.set(symbol, list, reached);
                 }
-                stmt => self.run(&mut reached, |collect| collect.visit_statement(stmt)),
+                stmt => self.run(reached, |collect| collect.visit_statement(stmt)),
             }
             if self.budget == 0 {
                 return;
@@ -202,7 +316,7 @@ impl Early<'_, '_> {
         }
     }
 
-    fn declarator(&mut self, declarator: &VariableDeclarator<'_>, list: Span, reached: &mut Reached<'_>) {
+    fn declarator(&mut self, declarator: &VariableDeclarator<'_>, list: (u32, u32), reached: &mut Reached<'_>) {
         match (&declarator.id, &declarator.init) {
             (BindingPattern::BindingIdentifier(_), None) => {}
             (BindingPattern::BindingIdentifier(id), Some(init)) if is_inert_value(init) => {
@@ -216,12 +330,20 @@ impl Early<'_, '_> {
 
     /// Records `symbol`, set by a statement of `list`, when every reference
     /// to it is in `list` and no code of `list` that ran before may read it.
-    fn set(&mut self, symbol: SymbolId, list: Span, reached: &Reached<'_>) {
+    ///
+    /// When a reference lies outside `list`, code there may read the value
+    /// set here once control leaves `list`, also when it stops before a later
+    /// statement (a `return`, `break` or `throw`). The function it holds then
+    /// counts as reached from the next code that runs on.
+    fn set(&mut self, symbol: SymbolId, (start, end): (u32, u32), reached: &mut Reached<'_>) {
         let inside = self
+            .owners
             .extents
             .get(&symbol)
-            .is_none_or(|extent| list.contains_inclusive(*extent));
-        if self.budget > 0 && inside && !reached.symbols.contains(&symbol) {
+            .is_none_or(|&(first, last)| start <= first && last <= end);
+        if !inside {
+            reached.escaped.push(symbol);
+        } else if self.budget > 0 && !self.owners.params.contains(&symbol) && !reached.symbols.contains(&symbol) {
             self.found.insert(symbol);
         }
     }
@@ -235,6 +357,13 @@ impl Early<'_, '_> {
         };
         visit(&mut collect);
         self.budget = collect.budget;
+        collect.symbols.append(&mut reached.escaped);
+        if !reached.unnamed_calls {
+            // Any code may call a function bound to a global, or an Annex B
+            // block function, without naming it.
+            reached.unnamed_calls = true;
+            collect.symbols.extend(self.global_owners.iter().copied());
+        }
         reached.extend(collect.symbols, &mut self.budget);
     }
 
@@ -257,10 +386,11 @@ impl Early<'_, '_> {
         let AssignmentTarget::AssignmentTargetIdentifier(target) = &assign.left else {
             return None;
         };
-        let symbol = self.scoping.get_reference(target.reference_id()).symbol_id()?;
+        let symbol = self.scoping.get_reference(target.reference_id.get()?).symbol_id()?;
         (assign.operator == AssignmentOperator::Assign
             && is_inert_value(&assign.right)
-            && self.scoping.symbol_flags(symbol).is_function_scoped_declaration())
+            && self.scoping.symbol_flags(symbol).is_function_scoped_declaration()
+            && !self.owners.params.contains(&symbol))
         .then_some(symbol)
     }
 }
@@ -280,18 +410,50 @@ impl<'a> Visit<'a> for Early<'_, '_> {
         walk::walk_block_statement(self, block);
     }
 
-    fn visit_switch_case(&mut self, case: &SwitchCase<'a>) {
-        if self.budget > 0 {
-            self.body(&case.consequent);
-        }
-        walk::walk_switch_case(self, case);
-    }
-
     fn visit_static_block(&mut self, block: &StaticBlock<'a>) {
         if self.budget > 0 {
             self.body(&block.body);
         }
         walk::walk_static_block(self, block);
+    }
+
+    /// A case's statements run after the discriminant, possibly every case
+    /// test, the statements of the cases before it (falling through), and any
+    /// function declared in the switch.
+    fn visit_switch_statement(&mut self, switch: &SwitchStatement<'a>) {
+        if self.budget > 0
+            && switch
+                .cases
+                .iter()
+                .any(|case| case.consequent.iter().any(|stmt| self.sets_inert_value(stmt)))
+        {
+            let mut reached = self.reached();
+            self.run(&mut reached, |collect| {
+                collect.visit_expression(&switch.discriminant);
+                for test in switch.cases.iter().filter_map(|case| case.test.as_ref()) {
+                    collect.visit_expression(test);
+                }
+            });
+            // A function declared in any case is hoisted to the whole switch,
+            // so a later case jumped to directly may call it first.
+            let hoisted = switch
+                .cases
+                .iter()
+                .flat_map(|case| &case.consequent)
+                .filter_map(|stmt| match stmt {
+                    Statement::FunctionDeclaration(func) => func.id.as_ref()?.symbol_id.get(),
+                    _ => None,
+                })
+                .collect();
+            reached.extend(hoisted, &mut self.budget);
+            for case in &switch.cases {
+                if self.budget == 0 {
+                    break;
+                }
+                self.list(&case.consequent, &mut reached, true);
+            }
+        }
+        walk::walk_switch_statement(self, switch);
     }
 }
 
@@ -301,6 +463,11 @@ struct Reached<'r> {
     references: &'r FxHashMap<SymbolId, Vec<SymbolId>>,
     symbols: FxHashSet<SymbolId>,
     expanded: FxHashSet<SymbolId>,
+    /// The functions code may call without naming them were added.
+    unnamed_calls: bool,
+    /// Bindings set to a function that code outside the list may call once
+    /// control leaves it, added when the next code runs.
+    escaped: Vec<SymbolId>,
 }
 
 impl Reached<'_> {
@@ -335,7 +502,11 @@ impl<'a> Visit<'a> for Collect<'_> {
     }
 
     fn visit_identifier_reference(&mut self, ident: &IdentifierReference<'a>) {
-        if let Some(symbol) = self.scoping.get_reference(ident.reference_id()).symbol_id() {
+        if let Some(symbol) = ident
+            .reference_id
+            .get()
+            .and_then(|reference| self.scoping.get_reference(reference).symbol_id())
+        {
             self.symbols.push(symbol);
         }
     }
@@ -378,7 +549,11 @@ mod tests {
              var f = function (a) { return a; }; function main() { return f(1); }",
             "var n = h(), f = function (a) { return a; };",
             "class C {} var f = function (a) { return a; };",
-            // In a block or case run before every reference.
+            // Stored where later code may read it, with no code before `f` is set.
+            "var x; function g() { x = function () { return f(1); }; var f = function (a) { return a; }; } x();",
+            // In a block or case run before every reference, also after earlier
+            // cases' tests and statements that do not reach it.
+            "function g(x) { switch (x) { case 0: h(); case 1: var f = function (a) { return a; }; return f(1); } }",
             "function g(x) { switch (x) { case 1: { h(); var f = function (a) { return a; }; return f(1); } } }",
             "function g() { for (;;) { h(); var f; f = function (a) { return a; }; f(1); } }",
         ] {
@@ -401,6 +576,13 @@ mod tests {
             // Referenced outside the statement list that sets it.
             "if (x) { var f = function (a) { return a; }; } f(1);",
             "switch (x) { case 1: var f = function (a) { return a; }; case 2: f(1); }",
+            // Function declarations and case tests of a switch run before its
+            // cases, and a later case may be jumped to first.
+            "'use strict'; function r(n) { switch (n) { case 1: var f = function (a) { return a; }; function g() { f(1); } break; case 0: g(); } }",
+            "function r(n) { switch (n) { case 0: g(); case 1: var f = function (a) { return a; }; function g() { f(1); } } }",
+            "function r(n) { switch (n) { case g(): break; case 1: var f = function (a) { return a; }; function g() { f(1); } } }",
+            // Read later through an outer binding, after an early `return`.
+            "var x; function g(c) { x = function () { return f(1); }; if (c) return; var f = function (a) { return a; }; } x();",
             // Read again by an earlier statement of a loop body.
             "for (;;) { f(1); var f = function (a) { return a; }; }",
             "var f; function g() { f = function (a) { return a; }; } f(1);",
@@ -411,12 +593,38 @@ mod tests {
     }
 
     #[test]
+    fn parameters_are_reachable_through_arguments() {
+        let code =
+            "function o(p) { p = function () { return f(1); }; arguments[0](); var f = function (a) { return a; }; }";
+        let found = early(code, SourceType::cjs());
+        assert!(!found.iter().any(|name| name == "f" || name == "p"), "{found:?}");
+    }
+
+    #[test]
+    fn script_globals_are_reachable_without_a_name() {
+        let code = "{ var x = function () { return f(1); }; globalThis.x(); let f = function (a) { return a; }; }";
+        assert!(!early(code, SourceType::script()).iter().any(|name| name == "f"));
+        assert!(early(code, SourceType::cjs()).iter().any(|name| name == "f"));
+        // A call may reach an Annex B block function through the `var` it
+        // also assigns, whichever binding the call resolves to.
+        let code = "function g() { { function x() { return f(1); } } x(); let f = (a) => a; }";
+        assert!(!early(code, SourceType::cjs()).iter().any(|name| name == "f"));
+    }
+
+    #[test]
     fn imports_may_call_back_before_the_module_body_runs() {
         let code = "var f = function (a) { return a; }; export function g() { return f(1); }";
         assert_eq!(early(code, SourceType::mjs()), ["f"]);
-        assert_eq!(
-            early(&format!("import './cycle.js'; {code}"), SourceType::mjs()),
-            Vec::<String>::new()
-        );
+        for request in [
+            "import './cycle.js';",
+            "export * from './cycle.js';",
+            "export { h } from './cycle.js';",
+        ] {
+            assert_eq!(
+                early(&format!("{request} {code}"), SourceType::mjs()),
+                Vec::<String>::new(),
+                "{request}"
+            );
+        }
     }
 }
