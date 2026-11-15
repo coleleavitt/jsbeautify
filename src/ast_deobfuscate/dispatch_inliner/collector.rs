@@ -5,7 +5,7 @@ use oxc_ast::ast::{
 use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::reference::ReferenceId;
-use oxc_syntax::scope::ScopeId;
+use oxc_syntax::scope::{ScopeFlags, ScopeId};
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Ancestor, Traverse};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -75,6 +75,9 @@ pub struct DispatchInlinerCollector {
     /// The `f()[k]` reads that leave the array alone, by callee reference.
     element_reads: FxHashMap<ReferenceId, ElementRead>,
     eval_scopes: Vec<ScopeId>,
+    /// A `this` that may be the global object, or a `.constructor` read,
+    /// which reaches `Function`.
+    global_object_used: bool,
     /// Parameter bindings, which sloppy-mode `arguments[i]` also writes.
     parameters: FxHashSet<SymbolId>,
     /// Scopes of function declarations, which are hoisted.
@@ -333,6 +336,24 @@ impl DispatchInlinerCollector {
         pure
     }
 
+    /// Whether `this` here may be the global object: in a sloppy-mode
+    /// function called without a receiver, or at the top level of a script.
+    fn this_may_be_global(ctx: &Ctx<'_>) -> bool {
+        let scoping = ctx.scoping();
+        for scope in ctx.ancestor_scopes() {
+            let flags = scoping.scope_flags(scope);
+            if flags.is_arrow() {
+                continue;
+            }
+            if flags.is_function() || flags.contains(ScopeFlags::ClassStaticBlock) {
+                return !flags.is_strict_mode();
+            }
+        }
+        ctx.ancestors()
+            .last()
+            .is_some_and(|program| matches!(program, Ancestor::ProgramBody(p) if p.source_type().is_script()))
+    }
+
     /// Whether an `f()[k]` read whose member expression has these ancestors
     /// only reads the element.
     fn reads_element_only(ctx: &Ctx<'_>) -> bool {
@@ -473,7 +494,7 @@ struct Guards<'s> {
 }
 
 impl<'s> Guards<'s> {
-    fn new(program: &Program<'_>, scoping: &'s Scoping, eval_scopes: &[ScopeId]) -> Self {
+    fn new(program: &Program<'_>, scoping: &'s Scoping, eval_scopes: &[ScopeId], global_object_used: bool) -> Self {
         let mut eval_visible = FxHashSet::default();
         for &scope in eval_scopes {
             for ancestor in scoping.scope_ancestors(scope) {
@@ -488,9 +509,10 @@ impl<'s> Guards<'s> {
             eval_visible,
             with_bodies: scopes_in_with_bodies(scoping),
             source_type: program.source_type,
-            global_object_reachable: GLOBAL_OBJECT_NAMES
-                .iter()
-                .any(|&name| scoping.root_unresolved_references().contains_key(name)),
+            global_object_reachable: global_object_used
+                || GLOBAL_OBJECT_NAMES
+                    .iter()
+                    .any(|&name| scoping.root_unresolved_references().contains_key(name)),
         }
     }
 
@@ -598,7 +620,15 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
                     self.eval_scopes.push(ctx.current_scope_id());
                 }
             }
+            Expression::ThisExpression(_) => {
+                self.global_object_used |= Self::this_may_be_global(ctx);
+            }
+            Expression::StaticMemberExpression(member) => {
+                self.global_object_used |= member.property.name == "constructor";
+            }
             Expression::ComputedMemberExpression(cme) => {
+                self.global_object_used |=
+                    matches!(&cme.expression, Expression::StringLiteral(key) if key.value == "constructor");
                 if let Expression::CallExpression(call) = &cme.object
                     && call.arguments.is_empty()
                     && let Expression::Identifier(callee) = &call.callee
@@ -617,7 +647,7 @@ impl<'a> Traverse<'a, DeobfuscateState> for DispatchInlinerCollector {
     }
 
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut Ctx<'a>) {
-        let guards = Guards::new(program, ctx.scoping(), &self.eval_scopes);
+        let guards = Guards::new(program, ctx.scoping(), &self.eval_scopes, self.global_object_used);
         self.constants.hoisting = Hoisting::new(ctx.scoping(), &self.declaration_scopes);
         self.resolve_constants(&guards);
         self.resolve_factories(&guards);

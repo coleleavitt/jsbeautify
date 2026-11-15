@@ -337,8 +337,19 @@ fn keeps_reads_code_may_reach_before_or_around_the_definition() {
         r#"function f(){return ["a","b"];} N = 0; globalThis.N = 1; f()[N];"#,
         r#"function f(){return ["a","b"];} N = 0; (0, eval)("N = 1"); f()[N];"#,
         r#"function f(){return ["a","b"];} N = 0; Function("N = 1")(); f()[N];"#,
+        r#"function f(){return ["a","b"];} N = 0; "".constructor.constructor("N = 1")(); f()[N];"#,
+        // A sloppy-mode function or method called without a receiver gets the global object.
+        r#"function f(){return ["a","b"];} N = 0; (function(){ this.N = 1; })(); f()[N];"#,
+        r#"function f(){return ["a","b"];} N = 0; var o = { m() { this.N = 1; } }; var m = o.m; m(); f()[N];"#,
     ] {
         let out = run_script(code);
         assert!(out.contains("()["), "a call site was inlined in {code}:\n{out}");
     }
+}
+
+#[test]
+fn resolves_globals_when_this_is_not_the_global_object() {
+    let code = r#"function f(){return ["a","b"];} N = 1; var g = () => this; (function(){ "use strict"; return this; })(); var r = f()[N];"#;
+    let out = run_script(code);
+    assert!(out.contains(r#"r = "b""#), "got: {out}");
 }

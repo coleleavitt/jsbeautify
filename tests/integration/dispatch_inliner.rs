@@ -161,6 +161,14 @@ const CASES: &[(&str, &str)] = &[
         r#"function f(){return ["a","b"];} N = 0; Function("N = 1")(); console.log(f()[N]);"#,
         "b",
     ),
+    (
+        r#"function f(){return ["a","b"];} N = 0; (function(){ this.N = 1; })(); console.log(f()[N]);"#,
+        "b",
+    ),
+    (
+        r#"function f(){return ["a","b"];} N = 0; "".constructor.constructor("N = 1")(); console.log(f()[N]);"#,
+        "b",
+    ),
 ];
 
 /// Factories and constants that nothing else can change are still decoded.
