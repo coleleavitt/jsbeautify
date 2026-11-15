@@ -11,6 +11,7 @@ use super::names::{
     is_likely_generated_alias, is_meaningful_short, is_single_char_mangled, is_usable_base, pick_readable,
 };
 use super::types::{LocalRenamePlanStats, RenameMode};
+use crate::ast_deobfuscate::scope_tree::ScopeTree;
 
 /// Plan collision-free, scope-safe rename names for minified locals.
 ///
@@ -142,7 +143,7 @@ pub fn plan_local_renames_with_stats(
     // Open scopes on the current root path, innermost last.
     let mut path: Vec<OpenScope> = Vec::new();
     for pos in 0..scope_count {
-        let last = tree.last[pos];
+        let last = tree.last(pos);
         while let Some(open) = path.pop_if(|open| open.last < pos) {
             for id in declared[open.pos].iter().map(|b| b.id).chain(open.assigned) {
                 names.unblock(id);
@@ -232,57 +233,6 @@ struct OpenScope {
     pos: usize,
     last: usize,
     assigned: Vec<usize>,
-}
-
-/// The scope tree in preorder. A subtree is the position range
-/// `[position(scope), last[position(scope)]]`.
-struct ScopeTree {
-    position_of: Vec<usize>,
-    last: Vec<usize>,
-}
-
-impl ScopeTree {
-    fn new(scoping: &Scoping) -> Self {
-        let len = scoping.scopes_len();
-        let mut children: Vec<Vec<ScopeId>> = vec![Vec::new(); len];
-        let mut roots = Vec::new();
-        for scope in scoping.scope_descendants_from_root() {
-            match scoping.scope_parent_id(scope) {
-                Some(parent) => children[parent.index()].push(scope),
-                None => roots.push(scope),
-            }
-        }
-        let mut position_of = vec![0; len];
-        let mut last = vec![0; len];
-        let mut visited = 0;
-        // Explicit stack: nesting depth comes from the input.
-        let mut stack: Vec<(ScopeId, usize)> = Vec::new();
-        for root in roots {
-            position_of[root.index()] = visited;
-            visited += 1;
-            stack.push((root, 0));
-            while let Some((scope, next_child)) = stack.last_mut() {
-                if let Some(&child) = children[scope.index()].get(*next_child) {
-                    *next_child += 1;
-                    position_of[child.index()] = visited;
-                    visited += 1;
-                    stack.push((child, 0));
-                } else {
-                    last[position_of[scope.index()]] = visited - 1;
-                    stack.pop();
-                }
-            }
-        }
-        Self { position_of, last }
-    }
-
-    const fn len(&self) -> usize {
-        self.last.len()
-    }
-
-    fn position(&self, scope: ScopeId) -> usize {
-        self.position_of[scope.index()]
-    }
 }
 
 /// Per-name blocking state, keyed by an interned id.

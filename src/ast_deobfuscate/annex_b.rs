@@ -7,6 +7,8 @@ use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::ast_deobfuscate::scope_tree::ScopeTree;
+
 /// Bindings whose references may read a sloppy-mode block function at
 /// runtime, so a pass must not treat a reference to them as reaching their
 /// own declaration.
@@ -25,27 +27,41 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub fn annex_b_shadowed_symbols(program: &Program<'_>, scoping: &Scoping) -> FxHashSet<SymbolId> {
     let mut finder = BlockFunctions {
         scoping,
-        scopes: FxHashMap::default(),
+        declaring: FxHashMap::default(),
     };
     finder.visit_program(program);
-    if finder.scopes.is_empty() {
+    if finder.declaring.is_empty() {
         return FxHashSet::default();
     }
+    let tree = ScopeTree::new(scoping);
+    // Per name, the sorted tree positions of the scopes declaring one.
+    let declaring: FxHashMap<&str, Vec<usize>> = finder
+        .declaring
+        .into_iter()
+        .map(|(name, scopes)| {
+            let mut positions: Vec<usize> = scopes.into_iter().map(|scope| tree.position(scope)).collect();
+            positions.sort_unstable();
+            (name, positions)
+        })
+        .collect();
+    // A binding is shadowed when a same-named block function is declared in
+    // its scope or a descendant: a position in its scope's subtree.
     scoping
         .symbol_ids()
         .filter(|&symbol| {
-            finder
-                .scopes
-                .get(scoping.symbol_name(symbol))
-                .is_some_and(|scopes| scopes.contains(&scoping.symbol_scope_id(symbol)))
+            declaring.get(scoping.symbol_name(symbol)).is_some_and(|positions| {
+                let subtree = tree.subtree(scoping.symbol_scope_id(symbol));
+                let first = positions.partition_point(|position| position < subtree.start());
+                positions.get(first).is_some_and(|position| subtree.contains(position))
+            })
         })
         .collect()
 }
 
 struct BlockFunctions<'s> {
     scoping: &'s Scoping,
-    /// Per block-function name, the scopes declaring one and their ancestors.
-    scopes: FxHashMap<&'s str, FxHashSet<ScopeId>>,
+    /// Per block-function name, the scopes declaring one.
+    declaring: FxHashMap<&'s str, Vec<ScopeId>>,
 }
 
 impl BlockFunctions<'_> {
@@ -75,14 +91,10 @@ impl BlockFunctions<'_> {
         if func.r#async || func.generator || self.scoping.scope_flags(declaring).is_strict_mode() {
             return;
         }
-        let scoping = self.scoping;
-        let scopes = self.scopes.entry(scoping.symbol_name(symbol)).or_default();
-        // An ancestor already recorded for this name has its ancestors recorded too.
-        for scope in scoping.scope_ancestors(declaring) {
-            if !scopes.insert(scope) {
-                break;
-            }
-        }
+        self.declaring
+            .entry(self.scoping.symbol_name(symbol))
+            .or_default()
+            .push(declaring);
     }
 }
 
@@ -110,6 +122,7 @@ mod tests {
     use oxc_span::SourceType;
 
     use super::annex_b_shadowed_symbols;
+    use crate::ast_deobfuscate::scaling::assert_near_linear;
     use crate::ast_deobfuscate::semantic;
 
     /// The shadowed bindings as `name@offset`, in declaration order.
@@ -164,5 +177,27 @@ mod tests {
         let code = "function h() { function f() {} } function g() { { function f() {} } }";
         let inner = code.rfind("f() {}").unwrap();
         assert_eq!(shadowed(code), [format!("f@{inner}")]);
+    }
+
+    #[test]
+    fn nested_blocks_with_distinct_functions_scale_linearly() {
+        assert_near_linear("annex_b_shadowed_symbols", 500, |n| {
+            let code = format!(
+                "{}{}",
+                (0..n)
+                    .map(|i| format!("{{ function a_{i}() {{}} h(); var v_{i} = 1; "))
+                    .collect::<Vec<_>>()
+                    .concat(),
+                "}".repeat(n)
+            );
+            let allocator = Allocator::default();
+            let program = Parser::new(&allocator, &code, SourceType::cjs()).parse().program;
+            let scoping = semantic::scoping(&program);
+            let started = std::time::Instant::now();
+            let shadowed = annex_b_shadowed_symbols(&program, &scoping);
+            let elapsed = started.elapsed();
+            assert_eq!(shadowed.len(), n);
+            elapsed
+        });
     }
 }

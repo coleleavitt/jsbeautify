@@ -110,6 +110,7 @@ pub(crate) mod rename_planner;
 pub(crate) mod return_sequence_split;
 #[cfg(test)]
 pub(crate) mod scaling;
+pub(crate) mod scope_tree;
 pub(crate) mod self_init_accessor;
 pub(crate) mod semantic;
 pub(crate) mod sequence_expression_split;
