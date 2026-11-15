@@ -60,11 +60,11 @@ impl AstDeobfuscator {
 
     fn run_akamai_core<'a>(allocator: &'a Allocator, program: &mut Program<'a>, akamai: &mut AkamaiDeobfuscator) {
         eprintln!("[DEOBFUSCATE] Phase 0.5a: Akamai stack-tracker removal");
-        akamai.tracker_remover.detect(program);
+        let scoping = semantic::scoping(program);
+        akamai.tracker_remover.detect(program, &scoping);
         if akamai.tracker_remover.tracker_names().is_empty() {
             eprintln!("[DEOBFUSCATE] Phase 0.5a: No pure stack-tracker variable identified");
         } else {
-            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             traverse_mut_with_ctx(&mut akamai.tracker_remover, program, &mut ctx);
             eprintln!(
@@ -89,13 +89,13 @@ impl AstDeobfuscator {
         );
 
         eprintln!("[DEOBFUSCATE] Phase 0.5c: Akamai equality-proxy unwrapping");
-        akamai.eq_unwrapper.collect(program);
+        let scoping = semantic::scoping(program);
+        akamai.eq_unwrapper.collect(program, &scoping);
         eprintln!(
             "[DEOBFUSCATE] Phase 0.5c: Found {} equality-proxy functions",
             akamai.eq_unwrapper.proxies().len()
         );
         if !akamai.eq_unwrapper.proxies().is_empty() {
-            let scoping = semantic::scoping(program);
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             traverse_mut_with_ctx(&mut akamai.eq_unwrapper, program, &mut ctx);
             eprintln!(

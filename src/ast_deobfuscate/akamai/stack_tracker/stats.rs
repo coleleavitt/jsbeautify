@@ -1,193 +1,207 @@
-use oxc_allocator::Vec as OxcVec;
-use oxc_ast::ast::{ArrayExpressionElement, BindingPattern, Expression, Statement};
-use rustc_hash::FxHashMap;
+use oxc_ast::ast::{
+    Argument, ArrayExpressionElement, AssignmentOperator, AssignmentTarget, Declaration, ExportDeclaration, Expression,
+    ExpressionStatement, IdentifierReference, Program, SequenceExpression, UnaryOperator, VariableDeclaration,
+    VariableDeclarationKind,
+};
+use oxc_ast_visit::{Visit, walk};
+use oxc_semantic::Scoping;
+use oxc_syntax::reference::ReferenceId;
+use oxc_syntax::scope::ScopeId;
+use oxc_syntax::symbol::{SymbolFlags, SymbolId};
+use rustc_hash::{FxHashMap, FxHashSet};
 
-#[derive(Default, Debug)]
-pub(super) struct TrackerStats {
-    pub(super) declared: bool,
-    /// `Ot.push(...)` / `Ot.pop(...)` / `Ot.splice(...)` calls.
-    pub(super) write_calls: usize,
-    /// Any other use — read access, comparison, assignment other than these calls.
-    pub(super) reads: usize,
+use crate::ast_deobfuscate::with_scope::{redirectable_symbols, scopes_in_with_bodies};
+
+use super::super::only_local_access;
+
+/// Fewest `.push` / `.pop` / `.splice` calls that make a binding a tracker.
+const MIN_TRACKER_CALLS: usize = 4;
+
+/// A use of a tracker binding that can be deleted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Op {
+    /// `S.push(…)`, `S.pop()` or `S.splice(…)`.
+    Call,
+    /// `S = […]`.
+    Reset,
 }
 
-impl TrackerStats {
-    pub(super) const fn is_pure_tracker(&self) -> bool {
-        self.declared && self.reads == 0 && self.write_calls >= 4
-    }
-}
-
-pub(super) fn collect_tracker_stats<'a>(stmts: &OxcVec<'a, Statement<'a>>, map: &mut FxHashMap<String, TrackerStats>) {
-    for stmt in stmts {
-        scan_stmt_for_tracker(stmt, map);
-    }
-}
-
-fn scan_stmt_for_tracker(stmt: &Statement<'_>, map: &mut FxHashMap<String, TrackerStats>) {
-    match stmt {
-        Statement::VariableDeclaration(decl) => {
-            for d in &decl.declarations {
-                if let BindingPattern::BindingIdentifier(id) = &d.id
-                    && d.init.is_none()
-                {
-                    // `var Ot;` — candidate.
-                    map.entry(id.name.as_str().to_string()).or_default().declared = true;
-                }
-                if let Some(init) = &d.init {
-                    scan_expr_for_tracker(init, map);
-                }
-            }
-        }
-        Statement::ExpressionStatement(es) => scan_expr_for_tracker(&es.expression, map),
-        Statement::ReturnStatement(ret) => {
-            if let Some(arg) = &ret.argument {
-                scan_expr_for_tracker(arg, map);
-            }
-        }
-        Statement::IfStatement(ifs) => {
-            scan_expr_for_tracker(&ifs.test, map);
-            scan_stmt_for_tracker(&ifs.consequent, map);
-            if let Some(alt) = &ifs.alternate {
-                scan_stmt_for_tracker(alt, map);
-            }
-        }
-        Statement::BlockStatement(block) => collect_tracker_stats(&block.body, map),
-        Statement::TryStatement(t) => {
-            collect_tracker_stats(&t.block.body, map);
-            if let Some(h) = &t.handler {
-                collect_tracker_stats(&h.body.body, map);
-            }
-            if let Some(f) = &t.finalizer {
-                collect_tracker_stats(&f.body, map);
-            }
-        }
-        Statement::ForStatement(f) => {
-            if let Some(body) = &f.init {
-                if let oxc_ast::ast::ForStatementInit::VariableDeclaration(vd) = body {
-                    for d in &vd.declarations {
-                        if let Some(init) = &d.init {
-                            scan_expr_for_tracker(init, map);
-                        }
-                    }
-                } else if let Some(expr) = body.as_expression() {
-                    scan_expr_for_tracker(expr, map);
-                }
-            }
-            scan_stmt_for_tracker(&f.body, map);
-        }
-        Statement::WhileStatement(w) => {
-            scan_expr_for_tracker(&w.test, map);
-            scan_stmt_for_tracker(&w.body, map);
-        }
-        Statement::DoWhileStatement(d) => {
-            scan_expr_for_tracker(&d.test, map);
-            scan_stmt_for_tracker(&d.body, map);
-        }
-        Statement::SwitchStatement(s) => {
-            scan_expr_for_tracker(&s.discriminant, map);
-            for case in &s.cases {
-                if let Some(t) = &case.test {
-                    scan_expr_for_tracker(t, map);
-                }
-                collect_tracker_stats(&case.consequent, map);
-            }
-        }
-        Statement::FunctionDeclaration(func) => {
-            if let Some(body) = &func.body {
-                collect_tracker_stats(&body.statements, map);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn scan_expr_for_tracker(expr: &Expression<'_>, map: &mut FxHashMap<String, TrackerStats>) {
+/// The binding `expr` operates on when it has a tracker operation's shape.
+fn op<'b, 'a>(expr: &'b Expression<'a>) -> Option<(&'b IdentifierReference<'a>, Op)> {
     match expr {
-        Expression::CallExpression(call) => {
-            // Check for `<ident>.{push,pop,splice}(...)` tracker write.
-            if let Expression::StaticMemberExpression(sme) = &call.callee
-                && let Expression::Identifier(id) = &sme.object
-                && matches!(sme.property.name.as_str(), "push" | "pop" | "splice")
-            {
-                map.entry(id.name.as_str().to_string()).or_default().write_calls += 1;
-                // Arguments may contain other expressions; scan them.
-                for arg in &call.arguments {
-                    if let Some(e) = arg.as_expression() {
-                        scan_expr_for_tracker(e, map);
-                    }
+        Expression::CallExpression(call) if !call.optional => {
+            let Expression::StaticMemberExpression(member) = &call.callee else {
+                return None;
+            };
+            let Expression::Identifier(target) = &member.object else {
+                return None;
+            };
+            (!member.optional && matches!(member.property.name.as_str(), "push" | "pop" | "splice"))
+                .then_some((target, Op::Call))
+        }
+        Expression::AssignmentExpression(assign) if assign.operator == AssignmentOperator::Assign => {
+            match (&assign.left, &assign.right) {
+                (AssignmentTarget::AssignmentTargetIdentifier(target), Expression::ArrayExpression(_)) => {
+                    Some((target, Op::Reset))
                 }
-                return;
+                _ => None,
             }
-            // Any call: scan callee & args normally.
-            scan_expr_for_tracker(&call.callee, map);
-            for arg in &call.arguments {
-                if let Some(e) = arg.as_expression() {
-                    scan_expr_for_tracker(e, map);
+        }
+        _ => None,
+    }
+}
+
+/// Every use of a tracker binding, keyed by reference: the tracker
+/// operations whose value is discarded and whose arguments have no side
+/// effects. A binding is a tracker when every reference to it is one of
+/// these, so deleting them all, and its `var`, is unobservable.
+#[derive(Default)]
+pub(super) struct Trackers {
+    pub(super) symbols: FxHashSet<SymbolId>,
+    pub(super) removable: FxHashSet<ReferenceId>,
+}
+
+impl Trackers {
+    /// Whether `expr` is one of the tracker operations to delete.
+    pub(super) fn is_removable(&self, expr: &Expression<'_>) -> bool {
+        op(expr).is_some_and(|(target, _)| self.removable.contains(&target.reference_id()))
+    }
+}
+
+pub(super) fn find_trackers(program: &Program<'_>, scoping: &Scoping) -> Trackers {
+    let mut uses = Uses {
+        scoping,
+        with_scopes: scopes_in_with_bodies(scoping),
+        declared: FxHashSet::default(),
+        removable: FxHashMap::default(),
+    };
+    uses.visit_program(program);
+    let Uses {
+        declared, removable, ..
+    } = uses;
+    let redirectable = redirectable_symbols(program, scoping);
+    let symbols: FxHashSet<SymbolId> = declared
+        .into_iter()
+        .filter(|&symbol| {
+            let references = scoping.get_resolved_reference_ids(symbol);
+            let ops = || references.iter().filter_map(|id| removable.get(id));
+            references.iter().all(|id| removable.contains_key(id))
+                && ops().filter(|&&op| op == Op::Call).count() >= MIN_TRACKER_CALLS
+                && ops().any(|&op| op == Op::Reset)
+                && only_local_access(program, scoping, &redirectable, symbol)
+        })
+        .collect();
+    let removable = symbols
+        .iter()
+        .flat_map(|&symbol| scoping.get_resolved_reference_ids(symbol).iter().copied())
+        .collect();
+    Trackers { symbols, removable }
+}
+
+struct Uses<'s> {
+    scoping: &'s Scoping,
+    with_scopes: FxHashSet<ScopeId>,
+    /// Bindings of `var S;` declarators.
+    declared: FxHashSet<SymbolId>,
+    removable: FxHashMap<ReferenceId, Op>,
+}
+
+impl Uses<'_> {
+    /// Records `expr`, whose value is discarded, when it is a tracker
+    /// operation without side effects besides the one on its target.
+    fn discarded(&mut self, expr: &Expression<'_>) {
+        let Some((target, op)) = op(expr) else {
+            return;
+        };
+        let pure = match expr {
+            Expression::CallExpression(call) => call.arguments.iter().all(|arg| match arg {
+                Argument::SpreadElement(_) => false,
+                arg => self.is_pure(arg.to_expression()),
+            }),
+            Expression::AssignmentExpression(assign) => match &assign.right {
+                Expression::ArrayExpression(array) => array.elements.iter().all(|element| match element {
+                    ArrayExpressionElement::SpreadElement(_) => false,
+                    ArrayExpressionElement::Elision(_) => true,
+                    element => self.is_pure(element.to_expression()),
+                }),
+                _ => false,
+            },
+            _ => false,
+        };
+        if pure {
+            self.removable.insert(target.reference_id(), op);
+        }
+    }
+
+    /// Evaluating `expr` can neither throw nor run code: a literal, or a read
+    /// of a binding without a temporal dead zone that no `with` object hides.
+    fn is_pure(&self, expr: &Expression<'_>) -> bool {
+        match expr {
+            Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_) => true,
+            Expression::UnaryExpression(unary) => {
+                matches!(unary.operator, UnaryOperator::UnaryNegation | UnaryOperator::UnaryPlus)
+                    && matches!(unary.argument, Expression::NumericLiteral(_))
+            }
+            Expression::Identifier(ident) => {
+                let reference = self.scoping.get_reference(ident.reference_id());
+                !self.with_scopes.contains(&reference.scope_id())
+                    && reference.symbol_id().is_some_and(|symbol| {
+                        self.scoping
+                            .symbol_flags(symbol)
+                            .intersects(SymbolFlags::FunctionScopedVariable | SymbolFlags::Function)
+                    })
+            }
+            Expression::ParenthesizedExpression(paren) => self.is_pure(&paren.expression),
+            _ => false,
+        }
+    }
+}
+
+impl<'a> Visit<'a> for Uses<'_> {
+    fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
+        if decl.kind == VariableDeclarationKind::Var {
+            for declarator in &decl.declarations {
+                if declarator.init.is_none()
+                    && let Some(id) = declarator.id.get_binding_identifier()
+                    && let Some(symbol) = id.symbol_id.get()
+                {
+                    self.declared.insert(symbol);
                 }
             }
         }
-        Expression::Identifier(id) => {
-            map.entry(id.name.as_str().to_string()).or_default().reads += 1;
+        walk::walk_variable_declaration(self, decl);
+    }
+
+    fn visit_export_declaration(&mut self, export: &ExportDeclaration<'a>) {
+        // Importers read an exported `var`, so it is not recorded as declared.
+        if let Declaration::VariableDeclaration(var) = &export.declaration {
+            walk::walk_variable_declaration(self, var);
+        } else {
+            walk::walk_export_declaration(self, export);
         }
-        Expression::ComputedMemberExpression(cme) => {
-            scan_expr_for_tracker(&cme.object, map);
-            scan_expr_for_tracker(&cme.expression, map);
+    }
+
+    fn visit_expression_statement(&mut self, stmt: &ExpressionStatement<'a>) {
+        if let Expression::SequenceExpression(seq) = &stmt.expression {
+            for expr in &seq.expressions {
+                self.discarded(expr);
+                self.visit_expression(expr);
+            }
+        } else {
+            self.discarded(&stmt.expression);
+            walk::walk_expression_statement(self, stmt);
         }
-        Expression::StaticMemberExpression(sme) => {
-            // NB: `sme.object` counts as a read.
-            scan_expr_for_tracker(&sme.object, map);
-        }
-        Expression::BinaryExpression(b) => {
-            scan_expr_for_tracker(&b.left, map);
-            scan_expr_for_tracker(&b.right, map);
-        }
-        Expression::LogicalExpression(l) => {
-            scan_expr_for_tracker(&l.left, map);
-            scan_expr_for_tracker(&l.right, map);
-        }
-        Expression::UnaryExpression(u) => scan_expr_for_tracker(&u.argument, map),
-        Expression::ConditionalExpression(c) => {
-            scan_expr_for_tracker(&c.test, map);
-            scan_expr_for_tracker(&c.consequent, map);
-            scan_expr_for_tracker(&c.alternate, map);
-        }
-        Expression::SequenceExpression(seq) => {
-            for e in &seq.expressions {
-                scan_expr_for_tracker(e, map);
+    }
+
+    fn visit_sequence_expression(&mut self, seq: &SequenceExpression<'a>) {
+        if let Some((_, init)) = seq.expressions.split_last() {
+            for expr in init {
+                self.discarded(expr);
             }
         }
-        Expression::AssignmentExpression(a) => {
-            scan_expr_for_tracker(&a.right, map);
-        }
-        Expression::ArrayExpression(arr) => {
-            for el in &arr.elements {
-                if let ArrayExpressionElement::SpreadElement(s) = el {
-                    scan_expr_for_tracker(&s.argument, map);
-                } else if let Some(e) = el.as_expression() {
-                    scan_expr_for_tracker(e, map);
-                }
-            }
-        }
-        Expression::ObjectExpression(obj) => {
-            for prop in &obj.properties {
-                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
-                    scan_expr_for_tracker(&p.value, map);
-                }
-            }
-        }
-        Expression::FunctionExpression(func) => {
-            if let Some(body) = &func.body {
-                collect_tracker_stats(&body.statements, map);
-            }
-        }
-        Expression::ArrowFunctionExpression(func) => {
-            if let Some(body) = func.body.as_function_body() {
-                collect_tracker_stats(&body.statements, map);
-            } else if let Some(expr) = func.body.as_expression() {
-                scan_expr_for_tracker(expr, map);
-            }
-        }
-        Expression::ParenthesizedExpression(paren) => scan_expr_for_tracker(&paren.expression, map),
-        _ => {}
+        walk::walk_sequence_expression(self, seq);
     }
 }

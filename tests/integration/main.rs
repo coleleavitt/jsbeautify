@@ -8,6 +8,7 @@
 //! Add a new area by dropping a `tests/integration/<area>.rs` file and listing
 //! it in the `mod` block below.
 
+mod akamai;
 mod angular;
 mod annex_b_functions;
 mod beautify;

@@ -34,11 +34,35 @@
 //!
 //! All passes are safe to re-run and skip nodes they do not recognise.
 
+use oxc_ast::ast::Program;
+use oxc_semantic::Scoping;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::TraverseCtx;
+use rustc_hash::FxHashSet;
 
+use crate::ast_deobfuscate::rename_guards::is_global_binding;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 
 pub type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
+
+/// Whether every access to `symbol` at runtime is one of its resolved
+/// references: it is declared once, is not a classic-script global that other
+/// scripts reach by name, no direct `eval` can see it, and it is not in
+/// `redirectable` ([`crate::ast_deobfuscate::with_scope::redirectable_symbols`]:
+/// a `with` object or an Annex B block function may stand in for it).
+fn only_local_access(
+    program: &Program<'_>,
+    scoping: &Scoping,
+    redirectable: &FxHashSet<SymbolId>,
+    symbol: SymbolId,
+) -> bool {
+    scoping.symbol_redeclarations(symbol).is_empty()
+        && !redirectable.contains(&symbol)
+        && !is_global_binding(program.source_type, scoping, symbol)
+        && !scoping
+            .scope_flags(scoping.symbol_scope_id(symbol))
+            .contains_direct_eval()
+}
 
 mod boolean_arithmetic;
 mod detector;
@@ -118,29 +142,97 @@ mod tests {
         assert!(out.contains("undefined"), "expected undefined, got: {out}");
     }
 
+    /// Runs the equality-proxy unwrapper; returns the output and the number
+    /// of unwrapped calls.
+    fn unwrap_eq(code: &str, source_type: SourceType) -> (String, usize) {
+        let allocator = Allocator::default();
+        let ret = Parser::new(&allocator, code, source_type).parse();
+        assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
+        let mut program = ret.program;
+        let scoping = semantic::scoping(&program);
+        let mut unwrapper = EqualityProxyUnwrapper::new();
+        unwrapper.collect(&program, &scoping);
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        traverse_mut_with_ctx(&mut unwrapper, &mut program, &mut ctx);
+        (Codegen::new().build(&program).code, unwrapper.unwrapped_count())
+    }
+
     #[test]
     fn unwraps_equality_proxy() {
         let code = r#"
             var BI = function(a, b) { return a === b; };
-            var x = BI(typeof y, "undefined");
+            function c8(a, b) { return a < b; }
+            var x = BI(typeof y, "undefined"), z = c8(1, 2);
         "#;
-        let allocator = Allocator::default();
-        let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
-        let mut program = ret.program;
-
-        let mut unwrapper = EqualityProxyUnwrapper::new();
-        unwrapper.collect(&program);
-        assert_eq!(unwrapper.proxies().len(), 1);
-        assert_eq!(unwrapper.proxies().get("BI"), Some(&BinaryOperator::StrictEquality));
-
-        let state = DeobfuscateState::new();
-        let scoping = semantic::scoping(&program);
-        let mut ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
-        traverse_mut_with_ctx(&mut unwrapper, &mut program, &mut ctx);
-
-        let out = Codegen::new().build(&program).code;
+        let (out, unwrapped) = unwrap_eq(code, SourceType::mjs());
         assert!(out.contains("typeof y === \"undefined\""), "got: {out}");
-        assert_eq!(unwrapper.unwrapped_count(), 1);
+        assert!(out.contains("z = 1 < 2"), "got: {out}");
+        assert_eq!(unwrapped, 2);
+    }
+
+    #[test]
+    fn equality_proxy_leaves_shadowing_bindings_alone() {
+        let code = r"(function () {
+            var BI = function (a, b) { return a === b; };
+            function g(BI) { return BI(1, 2); }
+            function h() { var BI = function (a, b) { return a !== b; }; return BI(1, 1); }
+            function k(x) { { let BI = function (a, b) { return a < b; }; return BI(x, 2); } }
+            return [g, h, k, BI(3, 3)];
+        })();";
+        let (out, unwrapped) = unwrap_eq(code, SourceType::cjs());
+        assert_eq!(unwrapped, 1, "{out}");
+        assert!(out.contains("3 === 3"), "{out}");
+        assert_eq!(
+            out.matches("BI(1, 2)").count() + out.matches("BI(1, 1)").count(),
+            2,
+            "{out}"
+        );
+        assert!(out.contains("BI(x, 2)"), "{out}");
+    }
+
+    #[test]
+    fn equality_proxy_skips_bindings_reachable_another_way() {
+        for code in [
+            // Reassigned.
+            "(function () { var BI = function (a, b) { return a === b; }; BI = function (a, b) { return a < b; }; return BI(1, 2); })();",
+            // Redeclared.
+            "(function () { var BI = function (a, b) { return a === b; }; var BI = function (a, b) { return a + b; }; return BI(1, 2); })();",
+            // Duplicate parameters: both operands read the second argument.
+            "(function () { var BI = function (a, a) { return a === a; }; return BI(1, 2); })();",
+            // Operands swapped relative to the parameters.
+            "(function () { var BI = function (a, b) { return b < a; }; return BI(1, 2); })();",
+            // A direct eval may assign it, in its own scope or a nested one.
+            "(function () { var BI = function (a, b) { return a === b; }; eval('BI = 0'); return BI(1, 2); })();",
+            "(function () { var BI = function (a, b) { return a === b; }; function z() { eval('BI = 0'); } return BI(1, 2); })();",
+            // A `with` object may hold a property of the same name.
+            "(function () { var BI = function (a, b) { return a === b; }; with (o) { BI(1, 2); } })();",
+            // An Annex B block function of the same name overwrites it.
+            "(function () { function BI(a, b) { return a === b; } { function BI(a, b) { return a + b; } } return BI(1, 2); })();",
+        ] {
+            let (out, unwrapped) = unwrap_eq(code, SourceType::cjs());
+            assert_eq!(unwrapped, 0, "{code}\n{out}");
+        }
+    }
+
+    #[test]
+    fn equality_proxy_skips_classic_script_globals() {
+        let code = "var BI = function (a, b) { return a === b; }; BI(1, 2);";
+        assert_eq!(unwrap_eq(code, SourceType::script()).1, 0);
+        assert_eq!(unwrap_eq(code, SourceType::mjs()).1, 1);
+    }
+
+    /// Runs the stack-tracker remover; returns the output and the trackers.
+    fn strip_tracker(code: &str, source_type: SourceType) -> (String, Vec<String>) {
+        let allocator = Allocator::default();
+        let ret = Parser::new(&allocator, code, source_type).parse();
+        assert!(ret.diagnostics.is_empty(), "{code}: {:?}", ret.diagnostics);
+        let mut program = ret.program;
+        let scoping = semantic::scoping(&program);
+        let mut remover = StackTrackerRemover::new();
+        remover.detect(&program, &scoping);
+        let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, &allocator);
+        traverse_mut_with_ctx(&mut remover, &mut program, &mut ctx);
+        (Codegen::new().build(&program).code, remover.tracker_names().to_vec())
     }
 
     #[test]
@@ -149,23 +241,50 @@ mod tests {
             var Ot;
             Ot = [];
             Ot.push(1);
-            Ot.push(2);
-            Ot.push(3);
+            Ot.push(2), Ot.push(3);
             foo();
             Ot.pop();
-            Ot.splice(0, 1, 9);
+            function f(Zl) { Ot.push(Zl); var r = Zl * 2; return Ot.pop(), r; }
+            Ot.splice(0, 1, -9);
         ";
-        let allocator = Allocator::default();
-        let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
-        let program = ret.program;
+        let (out, trackers) = strip_tracker(code, SourceType::mjs());
+        assert_eq!(trackers, ["Ot"]);
+        assert!(!out.contains("Ot"), "got: {out}");
+        assert!(out.contains("foo()") && out.contains("return r"), "got: {out}");
+    }
 
-        let mut remover = StackTrackerRemover::new();
-        remover.detect(&program);
-        // "Ot" should be detected as tracker because we see an init-less var
-        // declaration and only .push/.pop/.splice writes with 0 reads.
-        // But the `Ot = []` assignment counts as a read... adjust test to
-        // match the stricter definition.
-        let _ = remover;
+    #[test]
+    fn stack_tracker_keeps_bindings_with_other_uses() {
+        let ops = "Ot = []; Ot.push(1); Ot.push(2); Ot.pop(); Ot.pop();";
+        // A parameter of the same name is another array.
+        let (out, trackers) = strip_tracker(
+            &format!("var Ot; {ops} function add(Ot, v) {{ Ot.push(v); }}"),
+            SourceType::mjs(),
+        );
+        assert_eq!(trackers, ["Ot"]);
+        assert!(out.contains("Ot.push(v)") && !out.contains("Ot.pop"), "got: {out}");
+        for code in [
+            // The popped value is used.
+            format!("var Ot; {ops} var x = (0, Ot.pop());"),
+            // Assigned something other than a fresh array.
+            format!("var Ot; {ops} Ot = shared;"),
+            // A pushed argument has side effects or may throw.
+            format!("var Ot; {ops} Ot.push(tick());"),
+            format!("var Ot; {ops} Ot.push(undeclared);"),
+            format!("var Ot; {ops} Ot.push(later); let later = 1;"),
+            // Never reset to an array.
+            "var Ot; Ot.push(1); Ot.push(2); Ot.pop(); Ot.pop();".to_string(),
+            // Redeclared, exported, or visible to a direct eval or a `with` body.
+            format!("var Ot; var Ot; {ops}"),
+            format!("export var Ot; {ops}"),
+            format!("var Ot; {ops} eval('Ot');"),
+            format!("var Ot; {ops} with (o) {{ Ot.pop(); }}"),
+        ] {
+            let (out, trackers) = strip_tracker(&code, SourceType::mjs());
+            assert!(trackers.is_empty(), "{code}\n{out}");
+        }
+        let (_, trackers) = strip_tracker(&format!("var Ot; {ops}"), SourceType::script());
+        assert!(trackers.is_empty(), "a classic script's top-level var is a global");
     }
 
     #[test]
