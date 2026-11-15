@@ -63,6 +63,41 @@ const CASES: &[(&str, &str)] = &[
         r#"(function () { var x = 5; function f() { return 1; } var o = {}; o.a = 1; o.b = "s"; o.c = x; o.d = f; o.e = undefined; o.f = null; console.log(JSON.stringify(o), o.d()); })();"#,
         "{\"a\":1,\"b\":\"s\",\"c\":5,\"f\":null} 1",
     ),
+    // self-init accessor: each run of the outer function gets its own cache
+    (
+        r"var bmak = 1, _abck = 2; (function () { function outer() { function F() { var x = []; F = function () { return x; }; return x; } return F(); } console.log(outer() === outer()); })();",
+        "false",
+    ),
+    // self-init accessor: the cache name does not clobber an existing `__F_cache`
+    (
+        r#"var bmak = 1, _abck = 2; var __F_cache = "mine"; (function () { function F() { var x = []; F = function () { return x; }; return x; } F().push(1); console.log(F().length, __F_cache); })();"#,
+        "1 mine",
+    ),
+    // self-init accessor: a local `Object` is not the global
+    (
+        r"var bmak = 1, _abck = 2; (function () { var Object = function () { this.tag = 1; }; function F() { var x = new Object(); F = function () { return x; }; return x; } console.log(F().tag); })();",
+        "1",
+    ),
+    // self-init accessor: `Object.create(proto)` keeps its prototype
+    (
+        r"var bmak = 1, _abck = 2; (function () { var proto = { hi: 1 }; function F() { var x = Object.create(proto); F = function () { return x; }; return x; } console.log(F().hi); })();",
+        "1",
+    ),
+    // self-init accessor: a captured original function initialises on every call
+    (
+        r"var bmak = 1, _abck = 2; (function () { function F() { var x = []; F = function () { return x; }; return x; } var g = F; console.log(g() === g(), F() === F()); })();",
+        "false true",
+    ),
+    // self-init accessor: an async accessor's later calls return the object itself
+    (
+        r"var bmak = 1, _abck = 2; (function () { async function F() { var x = []; F = function () { return x; }; return x; } F(); console.log(F() instanceof Promise); })();",
+        "false",
+    ),
+    // self-init accessor: `[]` and `Object.create(null)` accessors still flatten
+    (
+        r"var bmak = 1, _abck = 2; (function () { function F() { var x = []; F = function () { return x; }; return x; } function G() { var y = Object.create(null); G = function () { return y; }; return y; } F().push(1); console.log(F().length, F() === F(), Object.getPrototypeOf(G()), G() === G()); })();",
+        "1 true null true",
+    ),
 ];
 
 #[test]

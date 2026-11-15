@@ -16,15 +16,23 @@
 //! function hx() { return x; }
 //! ```
 //!
-//! with a hoisted `var x = <init>;` inserted at the start of the enclosing
-//! function-scope or program body. The rewrite preserves the cached-singleton
+//! with `var __hx_cache = <init>;` inserted at the start of the function body
+//! or program that declares `hx`, so each run of that body gets its own cache,
+//! as each run creates its own `hx`. The rewrite preserves the cached-singleton
 //! semantics — every call to `hx()` returns the same object — while removing
-//! the self-reassignment that makes the code unreadable.
+//! the self-reassignment that makes the code unreadable. The cache name is
+//! one the program does not use.
 //!
-//! We only rewrite accessors whose initialiser is one of a whitelist of pure,
-//! side-effect-free expressions (`[]`, `{}`, `new Object()`, `new Array()`,
-//! `Object.create(...)`, `[].entries()` / `[].keys()` / `[].values()`).
-//! Anything else (call to user function, arithmetic, etc.) is left alone.
+//! `hx`, `x` and the builtins are resolved by symbol. We only rewrite accessors
+//! whose initialiser is one of a whitelist of pure, side-effect-free expressions
+//! (`[]`, `{}`, `new Object()`, `new Array()`, `Object.create(null)`,
+//! `Object.create({})`, `[].entries()` / `[].keys()` / `[].values()`, with
+//! `Object` and `Array` the globals), and whose every other reference is a
+//! plain call `hx()`: code that kept the original function would initialise a
+//! new object on each call. Async and generator functions, bindings a `with`
+//! object, an Annex B function or a direct `eval` may replace, and
+//! classic-script globals are left alone. Built-in prototypes are assumed
+//! unpatched.
 
 use oxc_traverse::TraverseCtx;
 

@@ -53,3 +53,46 @@ fn leaves_non_whitelisted_init_alone() {
     assert!(out.contains("sideEffect"), "must preserve side-effect init: {out}");
     assert!(out.contains("g = function"), "must preserve reassignment: {out}");
 }
+
+#[test]
+fn declares_the_cache_in_the_body_that_declares_the_accessor() {
+    let out = run(
+        "function outer() { foo(); function F() { var x = []; F = function () { return x; }; return x; } \
+                   return F(); }",
+    );
+    let body = out.find("function outer").unwrap();
+    assert!(
+        out[body..].contains("var __F_cache = []"),
+        "each run of outer needs its own cache: {out}"
+    );
+}
+
+#[test]
+fn picks_a_cache_name_the_program_does_not_use() {
+    let out = run("var __F_cache = 1; function F() { var x = []; F = function () { return x; }; return x; } F();");
+    assert!(
+        out.contains("var __F_cache_2 = []") && out.contains("return __F_cache_2"),
+        "got: {out}"
+    );
+}
+
+#[test]
+fn leaves_accessors_whose_rewrite_could_be_observed() {
+    for code in [
+        // Kept as a value, so the original function may run again.
+        "function F() { var x = []; F = function () { return x; }; return x; } var g = F;",
+        // `Object` is a local binding, and `Object.create` keeps its argument.
+        "var Object = function () {}; function F() { var x = new Object(); F = function () { return x; }; return x; }",
+        "function F() { var x = Object.create(p); F = function () { return x; }; return x; }",
+        // Later calls return `x` itself, not a promise.
+        "async function F() { var x = []; F = function () { return x; }; return x; }",
+        // Reassigned elsewhere, or the getter returns another binding.
+        "function F() { var x = []; F = function () { return x; }; return x; } F = null;",
+        "function F() { var x = []; F = function (x) { return x; }; return x; }",
+        // In a block, a loop body may run it again with another `F`.
+        "{ function F() { var x = []; F = function () { return x; }; return x; } }",
+    ] {
+        let out = run(code);
+        assert!(!out.contains("cache"), "{code}\n=> {out}");
+    }
+}
