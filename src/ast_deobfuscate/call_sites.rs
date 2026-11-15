@@ -15,7 +15,9 @@ use crate::ast_deobfuscate::with_scope::redirectable_symbols;
 /// A pass may replace such a binding's calls and delete its declaration
 /// without leaving a dangling reference. Bindings an Annex B block function or
 /// a `with` object may stand in for at runtime ([`redirectable_symbols`]) are
-/// left out, since their calls need not reach their declaration.
+/// left out, since their calls need not reach their declaration, and so are
+/// bindings a direct `eval` can see: it may call, reassign or shadow them by
+/// name.
 #[must_use]
 pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap<SymbolId, FxHashSet<usize>> {
     let mut calls = PlainCalls {
@@ -33,6 +35,9 @@ pub fn plain_call_arities(program: &Program<'_>, scoping: &Scoping) -> FxHashMap
                 && !scoping.symbol_is_mutated(symbol)
                 && scoping.symbol_redeclarations(symbol).is_empty()
                 && !is_global_binding(program.source_type, scoping, symbol)
+                && !scoping
+                    .scope_flags(scoping.symbol_scope_id(symbol))
+                    .contains_direct_eval()
                 && !shadowed.contains(&symbol))
             .then_some((symbol, arities))
         })
@@ -63,5 +68,46 @@ impl<'a> Visit<'a> for PlainCalls<'_> {
             }
         }
         walk::walk_call_expression(self, it);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use oxc_allocator::Allocator;
+    use oxc_parser::Parser;
+    use oxc_span::SourceType;
+
+    use super::plain_call_arities;
+    use crate::ast_deobfuscate::semantic;
+
+    /// The names of the bindings `plain_call_arities` returns, sorted.
+    fn called(code: &str) -> Vec<String> {
+        let allocator = Allocator::default();
+        let program = Parser::new(&allocator, code, SourceType::cjs()).parse().program;
+        let scoping = semantic::scoping(&program);
+        let mut names: Vec<_> = plain_call_arities(&program, &scoping)
+            .into_keys()
+            .map(|symbol| scoping.symbol_name(symbol).to_string())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    #[test]
+    fn leaves_out_bindings_a_direct_eval_can_see() {
+        for code in [
+            "function f(a) { return a; } eval('f = 0'); f(1);",
+            "function f(a) { return a; } function g() { eval('var f'); return f(1); } g();",
+            "function f(a) { return a; } function g() { (eval)('f(2)'); } f(1); g();",
+        ] {
+            assert!(called(code).is_empty(), "{code}: {:?}", called(code));
+        }
+    }
+
+    #[test]
+    fn keeps_bindings_outside_the_direct_eval_scope_chain() {
+        let code = "function g() { eval('1'); } (function () { function f(a) { return a; } f(1); })(); g();";
+        // `g` shares the program scope with the eval; `f` is in a sibling scope.
+        assert_eq!(called(code), ["f"]);
     }
 }

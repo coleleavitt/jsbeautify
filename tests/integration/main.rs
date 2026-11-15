@@ -15,6 +15,7 @@ mod beautify;
 mod cli;
 mod dead_declarations;
 mod deobfuscate;
+mod direct_eval;
 mod dispatch_inliner;
 mod dowhile_switch;
 mod esbuild_bundles;

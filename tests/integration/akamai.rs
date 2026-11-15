@@ -64,6 +64,12 @@ const CASES: &[(&str, &str, &[&str])] = &[
         "true",
         &[],
     ),
+    // eq_eval
+    (
+        r#"var bmak = 1, _abck = 2; (function () { var BI = function (a, b) { return a === b; }; eval("BI = function (a, b) { return a + b; }"); console.log(BI(1, 2)); })();"#,
+        "3",
+        &[],
+    ),
     // eq_with
     (
         r"var bmak = 1, _abck = 2; (function () { var BI = function (a, b) { return a === b; }; with ({ BI: function (a, b) { return a * b; } }) { console.log(BI(3, 4)); } })();",
