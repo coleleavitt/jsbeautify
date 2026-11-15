@@ -60,10 +60,7 @@ impl SymbolRenamer {
     }
 
     fn new_reference_name(&self, ident: &IdentifierReference<'_>, ctx: &Ctx<'_>) -> Option<&str> {
-        let symbol = ident
-            .reference_id
-            .get()
-            .and_then(|reference| ctx.scoping().get_reference(reference).symbol_id());
+        let symbol = ctx.scoping().get_reference(ident.reference_id()).symbol_id();
         self.new_name(symbol, &ident.name)
     }
 }
