@@ -1,160 +1,128 @@
-use oxc_ast::ast::{BinaryOperator, BindingPattern, Expression, Function, Statement};
+use oxc_ast::ast::{
+    BinaryOperator, BindingPattern, Expression, Function, FunctionBody, IdentifierReference, Statement, SwitchStatement,
+};
+use oxc_ast_visit::Visit;
+use rustc_hash::FxHashSet;
 
-use super::transition::classify_transition;
-use super::types::{DoWhileCaseInfo, DoWhileDispatcherInfo};
+use super::bindings::{Bindings, Constants, Position};
+use super::transition::{CaseWrites, falls_through};
+use super::types::{DoWhileCase, DoWhileDispatcher};
+use super::value::evaluate;
 
-pub(super) fn try_extract_dowhile_dispatcher(
+/// The dispatcher `func` is, when it has the shape
+/// `function (state, args) { … do { switch (state) { case C: … } } while (state != SENTINEL); … }`
+/// and its state only ever holds known constants: every case label is a
+/// constant, and every write to the state is an assignment of a constant
+/// in a case body. Constants are those declared before `declared`, the
+/// declarator that assigns the function, in the same statement list: they
+/// are initialised whenever the function can run.
+pub(super) fn extract(
     func: &Function<'_>,
-    var_name: Option<String>,
-) -> Option<DoWhileDispatcherInfo> {
-    let fn_label = var_name
-        .as_deref()
-        .or_else(|| func.id.as_ref().map(|id| id.name.as_str()))
-        .unwrap_or("<anon>");
-
-    if func.r#async || func.generator {
+    bindings: &Bindings<'_>,
+    constants: &Constants,
+    declared: Position,
+) -> Option<DoWhileDispatcher> {
+    if func.r#async || func.generator || func.params.rest.is_some() {
         return None;
     }
-    if func.params.items.len() != 2 {
+    let [state_param, args_param] = func.params.items.as_slice() else {
+        return None;
+    };
+    let (BindingPattern::BindingIdentifier(state), BindingPattern::BindingIdentifier(_)) =
+        (&state_param.pattern, &args_param.pattern)
+    else {
+        return None;
+    };
+    if state_param.initializer.is_some() || args_param.initializer.is_some() {
         return None;
     }
-
-    let BindingPattern::BindingIdentifier(p1) = &func.params.items[0].pattern else {
-        return None;
-    };
-    let BindingPattern::BindingIdentifier(p2) = &func.params.items[1].pattern else {
-        return None;
-    };
-
+    let state = state.symbol_id.get()?;
     let body = func.body.as_ref()?;
-    let state_param = p1.name.as_str();
+    // A sloppy function's `arguments[0]` is the state under another name.
+    if !bindings.is_tracked(state) || uses_arguments(body) {
+        return None;
+    }
 
-    let dowhile = body.statements.iter().find_map(|s| {
-        if let Statement::DoWhileStatement(dw) = s {
-            Some(dw)
-        } else {
-            None
-        }
-    })?;
-
-    let Expression::BinaryExpression(test_bin) = &dowhile.test else {
-        dwsd_dbg!(
-            "[DBG/dwsd] try_extract {}: do-while test is not BinaryExpression",
-            fn_label
-        );
+    let reads_state =
+        |expr: &Expression<'_>| matches!(expr, Expression::Identifier(id) if bindings.symbol_of(id) == Some(state));
+    let (loop_index, dowhile) = body
+        .statements
+        .iter()
+        .enumerate()
+        .find_map(|(i, statement)| match statement {
+            Statement::DoWhileStatement(dowhile) => Some((i, dowhile)),
+            _ => None,
+        })?;
+    let Expression::BinaryExpression(test) = &dowhile.test else {
         return None;
     };
     if !matches!(
-        test_bin.operator,
+        test.operator,
         BinaryOperator::Inequality | BinaryOperator::StrictInequality
-    ) {
-        dwsd_dbg!(
-            "[DBG/dwsd] try_extract {}: do-while test operator is not != or !==",
-            fn_label
-        );
+    ) || !reads_state(&test.left)
+        || !matches!(test.right, Expression::Identifier(_))
+    {
         return None;
     }
-    let Expression::Identifier(test_left) = &test_bin.left else {
-        return None;
-    };
-    if test_left.name.as_str() != state_param {
-        return None;
-    }
-    let Expression::Identifier(test_right) = &test_bin.right else {
-        return None;
-    };
-    let exit_sentinel = test_right.name.as_str().to_string();
-
-    let switch = extract_switch_from_dowhile_body(&dowhile.body, state_param)?;
-
-    let mut cases = Vec::new();
-    let mut has_default = false;
-
-    for case in &switch.cases {
-        match &case.test {
-            Some(Expression::Identifier(id)) => {
-                let label = id.name.as_str().to_string();
-                let non_break: Vec<_> = case
-                    .consequent
-                    .iter()
-                    .filter(|s| !matches!(s, Statement::BreakStatement(_)))
-                    .collect();
-                let body_count = non_break.len();
-                let transition = classify_transition(&non_break, state_param, &exit_sentinel);
-                cases.push(DoWhileCaseInfo {
-                    label,
-                    body_statement_count: body_count,
-                    transition,
-                });
-            }
-            None => {
-                has_default = true;
-            }
-            _ => {
-                dwsd_dbg!("[DBG/dwsd] try_extract {}: case test is not Identifier", fn_label);
-            }
+    let (switch_index, switch): (_, &SwitchStatement<'_>) = match &dowhile.body {
+        Statement::SwitchStatement(switch) => (None, switch),
+        Statement::BlockStatement(block) => {
+            block
+                .body
+                .iter()
+                .enumerate()
+                .find_map(|(i, statement)| match statement {
+                    Statement::SwitchStatement(switch) if reads_state(&switch.discriminant) => {
+                        Some((Some(i), &**switch))
+                    }
+                    _ => None,
+                })?
         }
-    }
-
-    if cases.is_empty() {
+        _ => return None,
+    };
+    if !reads_state(&switch.discriminant) || switch.cases.is_empty() {
         return None;
     }
 
-    let (name, alt_name) = if let Some(vn) = var_name {
-        let fn_name = func.id.as_ref().map(|id| id.name.as_str().to_string());
-        (vn, fn_name)
-    } else {
-        let fn_name = func.id.as_ref()?.name.as_str().to_string();
-        (fn_name, None)
-    };
-
-    dwsd_dbg!(
-        "[DBG/dwsd] try_extract {}: SUCCESS with {} cases, exit_sentinel={}",
-        name,
-        cases.len(),
-        exit_sentinel
-    );
-
-    Some(DoWhileDispatcherInfo {
-        name,
-        alt_name,
-        state_param: state_param.to_string(),
-        args_param: p2.name.as_str().to_string(),
-        exit_sentinel,
+    let lookup = |id: &IdentifierReference<'_>| constants.lookup(bindings, id, declared);
+    let mut recognised = FxHashSet::default();
+    let mut cases = Vec::with_capacity(switch.cases.len());
+    let mut entered_by_fall_through = false;
+    for case in &switch.cases {
+        // A `default` case runs for values no label matches.
+        let label = evaluate(case.test.as_ref()?, &lookup)?;
+        let writes = CaseWrites::collect(&case.consequent, state, bindings, &lookup);
+        recognised.extend(writes.references.iter().copied());
+        let next = writes.next(&label, entered_by_fall_through)?;
+        let falls_through = falls_through(&case.consequent);
+        cases.push(DoWhileCase {
+            label,
+            next,
+            falls_through,
+        });
+        entered_by_fall_through = falls_through;
+    }
+    let scoping = bindings.scoping;
+    let only_recognised_writes = scoping
+        .get_resolved_reference_ids(state)
+        .iter()
+        .all(|reference| !scoping.get_reference(*reference).is_write() || recognised.contains(reference));
+    only_recognised_writes.then_some(DoWhileDispatcher {
+        loop_index,
+        switch_index,
         cases,
-        has_default,
+        entries: Vec::new(),
     })
 }
 
-fn extract_switch_from_dowhile_body<'a, 'b>(
-    body: &'b Statement<'a>,
-    state_param: &str,
-) -> Option<&'b oxc_ast::ast::SwitchStatement<'a>> {
-    match body {
-        Statement::SwitchStatement(sw) => {
-            let Expression::Identifier(disc) = &sw.discriminant else {
-                return None;
-            };
-            if disc.name.as_str() == state_param {
-                Some(sw)
-            } else {
-                None
-            }
+fn uses_arguments(body: &FunctionBody<'_>) -> bool {
+    struct Finder(bool);
+    impl<'a> Visit<'a> for Finder {
+        fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+            self.0 |= it.name == "arguments";
         }
-        Statement::BlockStatement(block) => block.body.iter().find_map(|s| {
-            if let Statement::SwitchStatement(sw) = s {
-                let Expression::Identifier(disc) = &sw.discriminant else {
-                    return None;
-                };
-                if disc.name.as_str() == state_param {
-                    Some(sw.as_ref())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }),
-        _ => None,
     }
+    let mut finder = Finder(false);
+    finder.visit_function_body(body);
+    finder.0
 }

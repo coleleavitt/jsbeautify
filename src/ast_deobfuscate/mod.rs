@@ -167,10 +167,6 @@ pub(crate) use dispatch_inliner::{DispatchInlinerCollector, DispatchInlinerRewri
 pub(crate) use dispatcher_detector::{CaseInfo, DispatcherDetector, DispatcherInfo, DispatcherMap};
 pub(crate) use dispatcher_inline::DispatcherInliner;
 pub(crate) use dowhile_switch_cleaner::DoWhileSwitchCleaner;
-pub use dowhile_switch_detector::{
-    CompoundOp, DoWhileCaseInfo, DoWhileDispatcherInfo, DoWhileDispatcherMap, DoWhileSwitchDetector, StateTransition,
-    collect_constants, resolve_compound_transitions,
-};
 pub(crate) use dyn_concat_resolver::DynConcatResolver;
 pub(crate) use dynamic_property::DynamicPropertyConverter;
 pub(crate) use empty_statement_cleanup::EmptyStatementCleanup;

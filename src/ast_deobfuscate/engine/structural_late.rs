@@ -1,8 +1,7 @@
 use super::{
     Allocator, AstDeobfuscator, DeobfuscateState, DispatchInlinerCollector, DispatchInlinerRewriter,
-    DoWhileSwitchCleaner, DoWhileSwitchDetector, FunctionCollector, FunctionInliner, FxHashMap, Program,
-    ReusableTraverseCtx, TraceSpan, collect_constants, eliminate_dead_vars, mem_ck, rename_guards,
-    resolve_compound_transitions, traverse_mut_with_ctx,
+    DoWhileSwitchCleaner, FunctionCollector, FunctionInliner, Program, ReusableTraverseCtx, TraceSpan,
+    eliminate_dead_vars, mem_ck, rename_guards, traverse_mut_with_ctx,
 };
 use crate::ast_deobfuscate::dead_var_elimination::DeadVarSweepResult;
 use crate::ast_deobfuscate::semantic;
@@ -17,24 +16,6 @@ impl AstDeobfuscator {
         program: &mut Program<'a>,
         scoping: Option<Scoping>,
     ) {
-        eprintln!("[DEOBFUSCATE] Phase 8.7: do-while-switch detector");
-        let dowhile_detector = DoWhileSwitchDetector::new();
-        let mut dowhile_dispatchers = dowhile_detector.detect(program);
-        eprintln!(
-            "[DEOBFUSCATE] Phase 8.7: Found {} do-while-switch dispatchers",
-            dowhile_dispatchers.len()
-        );
-        for (name, info) in &dowhile_dispatchers {
-            deob_trace!(
-                "[DOWHILE] found {}({}, {}) with {} cases, exit_sentinel={}",
-                name,
-                info.state_param,
-                info.args_param,
-                info.cases.len(),
-                info.exit_sentinel
-            );
-        }
-
         mem_ck("enter Phase 9 (function inline)");
         eprintln!("[DEOBFUSCATE] Phase 9: SemanticBuilder for function_inline");
         let scoping = semantic::reuse_or_build(program, scoping);
@@ -67,10 +48,6 @@ impl AstDeobfuscator {
             di_factories.len(),
             di_constants.len()
         );
-        let di_constants_i64: FxHashMap<String, i64> = di_constants
-            .iter()
-            .map(|(k, &v)| (k.clone(), i64::try_from(v).unwrap_or(i64::MAX)))
-            .collect();
         if !di_factories.is_empty() {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             let mut di_rewriter = DispatchInlinerRewriter::new(di_factories, di_constants);
@@ -82,25 +59,18 @@ impl AstDeobfuscator {
             scoping = semantic::refresh(program, ctx.into_scoping(), true);
         }
 
-        if !dowhile_dispatchers.is_empty() {
-            let own_constants = collect_constants(program);
-            let mut merged = di_constants_i64;
-            for (k, v) in own_constants {
-                merged.entry(k).or_insert(v);
-            }
-            let mut total_resolved = 0;
-            for info in dowhile_dispatchers.values_mut() {
-                total_resolved += resolve_compound_transitions(info, &merged);
-            }
-            eprintln!("[DEOBFUSCATE] Phase 9.6: Resolved {total_resolved} compound transitions to sequential");
-
-            eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
-            let mut cleaner = DoWhileSwitchCleaner::new(dowhile_dispatchers, program);
+        eprintln!("[DEOBFUSCATE] Phase 9.7: do-while-switch dead-case pruner");
+        let mut cleaner = DoWhileSwitchCleaner::new(program, &scoping);
+        if cleaner.has_dead_cases() {
             let mut ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
             traverse_mut_with_ctx(&mut cleaner, program, &mut ctx);
-            eprintln!("[DEOBFUSCATE] Phase 9.7: Pruned {} dead cases", cleaner.pruned_cases());
             scoping = semantic::refresh(program, ctx.into_scoping(), true);
         }
+        eprintln!(
+            "[DEOBFUSCATE] Phase 9.7: Found {} do-while-switch dispatchers, pruned {} dead cases",
+            cleaner.dispatchers(),
+            cleaner.pruned_cases()
+        );
 
         let scoping = self.run_sweeps_and_simplifiers(allocator, program, scoping);
 

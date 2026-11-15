@@ -1,47 +1,76 @@
 //! Dead-case pruner for do-while-switch dispatchers.
 //!
-//! Consumes a [`DoWhileDispatcherMap`] (from [`super::dowhile_switch_detector`])
-//! and removes switch cases that are unreachable from any entry point.
+//! Takes the dispatchers [`super::dowhile_switch_detector`] finds and
+//! removes the switch cases no call can reach:
+//! 1. the state values the calls pass are reachable;
+//! 2. a reachable value selects the first case whose label is that value,
+//!    and that case is reachable;
+//! 3. a reachable case makes the values its body can assign reachable, and
+//!    the next case too when its body can fall through;
+//! 4. repeat until nothing new is reachable.
 //!
-//! Reachability is computed by:
-//! 1. Scanning call sites to find entry states (e.g. `Ql(Q4, [...])`)
-//! 2. Following state transitions from each reachable case to its successors
-//! 3. Iterating until fixpoint
-//! 4. Removing cases whose labels are not in the reachable set
+//! A dispatcher with no known call keeps every case.
 
-use oxc_ast::ast::{BindingPattern, Expression, Program, Statement};
+use oxc_ast::ast::{BindingPattern, Expression, Program, VariableDeclarator};
+use oxc_semantic::Scoping;
+use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::{Traverse, TraverseCtx};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
-use super::dowhile_switch_detector::{DoWhileDispatcherMap, StateTransition};
+use super::dowhile_switch_detector::detect;
 use super::state::DeobfuscateState;
 
-mod entries;
 mod prune;
 mod reachability;
-mod switch_body;
 
-use entries::collect_entry_states;
-use reachability::compute_reachability;
+use prune::Prune;
+use reachability::reachable_cases;
 
 type Ctx<'a> = TraverseCtx<'a, DeobfuscateState>;
 
 pub struct DoWhileSwitchCleaner {
-    dispatchers: DoWhileDispatcherMap,
-    reachable_per_dispatcher: FxHashMap<String, FxHashSet<String>>,
+    dispatchers: usize,
+    prunes: FxHashMap<SymbolId, Prune>,
     pruned_cases: usize,
 }
 
 impl DoWhileSwitchCleaner {
+    /// Plans the pruning of `program`, which `scoping` describes.
     #[must_use]
-    pub fn new(dispatchers: DoWhileDispatcherMap, program: &Program<'_>) -> Self {
-        let entry_states = collect_entry_states(program, &dispatchers);
-        let reachable_per_dispatcher = compute_reachability(&dispatchers, &entry_states);
+    pub fn new(program: &Program<'_>, scoping: &Scoping) -> Self {
+        let dispatchers = detect(program, scoping);
+        let count = dispatchers.len();
+        let prunes = dispatchers
+            .into_iter()
+            .filter_map(|(symbol, dispatcher)| {
+                let reached = reachable_cases(&dispatcher);
+                reached.contains(&false).then_some((
+                    symbol,
+                    Prune {
+                        loop_index: dispatcher.loop_index,
+                        switch_index: dispatcher.switch_index,
+                        reached,
+                    },
+                ))
+            })
+            .collect();
         Self {
-            dispatchers,
-            reachable_per_dispatcher,
+            dispatchers: count,
+            prunes,
             pruned_cases: 0,
         }
+    }
+
+    /// How many dispatchers the analysis understood.
+    #[must_use]
+    pub const fn dispatchers(&self) -> usize {
+        self.dispatchers
+    }
+
+    /// Whether some dispatcher has a case to prune.
+    #[must_use]
+    pub fn has_dead_cases(&self) -> bool {
+        !self.prunes.is_empty()
     }
 
     #[must_use]
@@ -51,26 +80,15 @@ impl DoWhileSwitchCleaner {
 }
 
 impl<'a> Traverse<'a, DeobfuscateState> for DoWhileSwitchCleaner {
-    fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut Ctx<'a>) {
-        match stmt {
-            Statement::FunctionDeclaration(func) => {
-                let Some(id) = &func.id else { return };
-                let name = id.name.as_str();
-                self.try_prune_dispatcher(name, func, ctx);
-            }
-            Statement::VariableDeclaration(decl) => {
-                for d in &mut decl.declarations {
-                    let BindingPattern::BindingIdentifier(var_id) = &d.id else {
-                        continue;
-                    };
-                    let var_name = var_id.name.as_str().to_string();
-                    let Some(Expression::FunctionExpression(func)) = &mut d.init else {
-                        continue;
-                    };
-                    self.try_prune_dispatcher_mut(&var_name, func.as_mut(), ctx);
-                }
-            }
-            _ => {}
+    fn exit_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>, _ctx: &mut Ctx<'a>) {
+        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+            return;
+        };
+        let Some(prune) = id.symbol_id.get().and_then(|symbol| self.prunes.remove(&symbol)) else {
+            return;
+        };
+        if let Some(Expression::FunctionExpression(func)) = &mut declarator.init {
+            self.pruned_cases += prune.apply(func);
         }
     }
 }

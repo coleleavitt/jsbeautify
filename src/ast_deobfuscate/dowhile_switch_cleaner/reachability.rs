@@ -1,73 +1,41 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{DoWhileDispatcherMap, StateTransition};
+use crate::ast_deobfuscate::dowhile_switch_detector::{DoWhileDispatcher, StateValue};
 
-pub(super) fn compute_reachability(
-    dispatchers: &DoWhileDispatcherMap,
-    entry_states: &FxHashMap<String, FxHashSet<String>>,
-) -> FxHashMap<String, FxHashSet<String>> {
-    let mut result: FxHashMap<String, FxHashSet<String>> = FxHashMap::default();
-
-    for (name, info) in dispatchers {
-        let mut reachable = FxHashSet::default();
-
-        // Seed with entry states
-        if let Some(entries) = entry_states.get(name) {
-            for entry in entries {
-                reachable.insert(entry.clone());
-            }
-        }
-        // Also check alt_name entries
-        if let Some(alt) = &info.alt_name
-            && let Some(entries) = entry_states.get(alt.as_str())
-        {
-            for entry in entries {
-                reachable.insert(entry.clone());
-            }
-        }
-
-        if reachable.is_empty() {
-            // No known entry points — conservatively keep all cases
-            for case in &info.cases {
-                reachable.insert(case.label.clone());
-            }
-            result.insert(name.clone(), reachable);
+/// Per case of `dispatcher`, whether some call can run it. Every case is
+/// reachable when no call is known.
+pub(super) fn reachable_cases(dispatcher: &DoWhileDispatcher) -> Vec<bool> {
+    let cases = &dispatcher.cases;
+    if dispatcher.entries.is_empty() {
+        return vec![true; cases.len()];
+    }
+    // `switch` runs the first case whose label is `===` the state.
+    let mut selects: FxHashMap<&StateValue, usize> = FxHashMap::default();
+    for (index, case) in cases.iter().enumerate() {
+        selects.entry(&case.label).or_insert(index);
+    }
+    let mut reached = vec![false; cases.len()];
+    let mut seen: FxHashSet<&StateValue> = FxHashSet::default();
+    let mut values: Vec<&StateValue> = dispatcher.entries.iter().collect();
+    while let Some(value) = values.pop() {
+        if !seen.insert(value) {
             continue;
         }
-
-        // Build transition map: label -> set of successor labels
-        let mut transitions: FxHashMap<&str, Vec<&str>> = FxHashMap::default();
-        for case in &info.cases {
-            let succs = match &case.transition {
-                StateTransition::Sequential(next) => vec![next.as_str()],
-                StateTransition::Conditional(a, b) => vec![a.as_str(), b.as_str()],
-                StateTransition::LoopExit | StateTransition::Return | StateTransition::Compound { .. } => vec![],
-                StateTransition::Unknown => {
-                    // Conservative: all other case labels are potential targets
-                    info.cases
-                        .iter()
-                        .filter(|c| c.label != case.label)
-                        .map(|c| c.label.as_str())
-                        .collect()
-                }
-            };
-            transitions.insert(case.label.as_str(), succs);
-        }
-
-        // Fixpoint: expand reachable set by following transitions
-        let mut worklist: Vec<String> = reachable.iter().cloned().collect();
-        while let Some(label) = worklist.pop() {
-            if let Some(succs) = transitions.get(label.as_str()) {
-                for &succ in succs {
-                    if reachable.insert(succ.to_string()) {
-                        worklist.push(succ.to_string());
-                    }
-                }
+        let Some(&first) = selects.get(value) else {
+            continue;
+        };
+        for (index, case) in cases.iter().enumerate().skip(first) {
+            // A case reached before has queued its values and followed its
+            // fall-through already.
+            if reached[index] {
+                break;
+            }
+            reached[index] = true;
+            values.extend(&case.next);
+            if !case.falls_through {
+                break;
             }
         }
-
-        result.insert(name.clone(), reachable);
     }
-
-    result
+    reached
 }
