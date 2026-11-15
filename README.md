@@ -42,7 +42,7 @@ exposed as subcommands (see the CLI reference below).
 
 ## Installation
 
-Requires Rust 1.96 or newer.
+Requires Rust 1.97 or newer.
 
 ```bash
 cargo install jsbeautify --locked

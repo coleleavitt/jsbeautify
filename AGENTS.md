@@ -11,7 +11,7 @@ and adds only Claude Code specifics.
 ## Build / test / lint
 
 - The project has no `rust-toolchain.toml` and no package `rust-version` pin.
-  Oxc 0.149 needs Rust 1.96 or newer. CI (`.github/workflows/ci.yml`) runs
+  Oxc 0.158 needs Rust 1.97 or newer. CI (`.github/workflows/ci.yml`) runs
   `cargo fmt --check` on nightly, because `rustfmt.toml` uses the nightly-only
   `imports_granularity`, and clippy and the tests on stable.
   `rustfmt.toml` sets `style_edition = "2024"`.
