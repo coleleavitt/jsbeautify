@@ -15,6 +15,11 @@ and adds only Claude Code specifics.
   `cargo fmt --check` on nightly, because `rustfmt.toml` uses the nightly-only
   `imports_granularity`, and clippy and the tests on stable.
   `rustfmt.toml` sets `style_edition = "2024"`.
+- Locally, the rustup default toolchain is `rustc-master`, a nightly build of
+  rust-lang/rust master. Run plain `cargo` and `cargo fmt`. Do not pass
+  `+nightly`: no toolchain named `nightly` is installed, so `+nightly` fails.
+  `rustc-rdr`, `rustc-rdr-main` and `rustc-agents` are other custom
+  toolchains; they are not the default.
 - Clippy reads the repo's `clippy.toml` only when `CLIPPY_CONF_DIR` is unset.
   Run the gate with `env -u CLIPPY_CONF_DIR` if your shell sets it, or local
   results will not match CI.
