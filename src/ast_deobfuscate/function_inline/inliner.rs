@@ -2,6 +2,7 @@ use oxc_allocator::{CloneIn, GetAllocator};
 use oxc_ast::ast::{BinaryOperator, CallExpression, Expression, Statement, UnaryOperator};
 use oxc_span::SPAN;
 use oxc_syntax::number::NumberBase;
+use oxc_syntax::reference::ReferenceFlags;
 use oxc_syntax::symbol::SymbolId;
 use oxc_traverse::Traverse;
 use rustc_hash::FxHashMap;
@@ -48,8 +49,9 @@ impl FunctionInliner {
     fn build_expression<'a>(ret_expr: &ReturnExpr, args: &[&Expression<'a>], ctx: &mut Ctx<'a>) -> Expression<'a> {
         match ret_expr {
             ReturnExpr::ParamRef(idx) => Self::clone_expression(args[*idx], ctx),
-            ReturnExpr::Identifier { name, .. } => {
-                Expression::new_identifier(SPAN, ctx.allocator().alloc_str(name), ctx)
+            ReturnExpr::Identifier { name, symbol } => {
+                let name = ctx.allocator().alloc_str(name);
+                ctx.create_ident_expr(SPAN, name.into(), *symbol, ReferenceFlags::Read)
             }
             ReturnExpr::Number(val) => Expression::new_numeric_literal(SPAN, *val, None, NumberBase::Decimal, ctx),
             ReturnExpr::String(value) => {

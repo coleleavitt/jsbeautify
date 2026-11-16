@@ -163,3 +163,12 @@ fn test_redeclared_function_is_not_inlined() {
         "function g() { function f() { return 1; } function f() { return arguments.length; } return f(); }",
     );
 }
+
+#[test]
+fn test_inlined_identifier_is_a_bound_reference() {
+    // The inlined `g` becomes the callee of the outer call, which the
+    // inliner visits next and resolves through its reference.
+    let output = run_inline("function g() { return 1; } function f() { return g; } console.log(f()());");
+    assert!(output.contains("console.log(g())"), "got: {output}");
+    assert!(output.contains("function g"), "got: {output}");
+}
