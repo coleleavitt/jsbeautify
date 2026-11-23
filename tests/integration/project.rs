@@ -131,3 +131,26 @@ fn keep_fn_names_keeps_function_names_and_linked_names_agree() {
     assert!(entry.contains("b as n"), "the importer takes the kept name: {entry}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A Bun standalone executable's chunks import each other by absolute
+/// `/$bunfs/root/` paths; the project root stands for that root.
+#[test]
+fn project_resolves_bun_standalone_root_specifiers() {
+    let dir = std::env::temp_dir().join(format!("jsb-project-bunfs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let src = dir.join("root");
+    fs::create_dir_all(&src).expect("create project dir");
+    fs::write(src.join("chunk-a.js"), "function q(e){return e+1}export{q as Q};").expect("write chunk");
+    fs::write(
+        src.join("cli.js"),
+        r#"import{Q as x}from"/$bunfs/root/chunk-a.js";console.log(x(1));"#,
+    )
+    .expect("write entry");
+    let out = dir.join("out");
+    let output = run(&src, &out);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("1 of 1 named imports resolved"), "{stderr}");
+    assert!(stderr.contains("1 imports checked, 0 broken"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}

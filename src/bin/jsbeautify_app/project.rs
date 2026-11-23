@@ -203,7 +203,7 @@ fn log_plan(stats: &PlanStats) {
     );
     if !stats.unresolved_specifiers.is_empty() {
         eprintln!(
-            "[PROJECT] {} relative module specifiers match no project file",
+            "[PROJECT] {} file module specifiers match no project file",
             stats.unresolved_specifiers.len()
         );
     }

@@ -6,7 +6,8 @@
 //!    each chunk defines, the names the single-file pipeline would give its
 //!    exported locals, and Turbopack / webpack module ids.
 //! 2. [`plan_project`] resolves every `import { a as e } from "./chunk.js"`
-//!    (relative to the importing file, through re-exports) to the binding it
+//!    (relative to the importing file or under a Bun standalone
+//!    executable's root, through re-exports) to the binding it
 //!    links and gives that binding one name in every file: its own name when
 //!    `--keep-fn-names` keeps it (a function's `.name`), the runtime helper it
 //!    is, the name its own file gives it, its real export name, or else
@@ -40,6 +41,23 @@ pub use crate::ast_deobfuscate::project::{ExportSeed, ImportSeed, ProjectSeeds, 
 #[must_use]
 pub fn is_javascript(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()), Some("js" | "mjs" | "cjs"))
+}
+
+/// Where a Bun standalone executable mounts its bundled files (`/$bunfs/root/`,
+/// `B:/~BUN/root/` on Windows). Its chunks import each other by these paths.
+const BUN_STANDALONE_ROOTS: [&str; 2] = ["/$bunfs/root/", "B:/~BUN/root/"];
+
+/// `specifier` relative to the Bun standalone root, if it is under it.
+fn strip_bun_root(specifier: &str) -> Option<&str> {
+    BUN_STANDALONE_ROOTS
+        .iter()
+        .find_map(|root| specifier.strip_prefix(root))
+}
+
+/// Whether `specifier` names a file (relative or under the Bun standalone
+/// root) rather than a package or a built-in module.
+fn is_file_specifier(specifier: &str) -> bool {
+    specifier.starts_with('.') || strip_bun_root(specifier).is_some()
 }
 
 /// Every file under `root`, relative to it, sorted.
@@ -261,14 +279,20 @@ impl<'f> Graph<'f> {
         aliases
     }
 
-    /// The file a relative module specifier of `from` names.
+    /// The file a module specifier of `from` names: a relative specifier, or a
+    /// path under a Bun standalone executable's virtual root, which is the
+    /// project root.
     fn resolve(&self, from: usize, specifier: &str) -> Option<usize> {
         let specifier = specifier.split(['?', '#']).next()?;
-        if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        let (mut parts, specifier) = if let Some(rooted) = strip_bun_root(specifier) {
+            (Vec::new(), rooted)
+        } else if specifier.starts_with("./") || specifier.starts_with("../") {
+            let mut parts: Vec<&str> = self.files[from].path.split('/').collect();
+            parts.pop();
+            (parts, specifier)
+        } else {
             return None;
-        }
-        let mut parts: Vec<&str> = self.files[from].path.split('/').collect();
-        parts.pop();
+        };
         for component in Path::new(specifier).components() {
             match component {
                 Component::ParentDir => {
@@ -634,7 +658,7 @@ pub fn plan_project(files: &[IndexedFile]) -> ProjectPlan {
                 | ImportKind::SideEffect
                 | ImportKind::Dynamic
                 | ImportKind::ReExportAll { .. } => {
-                    if import.source.starts_with('.') && graph.resolve(file, &import.source).is_none() {
+                    if is_file_specifier(&import.source) && graph.resolve(file, &import.source).is_none() {
                         stats
                             .unresolved_specifiers
                             .insert(format!("{}: {}", indexed.path, import.source));
@@ -644,7 +668,7 @@ pub fn plan_project(files: &[IndexedFile]) -> ProjectPlan {
             };
             stats.named_imports += 1;
             let Some(target) = graph.resolve(file, &import.source) else {
-                if import.source.starts_with('.') {
+                if is_file_specifier(&import.source) {
                     stats
                         .unresolved_specifiers
                         .insert(format!("{}: {}", indexed.path, import.source));
