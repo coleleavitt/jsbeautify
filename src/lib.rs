@@ -1,6 +1,8 @@
 //! # jsbeautify
 //!
-//! A Rust port of js-beautify with webpack-specific improvements.
+//! Agent-first JavaScript deobfuscator, built on Oxc and refined by AI agents.
+//! It beautifies (js-beautify compatible), deobfuscates, unpacks webpack,
+//! Turbopack, esbuild and Bun bundles, and rebuilds source trees from source maps.
 //!
 //! ## Example
 //!
