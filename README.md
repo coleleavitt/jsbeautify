@@ -20,6 +20,10 @@
   <a href="docs/cli.md">CLI reference</a>
 </p>
 
+<p align="center">
+  <img src="assets/how-it-works.svg" width="720" alt="A minified bundle from a web app is 10 MB of a, b, c, too much to hand straight to an AI agent. jsbeautify turns it into readable, named code that still runs the same, and the agent reads that.">
+</p>
+
 These days agents, not people, read most deobfuscated code. jsbeautify is
 built for that reader. Its output, logs and inspection commands are made for a
 model to query. Its pipeline is a list of small passes an agent can find, change
