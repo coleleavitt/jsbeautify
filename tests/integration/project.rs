@@ -70,15 +70,15 @@ fn project_names_bindings_across_chunks() {
     let entry = fs::read_to_string(out.join("assets/entry.js")).expect("entry output");
     for expected in [
         "b as repeatTimes, c as util",
-        "a as __commonJS, c as __toESM, d as ValidationError, h as chunkSNUETOXO_h",
+        "a as __commonJS, c as __toESM, d as ValidationError, h as val_6a8a7b16",
         "var require_1 = __commonJS(",
-        "chunkSNUETOXO_h.n",
+        "val_6a8a7b16.n",
         "export {\n    h, runB, util\n}",
     ] {
         assert!(entry.contains(expected), "missing {expected:?} in {entry}");
     }
     let runtime = fs::read_to_string(out.join("assets/chunk-SNUETOXO.js")).expect("runtime output");
-    assert!(runtime.contains("var chunkSNUETOXO_h = {"), "{runtime}");
+    assert!(runtime.contains("var val_6a8a7b16 = {"), "{runtime}");
 
     let index: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(out.join("project-index.json")).expect("index written"))
@@ -129,6 +129,66 @@ fn keep_fn_names_keeps_function_names_and_linked_names_agree() {
     assert!(util.contains("function p("), "p.name stays \"p\": {util}");
     let entry = fs::read_to_string(out.join("assets/entry.js")).expect("entry output");
     assert!(entry.contains("b as n"), "the importer takes the kept name: {entry}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A Bun standalone executable marks modules whose characters all fit in one
+/// byte as `latin1`; such a file is read as Latin-1 instead of stopping the run.
+#[test]
+fn project_reads_latin1_files() {
+    let dir = std::env::temp_dir().join(format!("jsb-project-latin1-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let src = dir.join("src");
+    fs::create_dir_all(&src).expect("create project dir");
+    fs::write(src.join("chunk-aaaaaaaa.js"), b"var a=\"caf\xe9\";export{a as b};").expect("write latin-1 chunk");
+    fs::write(
+        src.join("entry.js"),
+        r#"import{b as c}from"./chunk-aaaaaaaa.js";console.log(c);"#,
+    )
+    .expect("write entry");
+    let out = dir.join("out");
+    let output = run(&src, &out);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("chunk-aaaaaaaa.js: not valid UTF-8 at byte 10; reading it as Latin-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("2 of 2 files deobfuscated"), "{stderr}");
+    let chunk = fs::read_to_string(out.join("chunk-aaaaaaaa.js")).expect("output is UTF-8");
+    assert!(chunk.contains("\"caf\u{e9}\""), "{chunk}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Two chunks' bindings both named `Text`, one importing the other: the
+/// importer and the exporter agree on each name.
+#[test]
+fn project_names_agree_when_two_chunks_want_one_name() {
+    let dir = std::env::temp_dir().join(format!("jsb-project-clash-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let src = dir.join("src");
+    fs::create_dir_all(&src).expect("create project dir");
+    fs::write(
+        src.join("chunk-aaaaaaaa.js"),
+        r#"class A{constructor(){this.name="Text"}}export{A as a};"#,
+    )
+    .expect("write");
+    fs::write(
+        src.join("chunk-bbbbbbbb.js"),
+        r#"import{a as x}from"./chunk-aaaaaaaa.js";class B{constructor(){this.name="Text"}}console.log(new x,new B);export{B as b};"#,
+    )
+    .expect("write");
+    fs::write(
+        src.join("entry.js"),
+        r#"import{b as y}from"./chunk-bbbbbbbb.js";console.log(new y);"#,
+    )
+    .expect("write");
+    let out = dir.join("out");
+    let output = run(&src, &out);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("0 broken"), "{stderr}");
+    assert!(stderr.contains(", 0 differ"), "{stderr}");
     let _ = fs::remove_dir_all(&dir);
 }
 

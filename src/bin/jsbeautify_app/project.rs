@@ -33,7 +33,7 @@ pub(super) fn run_job(b: &BeautifyArgs, job: &str) -> Fallible {
     // The plan decides which export names name their locals (see
     // `run_project`); the files' own Phase 0.95 must agree with it.
     options.short_export_names = false;
-    let code = fs::read_to_string(&job.input)?;
+    let code = jsbeautify::source_text::read(&job.input)?;
     let result = jsbeautify::beautifier::deobfuscate_with_project_seeds(&code, &options, job.seeds)?;
     fs::write(&job.output, result)?;
     Ok(())
@@ -134,7 +134,7 @@ pub(super) fn run_project(b: &BeautifyArgs, root: &Path) -> Fallible {
     let outputs: Vec<(String, String)> = index
         .iter()
         .zip(&scripts)
-        .map(|(file, relative)| Ok((file.path.clone(), fs::read_to_string(out.join(relative))?)))
+        .map(|(file, relative)| Ok((file.path.clone(), jsbeautify::source_text::read(&out.join(relative))?)))
         .collect::<std::io::Result<_>>()?;
     let links = check_links(&index, &outputs, goal);
     let gates = statuses.iter().filter(|s| s.reparse_gates).count();

@@ -20,6 +20,7 @@ pub mod inspect;
 pub mod llm;
 pub mod oxc_opts;
 pub mod project;
+pub mod source_text;
 pub mod sourcemap;
 pub mod token;
 pub mod tokenizer;
