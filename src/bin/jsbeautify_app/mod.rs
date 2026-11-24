@@ -218,6 +218,11 @@ struct DiffTreeArgs {
     /// Lowest token-set similarity (0-1) a match by content needs.
     #[arg(long, value_name = "SCORE", default_value_t = 0.5)]
     min_score: f64,
+
+    /// Lowest token-set similarity (0-1) a weak match needs: a changed function
+    /// whose best candidate is clearly ahead of the runner-up.
+    #[arg(long, value_name = "SCORE", default_value_t = 0.25)]
+    weak_min_score: f64,
 }
 
 #[derive(clap::Args, Debug)]

@@ -16,6 +16,10 @@
 //!    sets, best pairs first, above a threshold. These are the functions whose
 //!    code (and so whose shape name) changed, or whose minified name did.
 //!
+//!    What is still unmatched and changed a lot is matched weakly: a lower
+//!    threshold, but only for a mutual best candidate that clearly beats the
+//!    runner-up on both sides. These are reported apart from the content matches.
+//!
 //! The trees are only read and parsed; nothing is executed.
 
 use std::cmp::Reverse;
@@ -40,6 +44,10 @@ pub struct TreeDiffOptions {
     pub min_score: f64,
     /// Fewest tokens a function needs to be matched by content.
     pub min_tokens: usize,
+    /// Lowest token-set similarity (0–1) a weak match needs.
+    pub weak_min_score: f64,
+    /// How much a weak match's best candidate must beat the runner-up by.
+    pub weak_margin: f64,
 }
 
 impl Default for TreeDiffOptions {
@@ -47,6 +55,8 @@ impl Default for TreeDiffOptions {
         Self {
             min_score: 0.5,
             min_tokens: 3,
+            weak_min_score: 0.25,
+            weak_margin: 0.1,
         }
     }
 }
@@ -86,6 +96,8 @@ pub struct TreeDiffSummary {
     pub moved: usize,
     /// Paired by content under another name.
     pub renamed: usize,
+    /// Paired weakly: a changed function whose best candidate is clearly ahead.
+    pub weak_renamed: usize,
     pub added: usize,
     pub removed: usize,
 }
@@ -96,6 +108,8 @@ pub struct TreeDiff {
     pub summary: TreeDiffSummary,
     /// Paired by content under another name: old name -> new name.
     pub renamed: Vec<Pair>,
+    /// Paired weakly (see [`TreeDiffOptions::weak_min_score`]), highest score first.
+    pub weak_renamed: Vec<Pair>,
     /// Paired by name, text changed.
     pub changed: Vec<Pair>,
     /// Paired by name in another file (changed or not).
@@ -318,6 +332,84 @@ fn jaccard(a: &[u32], b: &[u32]) -> f64 {
     score
 }
 
+/// The pairs of an unmatched old and an unmatched new function whose token
+/// sets are at least `min_score` similar, best first (score, old, new). An
+/// old function is found through the tokens it shares with a new one; tokens
+/// that more than 64 unmatched old functions have are skipped.
+fn content_candidates(
+    old_tokens: &[Vec<u32>],
+    new_tokens: &[Vec<u32>],
+    old_done: &[bool],
+    new_done: &[bool],
+    min_tokens: usize,
+    min_score: f64,
+) -> Vec<(f64, usize, usize)> {
+    let mut postings: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
+    for (i, tokens) in old_tokens.iter().enumerate() {
+        if !old_done[i] && tokens.len() >= min_tokens {
+            for &token in tokens {
+                postings.entry(token).or_default().push(i);
+            }
+        }
+    }
+    postings.retain(|_, list| list.len() <= 64);
+    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
+    for (j, tokens) in new_tokens.iter().enumerate() {
+        if new_done[j] || tokens.len() < min_tokens {
+            continue;
+        }
+        let mut seen: FxHashSet<usize> = FxHashSet::default();
+        for token in tokens {
+            for &i in postings.get(token).into_iter().flatten() {
+                if seen.insert(i) {
+                    let score = jaccard(&old_tokens[i], tokens);
+                    if score >= min_score {
+                        candidates.push((score, i, j));
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then((a.1, a.2).cmp(&(b.1, b.2))));
+    candidates
+}
+
+/// The best and second-best candidate of one function in the weak pass.
+#[derive(Debug, Clone, Copy, Default)]
+struct Top {
+    /// Best score and the index of its candidate.
+    best: Option<(f64, usize)>,
+    /// The runner-up's score, if there is one.
+    second: Option<f64>,
+}
+
+impl Top {
+    fn observe(&mut self, score: f64, other: usize) {
+        let best = self.best;
+        match best {
+            Some((best, _)) if score <= best => {
+                if self.second.is_none_or(|second| score > second) {
+                    self.second = Some(score);
+                }
+            }
+            _ => {
+                self.second = self.best.map(|(best, _)| best);
+                self.best = Some((score, other));
+            }
+        }
+    }
+
+    /// Whether `other` is the best candidate and beats the runner-up (if any)
+    /// by at least `margin`.
+    fn decisive(self, other: usize, margin: f64) -> bool {
+        match (self.best, self.second) {
+            (Some((best, j)), Some(second)) => j == other && best - second >= margin,
+            (Some((_, j)), None) => j == other,
+            (None, _) => false,
+        }
+    }
+}
+
 fn match_functions(old: &[Entry], new: &[Entry], options: TreeDiffOptions) -> TreeDiff {
     let mut interner: FxHashMap<String, u32> = FxHashMap::default();
     let mut intern = |entries: &[Entry]| -> Vec<Vec<u32>> {
@@ -405,35 +497,15 @@ fn match_functions(old: &[Entry], new: &[Entry], options: TreeDiffOptions) -> Tr
         }
     }
 
-    // 2. The rest by content, through an index of the rarer old tokens.
-    let eligible = |tokens: &[u32]| tokens.len() >= options.min_tokens;
-    let mut postings: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
-    for (i, tokens) in old_tokens.iter().enumerate() {
-        if !old_done[i] && eligible(tokens) {
-            for &token in tokens {
-                postings.entry(token).or_default().push(i);
-            }
-        }
-    }
-    postings.retain(|_, list| list.len() <= 64);
-    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
-    for (j, tokens) in new_tokens.iter().enumerate() {
-        if new_done[j] || !eligible(tokens) {
-            continue;
-        }
-        let mut seen: FxHashSet<usize> = FxHashSet::default();
-        for token in tokens {
-            for &i in postings.get(token).into_iter().flatten() {
-                if seen.insert(i) {
-                    let score = jaccard(&old_tokens[i], tokens);
-                    if score >= options.min_score {
-                        candidates.push((score, i, j));
-                    }
-                }
-            }
-        }
-    }
-    candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then((a.1, a.2).cmp(&(b.1, b.2))));
+    // 2. The rest by content.
+    let candidates = content_candidates(
+        &old_tokens,
+        &new_tokens,
+        &old_done,
+        &new_done,
+        options.min_tokens,
+        options.min_score,
+    );
     for (score, i, j) in candidates {
         if old_done[i] || new_done[j] {
             continue;
@@ -450,7 +522,39 @@ fn match_functions(old: &[Entry], new: &[Entry], options: TreeDiffOptions) -> Tr
     diff.renamed.sort_by_key(|pair| Reverse((pair.score * 1e6) as i64));
     diff.summary.renamed = diff.renamed.len();
 
-    // 3. What is left: functions with a stable name only; minified and slot
+    // 3. Weak matches: what is still unmatched and changed a lot. A pair needs
+    // at least `weak_min_score`, to be each other's best candidate, and to
+    // beat both sides' runner-up by `weak_margin`; near-equal candidates are
+    // not paired.
+    let weak = content_candidates(
+        &old_tokens,
+        &new_tokens,
+        &old_done,
+        &new_done,
+        options.min_tokens,
+        options.weak_min_score,
+    );
+    let mut old_top = vec![Top::default(); old.len()];
+    let mut new_top = vec![Top::default(); new.len()];
+    for &(score, i, j) in &weak {
+        old_top[i].observe(score, j);
+        new_top[j].observe(score, i);
+    }
+    for &(score, i, j) in &weak {
+        if old_top[i].decisive(j, options.weak_margin) && new_top[j].decisive(i, options.weak_margin) {
+            old_done[i] = true;
+            new_done[j] = true;
+            diff.weak_renamed.push(Pair {
+                old: old[i].site.clone(),
+                new: new[j].site.clone(),
+                score,
+                changed: old[i].text_hash != new[j].text_hash,
+            });
+        }
+    }
+    diff.summary.weak_renamed = diff.weak_renamed.len();
+
+    // 4. What is left: functions with a stable name only; minified and slot
     // names say nothing on their own.
     diff.removed = old
         .iter()
@@ -518,6 +622,43 @@ mod tests {
         let new = entries(&[("a.js", r#"function Wd(){return "something else entirely"}"#)]);
         let diff = match_functions(&old, &new, TreeDiffOptions::default());
         assert_eq!(diff.summary.same + diff.summary.changed, 0, "{diff:?}");
+    }
+
+    #[test]
+    fn weak_matches_need_a_mutual_clear_best() {
+        // Shares 5 of 13 tokens: below the content threshold, above the weak one.
+        let old = entries(&[(
+            "a.js",
+            "function fn_11111111(x){return x.a1+x.a2+x.a3+x.a4+x.a5+x.a6+x.a7+x.a8+x.a9}",
+        )]);
+        let new = entries(&[(
+            "b.js",
+            "function fn_22222222(x){return x.a1+x.a2+x.a3+x.a4+x.a5+x.b1+x.b2+x.b3+x.b4}",
+        )]);
+        let diff = match_functions(&old, &new, TreeDiffOptions::default());
+        assert!(diff.renamed.is_empty(), "{diff:?}");
+        assert_eq!(diff.weak_renamed.len(), 1, "{diff:?}");
+        assert_eq!(diff.summary.weak_renamed, 1);
+        assert_eq!(diff.weak_renamed[0].old.name, "fn_11111111");
+        assert_eq!(diff.weak_renamed[0].new.name, "fn_22222222");
+        assert!(diff.weak_renamed[0].changed);
+        assert!(diff.removed.is_empty() && diff.added.is_empty(), "{diff:?}");
+    }
+
+    #[test]
+    fn weak_matches_skip_near_equal_candidates() {
+        // Both old functions share 5 of 13 tokens with the new one: a tie.
+        let old = entries(&[(
+            "a.js",
+            "function fn_11111111(x){return x.a1+x.a2+x.a3+x.a4+x.a5+x.a6+x.a7+x.a8+x.a9}function fn_33333333(x){return x.a1+x.a2+x.a3+x.a4+x.a5+x.c1+x.c2+x.c3+x.c4}",
+        )]);
+        let new = entries(&[(
+            "b.js",
+            "function fn_22222222(x){return x.a1+x.a2+x.a3+x.a4+x.a5+x.b1+x.b2+x.b3+x.b4}",
+        )]);
+        let diff = match_functions(&old, &new, TreeDiffOptions::default());
+        assert!(diff.weak_renamed.is_empty(), "{diff:?}");
+        assert_eq!(diff.summary.weak_renamed, 0);
     }
 
     #[test]
