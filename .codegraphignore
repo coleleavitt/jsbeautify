@@ -3,4 +3,4 @@
 # the complexity ranking). Re-index after editing: `codegraph index`.
 .sisyphus/
 .jfc/
-research/
+.research/
