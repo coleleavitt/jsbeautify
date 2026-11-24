@@ -6,10 +6,15 @@ This page says what each step uses so an agent can run the loop without a human
 filling in the gaps. The rules every change must follow are in
 [`AGENTS.md`](../AGENTS.md).
 
-```text
-   real bundles ──► find ──► reproduce ──► fix ──► verify ──► land
-        ▲                                                     │
-        └───────────── new bundles, new obfuscators ◄─────────┘
+```mermaid
+flowchart LR
+    R["real bundles"] --> F["Find<br/>crash, hang, failed re-parse,<br/>vuln-scan, CodeQL, reviewers"]
+    F --> P["Reproduce<br/>minimal fixture<br/>+ failing test"]
+    P --> X["Fix<br/>one pass,<br/>resolved symbols"]
+    X --> V{"Verify<br/>soundness review<br/>gate · output gate"}
+    V -- fails --> X
+    V -- passes --> L["Land<br/>commit with<br/>its fixture"]
+    L -- "new bundles,<br/>new obfuscators" --> R
 ```
 
 ## 1. Find

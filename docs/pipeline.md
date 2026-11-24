@@ -1,5 +1,20 @@
 # Deobfuscation pipeline
 
+```mermaid
+flowchart TD
+    IN["minified, obfuscated or bundled JS"] --> DET["Detect the bundler or obfuscator<br/>webpack · Turbopack · esbuild · Bun · Angular · obfuscator.io · Akamai"]
+    DET --> S["Structural passes · Phases 0–12.5<br/>strings, control flow, proxies, dead code, naming"]
+    S --> C1[["Checkpoint 12.6 · codegen + strict re-parse"]]
+    C1 --> A["Cosmetic A · Phases 13–15<br/>split statements and declarations"]
+    A --> C2[["Checkpoint 15.6 · codegen + strict re-parse"]]
+    C2 --> B["Cosmetic B · Phases 16–19.5<br/>ternaries to if, IIFEs, JSON.parse, optional chaining"]
+    B --> F[["Final gate 19.6 / 21.5 · annotations + re-parse"]]
+    F --> OUT["readable JS, same behavior"]
+    C1 -. "invalid JS" .-> ERR["rejected, never reported as success"]
+    C2 -.-> ERR
+    F -.-> ERR
+```
+
 `--deobfuscate` is an ordered AST pipeline. The implementation is split by
 lifetime, not into one source file per numbered phase:
 
@@ -31,6 +46,15 @@ explicitly; all arena-owned AST data is discarded. See
 `src/ast_deobfuscate/engine/final_output.rs` for the authoritative order.
 
 ### Project mode (several chunks of one build)
+
+```mermaid
+flowchart LR
+    D["dist/<br/>every chunk"] --> I["Index<br/>imports, exports,<br/>helpers, shapes"]
+    I --> P["Plan<br/>resolve each import to its binding;<br/>one name per binding, no clashes"]
+    P --> J["Deobfuscate<br/>each file in its own process,<br/>seeded with its names"]
+    J --> C{"Check links<br/>exports unchanged,<br/>every import resolves"}
+    C --> O["deob/<br/>+ project-index.json"]
+```
 
 `jsbeautify -d --project dist/assets -o deob/` deobfuscates the chunks of a
 code-split build (esbuild/rollup/vite `import { a as e } from "./chunk-X.js"`,
