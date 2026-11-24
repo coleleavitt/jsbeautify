@@ -1,67 +1,60 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
-  <title id="title">Why jsbeautify</title>
-  <desc id="desc">A minified bundle from a web app or Bun binary is too large and unreadable to hand straight to an AI agent. jsbeautify turns it into readable, named, verified code first.</desc>
+  <title id="title">How jsbeautify fits with AI agents</title>
+  <desc id="desc">A minified bundle is too much to hand straight to an AI agent such as Claude Code or Codex. jsbeautify turns it into readable, named code the agent reads; the agent in turn finds jsbeautify's bugs and fixes them: find, reproduce, fix, verify, land.</desc>
   <defs>
-    <marker id="head" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
-      <path d="M0 0 L10 5 L0 10 z" fill="#5b8f8a"/>
-    </marker>
+    <marker id="head" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5b8f8a"/></marker>
+    <marker id="small" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5b8f8a"/></marker>
   </defs>
   <rect width="960" height="560" rx="24" fill="#fdfdfb"/>
-
   <g font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle" fill="#1b1b1b">
 
-    <!-- arrows -->
+    <!-- the direct route does not work -->
+    <path d="M355 104 Q600 6 845 140" fill="none" stroke="#9a4a55" stroke-width="5" stroke-dasharray="12 10" stroke-linecap="round"/>
+    <g stroke="#7a1424" stroke-width="16" stroke-linecap="round"><line x1="580" y1="38" x2="620" y2="88"/><line x1="620" y1="38" x2="580" y2="88"/></g>
+    <text x="600" y="118" font-size="16" fill="#7a1424">10 MB of a, b, c</text>
+
+    <!-- forward path -->
     <g stroke="#5b8f8a" stroke-width="9" stroke-linecap="round" fill="none" marker-end="url(#head)">
-      <line x1="232" y1="190" x2="362" y2="190"/>
-      <line x1="550" y1="190" x2="700" y2="190"/>
-      <line x1="470" y1="362" x2="552" y2="404"/>
-      <line x1="696" y1="404" x2="778" y2="324"/>
+      <line x1="188" y1="236" x2="268" y2="236"/>
+      <line x1="430" y1="236" x2="470" y2="236"/>
+      <path d="M624 196 Q692 128 752 186"/>
+      <path d="M760 300 Q692 372 626 276"/>
     </g>
+    <text x="692" y="142" font-size="16" fill="#2f5753">readable, named code</text>
+    <text x="692" y="372" font-size="16" fill="#2f5753">bugs, fixtures, fixes</text>
 
-    <!-- red X over the direct path -->
-    <g stroke="#7a1424" stroke-width="22" stroke-linecap="round">
-      <line x1="597" y1="152" x2="653" y2="228"/>
-      <line x1="653" y1="152" x2="597" y2="228"/>
+    <!-- web app -->
+    <g stroke="#1b1b1b" stroke-width="7" fill="none" stroke-linejoin="round" stroke-linecap="round">
+      <rect x="40" y="182" width="132" height="108" rx="13"/><line x1="40" y1="210" x2="172" y2="210"/>
+      <line x1="62" y1="238" x2="124" y2="238"/><line x1="62" y1="260" x2="150" y2="260"/>
     </g>
-    <text x="625" y="268" font-size="17" fill="#7a1424">10 MB of a, b, c</text>
+    <g fill="#1b1b1b"><circle cx="58" cy="196" r="4.5"/><circle cx="72" cy="196" r="4.5"/><circle cx="86" cy="196" r="4.5"/></g>
+    <text x="106" y="326" font-size="17" font-weight="600">web app · Bun binary</text>
 
-    <!-- web app / binary: a browser window -->
-    <g stroke="#1b1b1b" stroke-width="8" fill="none" stroke-linejoin="round">
-      <rect x="62" y="128" width="150" height="122" rx="14"/>
-      <line x1="62" y1="160" x2="212" y2="160"/>
-      <line x1="88" y1="192" x2="160" y2="192" stroke-linecap="round"/>
-      <line x1="88" y1="216" x2="186" y2="216" stroke-linecap="round"/>
-    </g>
-    <g fill="#1b1b1b"><circle cx="82" cy="144" r="5"/><circle cx="98" cy="144" r="5"/><circle cx="114" cy="144" r="5"/></g>
-    <text x="137" y="292" font-size="20" font-weight="600">web app · Bun binary</text>
-
-    <!-- the bundle: a file with a JS band -->
-    <path d="M395 102 h78 l40 40 v156 a10 10 0 0 1 -10 10 h-108 a10 10 0 0 1 -10 -10 v-186 a10 10 0 0 1 10 -10 z" fill="none" stroke="#1b1b1b" stroke-width="9" stroke-linejoin="round"/>
-    <path d="M473 102 v40 h40" fill="#1b1b1b" stroke="#1b1b1b" stroke-width="9" stroke-linejoin="round"/>
-    <rect x="370" y="168" width="168" height="66" rx="10" fill="#1b1b1b"/>
-    <text x="454" y="219" font-size="48" font-weight="800" fill="#fdfdfb">JS</text>
-    <text x="454" y="340" font-size="20" font-weight="600">bundle.min.js</text>
-
-    <!-- AI agent: a robot head -->
-    <g stroke="#1b1b1b" stroke-width="9" fill="none" stroke-linejoin="round" stroke-linecap="round">
-      <rect x="738" y="132" width="150" height="118" rx="26"/>
-      <line x1="813" y1="132" x2="813" y2="104"/>
-      <line x1="726" y1="176" x2="726" y2="210"/>
-      <line x1="900" y1="176" x2="900" y2="210"/>
-      <line x1="788" y1="218" x2="838" y2="218"/>
-    </g>
-    <circle cx="813" cy="96" r="9" fill="#1b1b1b"/>
-    <circle cx="785" cy="180" r="11" fill="#1b1b1b"/>
-    <circle cx="841" cy="180" r="11" fill="#1b1b1b"/>
-    <text x="813" y="292" font-size="20" font-weight="600">AI agent</text>
+    <!-- bundle -->
+    <path d="M310 150 h68 l34 34 v134 a9 9 0 0 1 -9 9 h-93 a9 9 0 0 1 -9 -9 v-159 a9 9 0 0 1 9 -9 z" fill="none" stroke="#1b1b1b" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M378 150 v34 h34" fill="#1b1b1b" stroke="#1b1b1b" stroke-width="8" stroke-linejoin="round"/>
+    <rect x="288" y="206" width="146" height="58" rx="9" fill="#1b1b1b"/>
+    <text x="361" y="251" font-size="42" font-weight="800" fill="#fdfdfb">JS</text>
+    <text x="361" y="360" font-size="17" font-weight="600">bundle.min.js</text>
 
     <!-- jsbeautify -->
-    <circle cx="625" cy="440" r="72" fill="#c2410c"/>
-    <circle cx="625" cy="440" r="72" fill="none" stroke="#1b1b1b" stroke-width="8"/>
-    <text x="625" y="461" font-size="58" font-weight="800" fill="#fdfdfb">{ }</text>
-    <path d="M650 352 l6 14 l14 6 l-14 6 l-6 14 l-6 -14 l-14 -6 l14 -6 z" fill="#fdfdfb" stroke="#1b1b1b" stroke-width="3" stroke-linejoin="round"/>
-    <text x="625" y="540" font-size="22" font-weight="700">jsbeautify</text>
-    <text x="768" y="398" font-size="17" fill="#3d6b66" text-anchor="start">readable, named,</text>
-    <text x="768" y="420" font-size="17" fill="#3d6b66" text-anchor="start">still runs the same</text>
+    <circle cx="552" cy="236" r="74" fill="#c2410c" stroke="#1b1b1b" stroke-width="8"/>
+    <text x="552" y="257" font-size="58" font-weight="800" fill="#fdfdfb">{ }</text>
+    <path d="M578 150 l6 14 l14 6 l-14 6 l-6 14 l-6 -14 l-14 -6 l14 -6 z" fill="#fdfdfb" stroke="#1b1b1b" stroke-width="3" stroke-linejoin="round"/>
+    <text x="552" y="342" font-size="21" font-weight="700">jsbeautify</text>
+
+    <!-- agents -->
+    <rect x="752" y="150" width="192" height="150" rx="22" fill="#ffffff" stroke="#1b1b1b" stroke-width="7"/>
+    <g transform="translate(778 176) scale(2.25)"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="#D97757"/></g>
+    <g transform="translate(872 176) scale(2.25)"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" fill="#1b1b1b"/></g>
+    <text x="805" y="264" font-size="14" font-weight="600">Claude Code</text>
+    <text x="899" y="264" font-size="14" font-weight="600">Codex</text>
+    <text x="848" y="342" font-size="21" font-weight="700">AI agents</text>
+
+    <!-- the loop -->
+    <text x="660" y="446" font-size="15" fill="#4b5563">the refinement loop: agents improve the tool they use</text>
+    <rect x="372" y="462" width="70" height="38" rx="19" fill="#e6efee" stroke="#5b8f8a" stroke-width="2.5"/><text x="407" y="487" font-size="17" font-weight="600" fill="#2f5753">find</text><line x1="448" y1="481" x2="466" y2="481" stroke="#5b8f8a" stroke-width="4" stroke-linecap="round" marker-end="url(#small)"/><rect x="476" y="462" width="116" height="38" rx="19" fill="#e6efee" stroke="#5b8f8a" stroke-width="2.5"/><text x="534" y="487" font-size="17" font-weight="600" fill="#2f5753">reproduce</text><line x1="598" y1="481" x2="616" y2="481" stroke="#5b8f8a" stroke-width="4" stroke-linecap="round" marker-end="url(#small)"/><rect x="626" y="462" width="56" height="38" rx="19" fill="#e6efee" stroke="#5b8f8a" stroke-width="2.5"/><text x="654" y="487" font-size="17" font-weight="600" fill="#2f5753">fix</text><line x1="688" y1="481" x2="706" y2="481" stroke="#5b8f8a" stroke-width="4" stroke-linecap="round" marker-end="url(#small)"/><rect x="716" y="462" width="82" height="38" rx="19" fill="#e6efee" stroke="#5b8f8a" stroke-width="2.5"/><text x="757" y="487" font-size="17" font-weight="600" fill="#2f5753">verify</text><line x1="804" y1="481" x2="822" y2="481" stroke="#5b8f8a" stroke-width="4" stroke-linecap="round" marker-end="url(#small)"/><rect x="832" y="462" width="70" height="38" rx="19" fill="#e6efee" stroke="#5b8f8a" stroke-width="2.5"/><text x="867" y="487" font-size="17" font-weight="600" fill="#2f5753">land</text>
+    <path d="M910 500 Q946 540 650 538 Q392 540 380 506" fill="none" stroke="#5b8f8a" stroke-width="3" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#small)"/>
   </g>
 </svg>
