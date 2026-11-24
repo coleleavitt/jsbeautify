@@ -17,6 +17,17 @@ core.[0-9]*
 /.jfc/
 /.mcp.json
 
-# Local-only working directories
+# Local CodeQL databases and SARIF results (scripts/codeql.sh)
+/.codeql/
+
+# Local-only working directories: old session reports, research notes and
+# per-target analysis (see AGENTS.md)
 /frontend/
-/research/mobile-kernel/
+/.research/
+
+# Session exports
+/prime-agent-session-*.html
+
+# Ship the agent tooling (.claude/ is often ignored globally), not local settings
+!/.claude/
+/.claude/settings.local.json

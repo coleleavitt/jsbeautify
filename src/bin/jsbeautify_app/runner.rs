@@ -62,13 +62,23 @@ fn run() -> Fallible {
 }
 
 pub(super) fn read_input(input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    if input == "-" {
-        let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)?;
-        Ok(buffer)
+    let bytes = if input == "-" {
+        let mut buffer = Vec::new();
+        io::stdin().read_to_end(&mut buffer)?;
+        buffer
     } else {
-        Ok(fs::read_to_string(input)?)
-    }
+        fs::read(input)?
+    };
+    decode_utf8(input, bytes)
+}
+
+/// UTF-8, else Latin-1 with a warning that names the input and the byte
+/// offset of the first invalid sequence, so a bundle cut from a binary with
+/// trailing non-text bytes can still be found and trimmed.
+#[allow(clippy::unnecessary_wraps)]
+fn decode_utf8(input: &str, bytes: Vec<u8>) -> Result<String, Box<dyn std::error::Error>> {
+    let name = if input == "-" { "<stdin>" } else { input };
+    Ok(jsbeautify::source_text::decode_named(name, bytes))
 }
 
 fn read_vm_input_bounded(input: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -100,7 +110,7 @@ fn read_input_bounded(input: &str, limit: usize, command: &str) -> Result<String
         bytes.try_reserve_exact(read)?;
         bytes.extend_from_slice(&chunk[..read]);
     }
-    Ok(String::from_utf8(bytes)?)
+    decode_utf8(input, bytes)
 }
 
 fn write_output(output: Option<&String>, text: &str) -> Fallible {

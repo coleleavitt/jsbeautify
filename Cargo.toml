@@ -14,7 +14,7 @@ repository = "https://github.com/coleleavitt/jsbeautify"
 keywords = ["javascript", "beautifier", "deobfuscator", "webpack", "oxc"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [
-    "research/",
+    ".research/",
     "docs/",
     "tests/",
     "examples/",

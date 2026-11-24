@@ -11,7 +11,10 @@
 //!    links and gives that binding one name in every file: its own name when
 //!    `--keep-fn-names` keeps it (a function's `.name`), the runtime helper it
 //!    is, the name its own file gives it, its real export name, or else
-//!    `<chunk>_<export>`. Exports nobody in the project imports are the public
+//!    `<chunk>_<export>`; in a file named only by a content hash, the shape
+//!    of its declaration (`fn_1a2b3c4d`), which stays the same across builds
+//!    while the code does. Two bindings one file sees never
+//!    share a name. Exports nobody in the project imports are the public
 //!    surface: their short names are names, while the one- to three-character
 //!    names chunks use only to reach each other are not. Mangled Turbopack
 //!    keys are named by the `esmReexport` lists of every chunk.
@@ -127,7 +130,8 @@ pub struct IndexedFile {
 /// deobfuscated with.
 ///
 /// # Errors
-/// Returns an error if a file cannot be read as UTF-8.
+/// Returns an error if a file cannot be read. A file that is not UTF-8 is
+/// read as Latin-1 ([`crate::source_text`]).
 pub fn index_project(
     root: &Path,
     files: &[PathBuf],
@@ -137,7 +141,7 @@ pub fn index_project(
 ) -> std::io::Result<Vec<IndexedFile>> {
     let sources: Vec<(PathBuf, String)> = files
         .iter()
-        .map(|file| Ok((file.clone(), std::fs::read_to_string(root.join(file))?)))
+        .map(|file| Ok((file.clone(), crate::source_text::read(&root.join(file))?)))
         .collect::<std::io::Result<_>>()?;
     let source_types = parallel_map(&sources, |(path, code)| goal(path).resolve(code, isolated));
     let no_helpers = FxHashMap::default();
@@ -191,7 +195,7 @@ pub enum NameSource {
     Kept,
     /// Its export name.
     ExportName,
-    /// `<chunk>_<export>`.
+    /// `<chunk>_<export>`, or the shape of its declaration (`fn_1a2b3c4d`).
     Synthetic,
 }
 
@@ -212,6 +216,9 @@ struct Graph<'f> {
     /// `(file, export name)` imported by name somewhere.
     imported: FxHashSet<(usize, String)>,
     idents: Vec<String>,
+    /// Files whose name says nothing once its content hash is dropped
+    /// (`chunk-1a2b3c4d.js`, or a name two files share).
+    hashed_names: Vec<bool>,
     /// Informative names other files re-export a binding under.
     aliases: FxHashMap<Origin, BTreeSet<String>>,
 }
@@ -225,6 +232,7 @@ impl<'f> Graph<'f> {
             opaque: FxHashSet::default(),
             imported: FxHashSet::default(),
             idents: file_idents(files),
+            hashed_names: Vec::new(),
             aliases: FxHashMap::default(),
         };
         for (file, indexed) in files.iter().enumerate() {
@@ -244,6 +252,11 @@ impl<'f> Graph<'f> {
             }
         }
         graph.aliases = graph.collect_aliases();
+        graph.hashed_names = files
+            .iter()
+            .zip(&graph.idents)
+            .map(|(f, ident)| ident == "chunk" || *ident != file_ident(&f.path, true))
+            .collect();
         graph
     }
 
@@ -462,62 +475,127 @@ impl<'f> Graph<'f> {
             .map(|export| export.exported.as_str())
     }
 
-    /// [`Self::origin_name`], or `<chunk>_<export>` for a minified binding.
+    /// [`Self::origin_name`], or else a synthetic name for a minified
+    /// binding: `<file>_<export>`, or, when the file name is only a content
+    /// hash, the shape of its declaration (`fn_1a2b3c4d`, see
+    /// [`crate::ast_deobfuscate::project::shape`]). A hash changes with every
+    /// build; the shape stays the same while the code does.
     fn linked_name(&self, origin: &Origin) -> Option<(String, NameSource)> {
         self.origin_name(origin).or_else(|| {
-            let export = self.export_names(origin).min()?;
-            let name = format!("{}_{export}", self.idents[origin.file]);
-            (is_minified(&origin.local) && is_valid_identifier(&name)).then_some((name, NameSource::Synthetic))
+            if !is_minified(&origin.local) {
+                return None;
+            }
+            let shape = self.files[origin.file].facts.shapes.get(&origin.local);
+            let name = match shape {
+                Some(shape) if self.hashed_names[origin.file] => shape.clone(),
+                _ => format!("{}_{}", self.idents[origin.file], self.export_names(origin).min()?),
+            };
+            is_valid_identifier(&name).then_some((name, NameSource::Synthetic))
         })
     }
 
-    /// The names of the minified locals `file` exports, by local: their own
-    /// name when the file keeps it ([`FileFacts::kept_locals`]), their
-    /// [`Self::linked_name`] when another file can read them, else their
-    /// [`Self::origin_name`]. Two locals that want one name get `$N`, as the
-    /// exporting file's own rename would give them, so importers agree.
-    fn export_local_names(&self, file: usize) -> FxHashMap<String, (String, NameSource)> {
-        let facts = &self.files[file].facts;
-        let mut locals: Vec<&str> = facts
-            .exports
-            .iter()
-            .map(|export| export.local.as_str())
-            .filter(|local| is_minified(local))
-            .filter(|local| self.named_import(file, local).is_none() && !self.is_namespace_import(file, local))
-            .collect();
-        locals.sort_unstable();
-        locals.dedup();
-        let mut taken: FxHashSet<String> = facts
-            .exports
-            .iter()
-            .map(|e| e.local.clone())
-            .chain(facts.globals.iter().cloned())
-            .collect();
-        let mut names = FxHashMap::default();
-        for local in locals {
-            if facts.kept_locals.contains(local) {
-                names.insert(local.to_string(), (local.to_string(), NameSource::Kept));
-                continue;
+    /// The files that see `origin`: its own and every file importing it by name.
+    fn importers(&self) -> FxHashMap<Origin, Vec<usize>> {
+        let mut importers: FxHashMap<Origin, Vec<usize>> = FxHashMap::default();
+        for (file, indexed) in self.files.iter().enumerate() {
+            for import in &indexed.facts.imports {
+                let ImportKind::Named { imported, .. } = &import.kind else {
+                    continue;
+                };
+                if let Some(origin) = self
+                    .resolve(file, &import.source)
+                    .and_then(|target| self.resolve_export(target, imported, 0))
+                {
+                    importers.entry(origin).or_default().push(file);
+                }
             }
-            let origin = Origin {
-                file,
-                local: local.to_string(),
-            };
-            let linked = self.export_names(&origin).any(|name| !self.is_public(file, name));
-            let name = if linked {
-                self.linked_name(&origin)
-            } else {
-                self.origin_name(&origin)
-            };
-            let Some((mut name, source)) = name else { continue };
-            let base = name.clone();
+        }
+        importers
+    }
+
+    /// The names of the minified locals every file exports, by file and
+    /// local: their own name when the file keeps it ([`FileFacts::kept_locals`]),
+    /// their [`Self::linked_name`] when another file can read them, else their
+    /// [`Self::origin_name`].
+    ///
+    /// Two bindings that one file sees (its own exports and its imports) never
+    /// get one name: the later one, in name, file and local order, gets `$N`.
+    /// Each file's own rename would otherwise suffix one of them, and the
+    /// importers and the exporter would disagree.
+    fn export_local_names(&self) -> Vec<FxHashMap<String, (String, NameSource)>> {
+        let importers = self.importers();
+        // Names taken in each file: its exported locals, the globals it
+        // reads, kept names and the unminified names of what it imports.
+        let mut taken: Vec<FxHashSet<String>> = self
+            .files
+            .iter()
+            .map(|f| {
+                f.facts
+                    .exports
+                    .iter()
+                    .map(|e| e.local.clone())
+                    .chain(f.facts.globals.iter().cloned())
+                    .collect()
+            })
+            .collect();
+        for (origin, files) in &importers {
+            if !is_minified(&origin.local) {
+                for &file in files {
+                    taken[file].insert(origin.local.clone());
+                }
+            }
+        }
+        let mut names = vec![FxHashMap::default(); self.files.len()];
+        let mut wanted: Vec<(String, NameSource, Origin)> = Vec::new();
+        for (file, indexed) in self.files.iter().enumerate() {
+            let facts = &indexed.facts;
+            let mut locals: Vec<&str> = facts
+                .exports
+                .iter()
+                .map(|export| export.local.as_str())
+                .filter(|local| is_minified(local))
+                .filter(|local| self.named_import(file, local).is_none() && !self.is_namespace_import(file, local))
+                .collect();
+            locals.sort_unstable();
+            locals.dedup();
+            for local in locals {
+                let origin = Origin {
+                    file,
+                    local: local.to_string(),
+                };
+                if facts.kept_locals.contains(local) {
+                    for &seen in importers.get(&origin).into_iter().flatten() {
+                        taken[seen].insert(local.to_string());
+                    }
+                    names[file].insert(local.to_string(), (local.to_string(), NameSource::Kept));
+                    continue;
+                }
+                let linked = self.export_names(&origin).any(|name| !self.is_public(file, name));
+                let name = if linked {
+                    self.linked_name(&origin)
+                } else {
+                    self.origin_name(&origin)
+                };
+                if let Some((name, source)) = name {
+                    wanted.push((name, source, origin));
+                }
+            }
+        }
+        wanted.sort_unstable_by(|a, b| (&a.0, a.2.file, &a.2.local).cmp(&(&b.0, b.2.file, &b.2.local)));
+        for (base, source, origin) in wanted {
+            let seen: Vec<usize> = std::iter::once(origin.file)
+                .chain(importers.get(&origin).into_iter().flatten().copied())
+                .collect();
+            let mut name = base.clone();
             let mut n = 0;
-            while taken.contains(&name) {
+            while seen.iter().any(|&file| taken[file].contains(&name)) {
                 n += 1;
                 name = format!("{base}${n}");
             }
-            taken.insert(name.clone());
-            names.insert(local.to_string(), (name, source));
+            for &file in &seen {
+                taken[file].insert(name.clone());
+            }
+            names[origin.file].insert(origin.local, (name, source));
         }
         names
     }
@@ -635,8 +713,7 @@ pub struct ProjectPlan {
 #[must_use]
 pub fn plan_project(files: &[IndexedFile]) -> ProjectPlan {
     let graph = Graph::new(files);
-    let names: Vec<FxHashMap<String, (String, NameSource)>> =
-        (0..files.len()).map(|file| graph.export_local_names(file)).collect();
+    let names = graph.export_local_names();
     let mut stats = PlanStats {
         files: files.len(),
         ..PlanStats::default()

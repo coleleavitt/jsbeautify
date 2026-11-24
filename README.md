@@ -1,13 +1,47 @@
-# jsbeautify
+<h1 align="center">jsbeautify</h1>
 
-[![CI](https://github.com/coleleavitt/jsbeautify/actions/workflows/ci.yml/badge.svg)](https://github.com/coleleavitt/jsbeautify/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/jsbeautify.svg)](https://crates.io/crates/jsbeautify)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
+<p align="center">
+  <b>The JavaScript deobfuscator built for AI agents, and refined by them.</b><br>
+  Minified, bundled or obfuscated JavaScript in. Readable code that still runs the same out.
+</p>
 
-A fast JavaScript beautifier and deobfuscator written in Rust, powered by [oxc](https://github.com/oxc-project/oxc).
+<p align="center">
+  <a href="https://github.com/coleleavitt/jsbeautify/actions/workflows/ci.yml"><img src="https://github.com/coleleavitt/jsbeautify/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/jsbeautify"><img src="https://img.shields.io/crates/v/jsbeautify.svg" alt="crates.io"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/built%20on-Oxc-orange" alt="Built on Oxc">
+</p>
 
-Takes minified, obfuscated webpack/esbuild/Bun bundles and produces readable JavaScript.
-Handles real-world production bundles — tested against 11MB+ builds.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#with-an-agent">With an agent</a> ·
+  <a href="docs/refinement.md">Refinement loop</a> ·
+  <a href="docs/cli.md">CLI reference</a>
+</p>
+
+These days agents, not people, read most deobfuscated code. jsbeautify is
+built for that reader. Its output, logs and inspection commands are made for a
+model to query. Its pipeline is a list of small passes an agent can find, change
+and review. And it ships the reviewers, checks and [refinement
+loop](docs/refinement.md) that let agents find its bugs and fix them.
+
+- **Whole builds, not just files.** `--project` deobfuscates every chunk of a
+  code-split build together and gives each cross-file binding one name. On the
+  Claude Code 2.1.331 Bun build (3,594 chunks) it links 107,390 imports with
+  0 broken, in 14 seconds and 1 GB of RAM.
+- **Names that survive a release.** A binding nothing names is named after
+  the shape of its code, not the chunk hash, so 93% of those names stay the
+  same from 2.1.330 to 2.1.331 and two versions can be diffed.
+- **Behavior first.** Every rewrite is checked for symbol identity, shadowing,
+  evaluation order, `eval` and `this`. The output is code-generated and
+  parsed again at two checkpoints, so invalid JavaScript is never reported as
+  success.
+- **Every bundler you'll meet.** webpack 4/5, Turbopack (Next.js 13–16),
+  esbuild (all 63 runtime helpers), Bun, Angular, javascript-obfuscator,
+  Akamai Bot Manager.
+- **Never runs what it reads.** Hostile input must not make it panic, hang,
+  exhaust memory or write outside the output directory.
 
 ## Before / after
 
@@ -33,315 +67,106 @@ array are no longer used, so they are removed. `--isolated` tells jsbeautify
 that no other script reads this file's globals, so top-level names may be
 renamed or removed.
 
-## What it does
+## Install
 
-Takes a minified/obfuscated webpack, esbuild, or Bun bundle and produces
-readable JavaScript. AST deobfuscation, webpack module/chunk extraction,
-source-tree reconstruction from source maps, and cross-version alignment are
-exposed as subcommands (see the CLI reference below).
-
-## Installation
-
-Requires Rust 1.97 or newer.
+Needs Rust 1.97 or newer.
 
 ```bash
-cargo install jsbeautify --locked
+cargo install jsbeautify --locked                                          # crates.io
+cargo install --git https://github.com/coleleavitt/jsbeautify --locked     # latest commit
 ```
 
-Or install the latest commit:
+## Usage
 
 ```bash
-cargo install --git https://github.com/coleleavitt/jsbeautify --locked
+jsbeautify in.js -o out.js                    # format only (js-beautify flags and .jsbeautifyrc)
+jsbeautify -d in.js -o out.js 2>deob.log      # deobfuscate; stderr is the phase log
+jsbeautify -d --isolated in.js                # also rename a classic script's top-level names
+jsbeautify -d --project dist/ -o deob/        # a whole code-split build, one name per binding across chunks
+jsbeautify in.js -d --sourcemap in.js.map     # take the original names from a source map
+
+jsbeautify split-sources bundle.js -o src/    # rebuild the source tree
+jsbeautify extract-modules bundle.js -o mods/ # one file per webpack/Turbopack module
+jsbeautify align v1.js v2.js                  # stable diff between two bundle versions
+jsbeautify analyze-vm vm.js -o report.json    # static look at a JS VM / embedded Wasm (never runs it)
+
+jsbeautify scope in.js | jq .unresolved      # Oxc's symbol table as JSON (also: ast, cfg)
 ```
 
-Or build from source:
+The full flag list, js-beautify compatibility notes and the library API are in
+[`docs/cli.md`](docs/cli.md).
+
+### With an agent
+
+Point your agent at the file and let it run the tool, not read the bundle:
+
+- `jsbeautify -d` writes the result to stdout and a log to stderr: one
+  `check:` line per bundler detector, one count per phase, and a line saying
+  whether the output re-parsed after each checkpoint.
+- `scope`, `cfg` and `split-sources` let an agent answer "who writes this
+  name" or "what does this function do" without loading a 10 MB file into its
+  context.
+- Before you trust a `-d` result, run the output gate: `node --check`, and
+  the same run on input and output when the input runs on its own
+  ([`docs/refinement.md`](docs/refinement.md#4-verify)).
+
+## Project goals
+
+1. **Behavior first.** A rewrite has to keep the program's behavior on every
+   input. Symbol identity, shadowing, evaluation order, coercion, `eval` and
+   `this` are checked before anything is folded, inlined, deleted or renamed.
+   A pass that is wrong on some input is worse than no pass at all.
+2. **Agent-first.** The output and the logs are written for a model to read.
+   Each command answers one question and prints data (JSON, DOT, logs) that an
+   agent can query.
+3. **Autonomous refinement.** Agents improve the tool they rely on. The repo
+   ships the instructions, reviewers and checks that let an agent run
+   find → reproduce → fix → verify without a human
+   ([`docs/refinement.md`](docs/refinement.md)).
+4. **Hostile input.** Inputs are obfuscated on purpose and some are malicious.
+   No input should make jsbeautify panic, hang, exhaust memory or write outside
+   its output directory, and it never runs the code it reads.
+
+## Design
+
+- **Phase-based.** `-d` is an ordered list of small Oxc passes, grouped by
+  bundler under `src/ast_deobfuscate/` and run by
+  `src/ast_deobfuscate/engine/`. Small passes are easier for an agent to find,
+  change and review, and the phase log shows which pass made a change.
+- **Checkpoints.** The pipeline generates code and parses it again into a fresh
+  arena twice (Phases 12.6 and 15.6). This bounds memory and makes sure invalid
+  JavaScript is never reported as success.
+- **Sized stacks.** Parsing and traversal run on a thread whose stack is sized
+  from the input, so deep nesting cannot overflow it.
+
+The phase order and project mode are in [`docs/pipeline.md`](docs/pipeline.md).
+
+## Development
+
+Most changes here are made by coding agents (Claude Code, Codex). The rules
+they follow are in [`AGENTS.md`](AGENTS.md); `CLAUDE.md` adds the Claude
+Code hooks, reviewer subagents and skills.
 
 ```bash
-git clone https://github.com/coleleavitt/jsbeautify
-cd jsbeautify
-cargo build --release
-# binary at ./target/release/jsbeautify
-```
-
-## Quick Start
-
-```bash
-# Beautify minified JavaScript
-jsbeautify input.js -o output.js
-
-# Beautify + deobfuscate (multi-phase AST pipeline)
-jsbeautify input.js -d -o output.js
-
-# Pipe from stdin
-cat bundle.js | jsbeautify - > output.js
-
-# Extract webpack or Turbopack (Next.js) modules to separate files
-jsbeautify extract-modules bundle.js -o ./modules
-
-# Rebuild the original source tree from a bundle sourceMappingURL
-jsbeautify split-sources bundle.js -o ./out
-
-# Generate a dependency graph (DOT format)
-jsbeautify extract-modules bundle.js --graph deps.dot
-
-# Cross-version alignment with sourcemap name recovery
-jsbeautify align v1.js v2.js --sourcemap v1.js.map --align-output v2.aligned.js -o v1.aligned.js
-
-# Recover names from Bun bundles (MR exports, this.name, displayName)
-jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
-
-# Bounded, static inspection of a JavaScript-hosted VM and literal embedded WebAssembly.
-# JavaScript is never executed; WebAssembly is validated but never instantiated.
-jsbeautify analyze-vm bundle.js -o vm-report.json --extract-wasm ./vm-wasm
-
-# Inspect what oxc sees, with the exact oxc revision the passes use
-jsbeautify ast input.js > ast.json                 # ESTree JSON (--ts for TypeScript/JSX)
-jsbeautify scope input.js | jq '.unresolved'       # oxc_semantic symbol table
-jsbeautify cfg input.js --function main | dot -Tsvg > main.svg
-```
-
-## CLI Reference
-
-```
-Usage: jsbeautify [OPTIONS] [FILE]... [COMMAND]
-
-Commands:
-  extract-modules  Extract webpack or Turbopack modules into separate files
-  split-chunks     Split webpack chunks, or Turbopack chunks' modules, into separate files
-  split-sources    Reconstruct the original source tree from a bundle
-  reconstruct      Rebuild original sources from a standalone .js.map file
-  align            Align two bundle versions for a stable diff
-  analyze-vm       Statically inspect a JavaScript-hosted VM and embedded WebAssembly
-  ast              Print the program as ESTree JSON (oxc's serializer)
-  scope            Print the oxc_semantic symbol table as JSON
-  cfg              Print the oxc_semantic control-flow graph
-
-Arguments:
-  [FILE]...  Input JavaScript files, or "-" for stdin [default: -]. Several files
-             are beautified in place, as with --replace
-
-Options:
-  -f, --file <FILE>                 Input file; may be repeated (same as a positional FILE)
-  -o, --output <FILE>               Write output to a file instead of stdout
-  -r, --replace                     Write output in place, replacing each input file
-  -q, --quiet                       Do not report written files on stderr
-  -d, --deobfuscate                 Enable AST-based deobfuscation (multi-phase pipeline)
-      --rename-vars                 Infer readable names for minified locals. Implies --deobfuscate
-      --rename-llm                  LLM-assisted naming of residual locals (env-configured). Implies --rename-vars
-      --keep-fn-names               Never rename a binding a function or class takes its .name from
-      --short-export-names          Let 1-2 character export names name their minified locals
-      --window-alias-es5            Window-alias propagation rewrites only names ES5-era browsers define
-  -s, --indent-size <N>             Indentation size [default: 4] (also -i, --indent)
-  -c, --indent-char <CHAR>          Indentation character: a space or a tab ("\t")
-  -t, --indent-with-tabs            One tab per indentation level (also --tabs)
-  -l, --indent-level <N>            Initial indentation level [default: 0 = keep the input's leading whitespace]
-  -e, --eol <EOL>                   "\n", "\r\n", "\r" or "auto" (the input's first line break) [default: auto]
-  -n, --end-with-newline            End the output with a newline
-  -p, --preserve-newlines           Preserve blank lines from the input (default; not with --deobfuscate)
-      --no-preserve-newlines        Drop the input's blank lines
-  -m, --max-preserve-newlines <N>   Maximum consecutive line breaks to preserve; 0 = no limit [default: 10]
-  -a, --space-after-anon-function   function () instead of function()
-      --space-after-named-function  function f () and m () {} for methods
-  -j, --jslint-happy                function () plus case labels aligned with their switch
-  -b, --brace-style <STYLE>         collapse | expand | end-expand [default: collapse]
-      --config <FILE>               Read settings from a JSON file (.jsbeautifyrc format)
-      --editorconfig                Apply .editorconfig indent, end-of-line and final-newline settings
-      --sourcemap <FILE>            Apply original variable names from a sourcemap (.map) file
-      --names-json <FILE>           Apply full name mappings from a names.json file
-      --bun-extract                 Recover names from Bun bundle patterns
-      --source-type <TYPE>          auto | module | script | commonjs [default: auto]
-      --isolated                    Allow renaming/removing a classic script's top-level bindings
-      --project <DIR>               Deobfuscate every .js/.mjs/.cjs under DIR together, naming bindings across files (-o <OUTDIR>)
-  -h, --help                        Print help
-  -V, --version                     Print version (also -v)
-```
-
-### js-beautify compatibility
-
-The formatting flags use js-beautify's names, short flags and defaults, and
-long flags also accept js-beautify's underscore spelling (`--indent_size`).
-Output has no trailing newline unless `-n` is given, as in js-beautify.
-
-Settings are read, highest priority first, from command-line flags,
-`--config FILE`, the nearest `.jsbeautifyrc` from the working directory
-upwards, and `~/.jsbeautifyrc`. Config keys may use `_` or `-`; a `"js"`
-section overrides top-level keys. Keys this tool does not honor (CSS/HTML
-options, `wrap_line_length`, ...) are ignored, so a file can be shared with
-js-beautify. `--editorconfig` overrides all of these for the properties the
-`.editorconfig` sets. The deobfuscation trade-offs `--keep-fn-names`,
-`--short-export-names` and `--window-alias-es5` can also be turned on with
-the keys `keep_fn_names`, `short_export_names` and `window_alias_es5`.
-
-Differences from js-beautify:
-
-- Short flags that collide keep this tool's meaning: `-d` is
-  `--deobfuscate` (js-beautify: HTML `--inline`) and `-i` is the indent size
-  (js-beautify: HTML `--wrap-attributes-indent-size`). `-o` means the same in
-  both.
-- Output is printed by oxc's code generator: it normalizes quotes to `"`,
-  number literals, redundant parentheses and string escapes, and always
-  terminates statements with `;`. js-beautify keeps the input's tokens.
-- Only JavaScript is supported (no `--type css|html`).
-- Not supported: `--brace-style none` and `preserve-inline`,
-  `--wrap-line-length`, `--break-chained-methods`,
-  `--unindent-chained-methods`, `--keep-array-indentation`,
-  `--space-in-paren`, `--space-in-empty-paren`, `--comma-first`,
-  `--operator-position`, `--indent-empty-lines`, `--unescape-strings`
-  (escapes are always decoded), `--e4x`, `--templating`.
-
-### Inspection commands
-
-`ast`, `scope` and `cfg` take `FILE` (or `-` for stdin), `-o FILE`, and `--ts`
-(parse as TypeScript with JSX; the default is module JavaScript, as in the
-deobfuscation pipeline). Recoverable parse and semantic errors are printed to
-stderr; an unrecoverable parse error prints the diagnostics and exits 1.
-
-- `ast` prints oxc's ESTree JSON. `start`/`end` are UTF-8 byte offsets.
-- `scope` prints `scopes` (id, parent, owning AST node kind, flags),
-  `symbols` (name, kind such as `var`/`let`/`const`/`param`/`function`/
-  `class`/`catch`/`import`, raw oxc flags, scope, declaration position, and
-  every resolved reference with its `read`/`write`/`read_write` access), and
-  `unresolved` (global names with counts and references). Lines and columns
-  are 1-based; columns count Unicode characters.
-- `cfg` prints the control-flow graph as Graphviz DOT, or JSON with
-  `--format json`. `--function NAME` keeps only the functions with that name
-  (declared, or bound to a variable, property, method or assignment target),
-  without the functions nested inside them.
-
-## Library Usage
-
-jsbeautify can also be used as a Rust library:
-
-```rust
-use jsbeautify::{beautify, Options};
-
-let code = "function test(){console.log('hello');}";
-let options = Options::default();
-let beautified = beautify(code, &options).expect("beautification failed");
-```
-
-For deobfuscation:
-
-```rust
-use jsbeautify::AstDeobfuscator;
-
-let obfuscated = std::fs::read_to_string("bundle.js").unwrap();
-let mut deobfuscator = AstDeobfuscator::new();
-let clean = deobfuscator.deobfuscate(&obfuscated).unwrap();
-```
-
-## Deobfuscation Pipeline
-
-`--deobfuscate` is an ordered AST pipeline. The implementation is split by
-lifetime, not into one source file per numbered phase:
-
-1. **Pre-AST input handling** decrypts supported encrypted `eval` payloads.
-2. **Structural arena (Phases 0–12.5)** parses with Oxc, runs Akamai and Bun
-   prepasses, control-flow and string decoding, proxy/function simplification,
-   dead-code/dead-variable sweeps, normalization, and variable naming.
-3. **Phase 12.6 checkpoint** code-generates the structural result, drops the
-   Oxc bump arena, and re-parses into a fresh arena. This bounds peak memory and
-   rejects invalid generated JavaScript.
-4. **Cosmetic-A arena (Phases 13–15)** removes empty statements, splits sequence
-   and multi-variable statements, and runs another validated dead-variable
-   sweep.
-5. **Phase 15.6 checkpoint** repeats the codegen, arena reset, and strict
-   re-parse before the final transforms.
-6. **Cosmetic-B arena (Phases 16–19.5)** converts statement-level ternaries,
-   `switch(true)`, and short circuits; evaluates safe literal `JSON.parse`
-   calls; normalizes optional/nullish syntax; unwraps safe IIFEs; detects
-   esbuild helpers; and performs the final dead-variable sweep.
-7. **Final output (Phases 19.6–21.5)** validates AST codegen, adds webpack,
-   esbuild, Bun, enum, namespace, and arrow annotations, then validates the
-   post-annotation JavaScript again.
-
-The checkpoints are deliberate correctness and memory boundaries. State that
-must survive them (currently the Bun helper map and source type) is passed
-explicitly; all arena-owned AST data is discarded. See
-`src/ast_deobfuscate/engine/structural.rs`,
-`src/ast_deobfuscate/engine/cosmetic.rs`, and
-`src/ast_deobfuscate/engine/final_output.rs` for the authoritative order.
-
-### Project mode (several chunks of one build)
-
-`jsbeautify -d --project dist/assets -o deob/` deobfuscates the chunks of a
-code-split build (esbuild/rollup/vite `import { a as e } from "./chunk-X.js"`,
-Turbopack chunks) together. It reads every file first, resolves each import to
-the binding it links, and gives that binding one name in every file: the
-runtime helper it is (`__export`, `__commonJS`, … imported from another chunk,
-which also lets the importer's `__export(…)` calls and lazy modules be named),
-the name its own chunk gives it, its real export name, or `<chunk>_<export>`.
-Exports no file of the project imports are the public surface, so their short
-names count as names; `--short-export-names` is therefore ignored in project
-mode. `--keep-fn-names` and `--window-alias-es5` apply to every file; with
-`--keep-fn-names` a binding a function or class takes its `.name` from keeps
-its name, and the chunks that import it use that name too.
-Mangled Turbopack keys are named by the `esmReexport`
-(`S([…])`) lists of other chunks. Import and export names never change. The
-output folder mirrors the input (other files are copied), with per-file logs in
-`.jsbeautify/logs/` and `project-index.json` (module links, plan, counts and a
-check that every import still resolves to an export of its target). Single-file
-output is unchanged.
-
-## Cross-Version Alignment
-
-Produces stable diffs between versions of minified bundles by recovering original names and matching statements across versions:
-
-```bash
-# Align two bundle versions using sourcemap name recovery
-jsbeautify align v2.1.88.js v2.1.96.js \
-  --sourcemap v2.1.88.js.map \
-  --align-output v2.1.96.aligned.js \
-  -o v2.1.88.aligned.js
-```
-
-Three-tier canonical naming:
-1. **Sourcemap names** — original identifiers recovered from `.map` files (36,000+ names)
-2. **Slot-based names** — Bun alphabet-derived `sN` names for unmapped identifiers
-3. **Hash-based names** — AST structure hash fallback `_rN` for unmatched code
-
-Results: 94.7% statement match rate, 76% diff reduction between bundle versions.
-
-## Bun Bundle Support
-
-Extracts original names from Bun-specific bundle patterns:
-
-```bash
-jsbeautify bundle.js --bun-extract --sourcemap bundle.js.map -o output.js
-```
-
-Patterns detected:
-- `MR(target, { exportName: () => minifiedVar })` export mappings
-- `this.name = "ClassName"` in class constructors
-- `Component.displayName = "ComponentName"` assignments
-
-## Development and testing
-
-This repository follows upstream Rust and Oxc rather than advertising a fixed
-minimum Rust version. There is intentionally no `rust-version` package key and
-no `rust-toolchain.toml`: use a current `rustc`/Cargo toolchain that can build
-the pinned Oxc revision in `Cargo.toml`, and update that Oxc revision and the
-code together.
-
-Run the full local gate across library, binary, and the single aggregated
-integration-test target:
-
-```bash
-cargo fmt --check
+cargo build --release              # target/release/jsbeautify
+cargo fmt --check                  # the gate, in order
 cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo test --all-targets           # unit tests + tests/integration (one aggregated target)
 ```
 
-Targeted checks:
+### Layout
 
-```bash
-# Static VM/Wasm analyzer integration tests (never executes target JavaScript)
-cargo test --test integration analyze_vm
-```
-
-`Cargo.toml` sets `autotests = false` and declares `tests/integration/main.rs` as
-the integration-test aggregator, so `--all-targets` is the least ambiguous way
-to exercise every declared target.
+| Path | What it is |
+|---|---|
+| `src/ast_deobfuscate/` | The passes, by bundler (`webpack/`, `turbopack/`, `bun/`, `angular/`, `akamai/`), and `engine/`, which runs them in order |
+| `src/beautifier/` | Plain formatting with js-beautify-compatible layout |
+| `src/project/` | `--project`: a whole code-split build with names shared across files |
+| `src/vm_analysis/` | Static JS VM and Wasm inspection. It never executes anything |
+| `src/inspect/` | The `ast`, `scope` and `cfg` commands |
+| `src/cross_version/`, `src/sourcemap/`, `*_extract*` | Alignment, source maps, bundle and source-tree rebuilding |
+| `src/bin/jsbeautify_app/` | CLI parsing and command runners |
+| `tests/integration/`, `tests/fixtures/<bundler>/` | Integration tests and their inputs |
+| `docs/` | [CLI](docs/cli.md), [pipeline](docs/pipeline.md), [refinement loop](docs/refinement.md) |
 
 ## License
 

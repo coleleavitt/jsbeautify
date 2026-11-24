@@ -22,6 +22,7 @@
 //!   names of every chunk ([`ProjectSeeds::turbopack_reexports`]).
 
 pub mod facts;
+pub mod shape;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{ImportDeclarationSpecifier, ModuleExportName, Program, Statement};

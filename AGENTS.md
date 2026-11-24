@@ -29,6 +29,10 @@ and adds only Claude Code specifics.
 - Gate, in order: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   then `cargo test --all-targets`. Clippy runs `pedantic` and `nursery`; fix
   lints rather than adding `#[allow]`, and scope any allow narrowly.
+- `scripts/codeql.sh [language...]` runs CodeQL's security-and-quality suite
+  locally (default: rust actions; needs `codeql` on PATH). Databases and SARIF
+  go to `.codeql/` (gitignored); each finding prints as level, rule, file:line.
+  It is not part of the gate.
 - Integration tests use one declared aggregator target at
   `tests/integration/main.rs`; target it with `cargo test --test integration`.
   Add new integration files as modules there, not as new `tests/*.rs` targets.
@@ -61,9 +65,11 @@ and adds only Claude Code specifics.
 - `src/stack.rs` runs parsing and AST work on a thread whose stack is sized
   from the input (`run_on_sized_stack`), so deep nesting cannot overflow the
   stack. Run new parse or traversal entry points through it.
-- `docs/` holds design notes, reviews, and research write-ups. They are
-  historical; the code is the authority when they disagree.
-- `research/` holds per-target analysis scripts and findings.
+- `docs/` holds `cli.md`, `pipeline.md` and `refinement.md` (the agent loop:
+  find, reproduce, fix, verify, land). The code is the authority when a doc
+  disagrees with it.
+- `.research/` (gitignored, local only) holds per-target analysis, research
+  notes and old session reports. Do not cite it as current.
 - `frontend/` is a separate Firefox DevTools extension (Node/JS) that dumps a
   page's scripts, source maps, and assets.
 

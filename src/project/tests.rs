@@ -56,7 +56,7 @@ fn imported_helpers_and_names_follow_the_binding() {
         vec![
             ("a", Some("__export"), Some("__export")),
             ("v", Some("ValidationError"), None),
-            ("c", Some("chunk_c"), None),
+            ("c", Some("val_6a8a7b16"), None),
         ]
     );
     let exports: Vec<_> = plan.seeds[0]
@@ -66,7 +66,7 @@ fn imported_helpers_and_names_follow_the_binding() {
         .collect();
     assert_eq!(
         exports,
-        vec![("a", "__export"), ("v", "ValidationError"), ("c", "chunk_c")]
+        vec![("a", "__export"), ("v", "ValidationError"), ("c", "val_6a8a7b16")]
     );
     assert_eq!(plan.stats.imported_helpers, 1);
     assert_eq!(plan.stats.resolved_imports, 3);
@@ -186,6 +186,66 @@ fn colliding_names_get_one_suffix_in_every_file() {
         import_names(&plan.seeds[1]),
         vec![("a", Some("Text"), None), ("b", Some("Text$1"), None)]
     );
+}
+
+/// The 2.1.331 case: a chunk exports its own `Text` and imports another
+/// chunk's `Text`. One name each, or the file's own rename suffixes one and
+/// the two ends of the link disagree.
+#[test]
+fn bindings_one_file_sees_never_share_a_name() {
+    let files = indexed(&[
+        (
+            "chunk-aaaaaaaa.js",
+            r#"class A{constructor(){this.name="Text"}}export{A as a};"#,
+        ),
+        (
+            "chunk-bbbbbbbb.js",
+            r#"import{a as x}from"./chunk-aaaaaaaa.js";class B{constructor(){this.name="Text"}}console.log(x);export{B as b};"#,
+        ),
+        (
+            "chunk-cccccccc.js",
+            r#"import{b as y}from"./chunk-bbbbbbbb.js";console.log(y);"#,
+        ),
+    ]);
+    let plan = plan_project(&files);
+    assert_eq!(import_names(&plan.seeds[1]), vec![("a", Some("Text"), None)]);
+    assert_eq!(import_names(&plan.seeds[2]), vec![("b", Some("Text$1"), None)]);
+    let exports: Vec<_> = plan.seeds[1]
+        .exports
+        .iter()
+        .map(|s| (s.exported.as_str(), s.name.as_str()))
+        .collect();
+    assert_eq!(exports, vec![("b", "Text$1")]);
+}
+
+#[test]
+fn bindings_no_file_sees_together_keep_their_names() {
+    let files = indexed(&[
+        ("a.js", r#"class A{constructor(){this.name="Text"}}export{A as a};"#),
+        ("b.js", r#"class B{constructor(){this.name="Text"}}export{B as b};"#),
+        ("x.js", r#"import{a as p}from"./a.js";console.log(p);"#),
+        ("y.js", r#"import{b as q}from"./b.js";console.log(q);"#),
+    ]);
+    let plan = plan_project(&files);
+    assert_eq!(import_names(&plan.seeds[2]), vec![("a", Some("Text"), None)]);
+    assert_eq!(import_names(&plan.seeds[3]), vec![("b", Some("Text"), None)]);
+}
+
+/// Two builds of one program: new chunk hashes, new minified export names,
+/// same code. The synthetic name is the same in both.
+#[test]
+fn hashed_chunks_name_bindings_by_their_code() {
+    let build = |lib: &str, export: &str, local: &str| {
+        let lib_code = format!("function {local}(e){{return e.settings.mode}}export{{{local} as {export}}};");
+        let user = format!(r#"import{{{export} as z}}from"./{lib}";console.log(z({{}}));"#);
+        let files = indexed(&[(lib, lib_code.as_str()), ("chunk-entry000.js", user.as_str())]);
+        let plan = plan_project(&files);
+        plan.seeds[1].imports[0].name.clone().expect("named")
+    };
+    let first = build("chunk-twre2vq3.js", "Se", "Ab");
+    let second = build("chunk-0df0h4w8.js", "Mt", "Qx");
+    assert_eq!(first, second);
+    assert!(first.starts_with("fn_"), "{first}");
 }
 
 #[test]

@@ -1,0 +1,5 @@
+# Used by scripts/codeql.sh (codeql database create --codescanning-config).
+paths-ignore:
+  - "**/target/**"
+  - .codegraph
+  - .codeql

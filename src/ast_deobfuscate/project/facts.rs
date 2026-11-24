@@ -21,6 +21,7 @@ use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use super::{TurbopackFacts, import_bindings, specifier_exports};
+use crate::ast_deobfuscate::default_export::is_minified;
 use crate::ast_deobfuscate::state::DeobfuscateState;
 use crate::ast_deobfuscate::{
     BunHelper, BunRuntimeCollector, ClassNameCollector, DisplayNameCollector, ExportNameCollector, rename_guards,
@@ -54,6 +55,10 @@ pub struct FileFacts {
     /// [`crate::ast_deobfuscate::rename_guards`]).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub kept_locals: BTreeSet<String>,
+    /// The declaration shape of minified exported locals, by local name
+    /// (see [`super::shape`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shapes: BTreeMap<String, String>,
 }
 
 /// One module request of the file.
@@ -158,6 +163,15 @@ fn collect_on_current_stack<S: BuildHasher>(
 
     let scoping = semantic::scoping(&program);
     let exported = exported_locals(&program, &scoping);
+    // Before the collectors below rewrite the program.
+    let minified: FxHashSet<&str> = exported
+        .iter()
+        .map(|(local, _)| local.as_str())
+        .filter(|local| is_minified(local))
+        .collect();
+    if !minified.is_empty() {
+        facts.shapes = super::shape::declaration_shapes(&program, &minified);
+    }
     facts.globals = scoping
         .root_unresolved_references()
         .keys()
