@@ -91,7 +91,53 @@ impl AstDeobfuscator {
             eprintln!("[DEOBFUSCATE] Phase 12: DONE");
         }
 
+        self.run_local_shape_rename(allocator, program);
         self.run_local_slot_rename(allocator, program);
+    }
+
+    /// Phase 12.4 (project mode): name each minified, unexported top-level
+    /// binding, and each function or class declared inside a function, that
+    /// still has a minified name after the naming phases after the shape of
+    /// its declaration (`fn_1a2b3c4d`), so it keeps one
+    /// name across builds. Guarded bindings keep theirs, and every binding a
+    /// `with` body can see does too.
+    fn run_local_shape_rename<'a>(&mut self, allocator: &'a Allocator, program: &mut Program<'a>) {
+        if !self.project_mode || !program.source_type.is_module() {
+            return;
+        }
+        // Computed here, on the program as it is now: the dead-var sweeps
+        // re-parse generated code, so earlier source offsets are stale.
+        let shapes = crate::ast_deobfuscate::project::shape::local_shapes(program);
+        if shapes.is_empty() {
+            return;
+        }
+        let scoping = semantic::scoping(program);
+        let root = scoping.root_scope_id();
+        // A binding an earlier phase gave a real name keeps it.
+        let mut plan: Vec<(oxc_syntax::symbol::SymbolId, String)> = scoping
+            .symbol_ids()
+            .filter(|&symbol| crate::ast_deobfuscate::default_export::is_minified(scoping.symbol_name(symbol)))
+            .filter_map(|symbol| Some((symbol, shapes.get(&scoping.symbol_span(symbol).start)?.clone())))
+            .collect();
+        plan.sort_unstable_by_key(|(symbol, _)| scoping.symbol_span(*symbol).start);
+        let with_scopes = if has_with_statement(program) {
+            vec![root]
+        } else {
+            Vec::new()
+        };
+        let ctx = ReusableTraverseCtx::new(DeobfuscateState::new(), scoping, allocator);
+        let counts = crate::ast_deobfuscate::rename_planner::apply_rename_plan(
+            allocator,
+            program,
+            ctx,
+            plan,
+            &with_scopes,
+            self.keep_fn_names,
+        );
+        eprintln!(
+            "[DEOBFUSCATE] Phase 12.4: Named {} bindings by their shape ({} refs, {} planned)",
+            counts.declarations, counts.references, counts.planned
+        );
     }
 
     /// Phases 10.5–11.5: the dead-var sweeps around the Phase 10 and 11
@@ -226,4 +272,20 @@ impl AstDeobfuscator {
         );
         (result, scoping)
     }
+}
+
+/// Whether `program` has a `with` statement, whose body resolves names at
+/// run time.
+fn has_with_statement(program: &Program<'_>) -> bool {
+    use oxc_ast_visit::Visit;
+    #[derive(Default)]
+    struct Finder(bool);
+    impl<'a> Visit<'a> for Finder {
+        fn visit_with_statement(&mut self, _: &oxc_ast::ast::WithStatement<'a>) {
+            self.0 = true;
+        }
+    }
+    let mut finder = Finder::default();
+    finder.visit_program(program);
+    finder.0
 }

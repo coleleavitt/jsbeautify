@@ -34,9 +34,11 @@ loop](docs/refinement.md) that let agents find its bugs and fix them.
   code-split build together and gives each cross-file binding one name. On the
   Claude Code 2.1.331 Bun build (3,594 chunks) it links 107,390 imports with
   0 broken, in 14 seconds and 1 GB of RAM.
-- **Names that survive a release.** A binding nothing names is named after
-  the shape of its code, not the chunk hash, so 93% of those names stay the
-  same from 2.1.330 to 2.1.331 and two versions can be diffed.
+- **Names that survive a release.** A function nothing names, exported or
+  not, is named after the shape of its own code, not the chunk hash or the
+  minifier's letters. From 2.1.330 to 2.1.331, 84% of the functions that read
+  a feature flag keep their name, and `diff-tree` pairs most of the rest
+  across the whole build (94%).
 - **Behavior first.** Every rewrite is checked for symbol identity, shadowing,
   evaluation order, `eval` and `this`. The output is code-generated and
   parsed again at two checkpoints, so invalid JavaScript is never reported as
@@ -92,6 +94,7 @@ jsbeautify in.js -d --sourcemap in.js.map     # take the original names from a s
 jsbeautify split-sources bundle.js -o src/    # rebuild the source tree
 jsbeautify extract-modules bundle.js -o mods/ # one file per webpack/Turbopack module
 jsbeautify align v1.js v2.js                  # stable diff between two bundle versions
+jsbeautify diff-tree v1.deob v2.deob          # pair every function of two --project outputs
 jsbeautify analyze-vm vm.js -o report.json    # static look at a JS VM / embedded Wasm (never runs it)
 
 jsbeautify scope in.js | jq .unresolved      # Oxc's symbol table as JSON (also: ast, cfg)

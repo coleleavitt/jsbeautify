@@ -141,7 +141,10 @@ fn a_minified_local_moves_off_the_kept_name_of_a_linked_binding() {
         .deobfuscate(code)
         .expect("deobfuscation succeeds");
     assert!(output.contains("a as p"), "{output}");
-    assert!(output.contains("p$1 = 1"), "the module-scope local moves: {output}");
+    assert!(
+        output.contains("var val_7a52d5b9 = 1;"),
+        "the module-scope local moves, to the shape of its declaration: {output}"
+    );
     assert!(output.contains("return p("), "{output}");
 }
 

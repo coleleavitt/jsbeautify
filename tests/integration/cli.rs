@@ -326,3 +326,68 @@ fn version_banner_names_the_commit_as_build_metadata() {
     assert!(!version.contains(char::is_whitespace), "one token: {banner:?}");
     assert!(version.starts_with(env!("CARGO_PKG_VERSION")), "{banner:?}");
 }
+
+/// `jsbeautify -d a.js 2>&1 | head`: the log's reader exits early. Logging
+/// stops, the run does not (std's `eprintln!` panics on a closed pipe, and
+/// release builds abort on a panic).
+#[test]
+fn closed_stderr_pipe_does_not_stop_the_run() {
+    use std::process::Stdio;
+    let dir = std::env::temp_dir().join(format!("jsb-cli-stderr-pipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let input = dir.join("in.js");
+    let out = dir.join("out.js");
+    std::fs::write(
+        &input,
+        "var a=!0,b=void 0;function f(n){for(;n;)n--;return a?n:b}f(1);".repeat(200),
+    )
+    .expect("write input");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg("-d")
+        .arg(&input)
+        .arg("-o")
+        .arg(&out)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jsbeautify");
+    drop(child.stderr.take());
+    let status = child.wait().expect("wait for jsbeautify");
+    assert!(status.success(), "{status:?}");
+    let written = std::fs::read_to_string(&out).expect("output written");
+    assert!(written.contains("while ("), "{written}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `jsbeautify big.js | head`: the result's reader exits early. The run
+/// ends quietly with 141, as a `SIGPIPE` would, not with a panic.
+#[test]
+fn closed_stdout_pipe_exits_quietly() {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    let dir = std::env::temp_dir().join(format!("jsb-cli-stdout-pipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let input = dir.join("in.js");
+    // Far more output than a pipe buffers, so the write meets the closed pipe.
+    std::fs::write(&input, "function f(a,b){return a+b}\n".repeat(40_000)).expect("write input");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jsbeautify"))
+        .arg(&input)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jsbeautify");
+    drop(child.stdout.take());
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr is piped")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    let status = child.wait().expect("wait for jsbeautify");
+    assert_eq!(status.code(), Some(141), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

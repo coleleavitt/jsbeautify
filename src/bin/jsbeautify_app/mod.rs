@@ -8,6 +8,21 @@ use clap::{Parser, Subcommand};
 use jsbeautify::ParseGoal;
 use std::path::PathBuf;
 
+/// Write part of the result to stdout (the `println!` and `print!` of
+/// `jsbeautify.rs`). A reader that has exited ends the run quietly with 141,
+/// as `SIGPIPE` would; another write error ends it with 1.
+pub fn stdout(args: std::fmt::Arguments<'_>) {
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    if let Err(error) = out.write_fmt(args).and_then(|()| out.flush()) {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(141);
+        }
+        eprintln!("Error: cannot write to stdout: {error}");
+        std::process::exit(1);
+    }
+}
+
 mod align;
 mod config;
 mod project;
@@ -167,6 +182,10 @@ enum Command {
     /// sourcemap / names.json.
     Align(AlignArgs),
 
+    /// Compare two deobfuscated output trees (two versions of one build)
+    /// function by function: pairs by name across files, then by content.
+    DiffTree(DiffTreeArgs),
+
     /// Statically inspect a JavaScript-hosted VM and embedded WebAssembly.
     /// Never executes JavaScript or instantiates WebAssembly.
     AnalyzeVm(AnalyzeVmArgs),
@@ -180,6 +199,25 @@ enum Command {
 
     /// Print oxc's semantic control-flow graph.
     Cfg(CfgArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct DiffTreeArgs {
+    /// The older tree (a `-d --project` output directory).
+    #[arg(value_name = "OLD")]
+    old: PathBuf,
+
+    /// The newer tree.
+    #[arg(value_name = "NEW")]
+    new: PathBuf,
+
+    /// Write the JSON report to a file instead of stdout.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Lowest token-set similarity (0-1) a match by content needs.
+    #[arg(long, value_name = "SCORE", default_value_t = 0.5)]
+    min_score: f64,
 }
 
 #[derive(clap::Args, Debug)]

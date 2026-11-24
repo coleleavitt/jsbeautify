@@ -14,6 +14,24 @@
 //! let beautified = beautify(code, &options).expect("beautification failed");
 //! ```
 
+/// `eprintln!` that drops a line stderr cannot take. jsbeautify logs to
+/// stderr, and a log piped into a reader that exits early (`2>&1 | head`)
+/// must not end the run: std's `eprintln!` panics when the pipe is closed,
+/// and the release profile aborts on a panic. Defined before the modules, so
+/// its textual scope covers the whole crate and shadows the prelude macro.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {
+        $crate::log_line(format_args!($($arg)*))
+    };
+}
+
+/// Write one line to stderr, ignoring a failed write (see [`eprintln!`]).
+#[doc(hidden)]
+pub fn log_line(args: std::fmt::Arguments<'_>) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr().lock(), "{args}");
+}
+
 pub mod ast_deobfuscate;
 pub mod beautifier;
 pub mod bun_extract;
