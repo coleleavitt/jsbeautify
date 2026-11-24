@@ -18,6 +18,9 @@ cat bundle.js | jsbeautify - > output.js
 # Extract webpack or Turbopack (Next.js) modules to separate files
 jsbeautify extract-modules bundle.js -o ./modules
 
+# Compare two deobfuscated versions of a build, function by function
+jsbeautify diff-tree v1.deob v2.deob -o diff.json
+
 # Rebuild the original source tree from a bundle sourceMappingURL
 jsbeautify split-sources bundle.js -o ./out
 

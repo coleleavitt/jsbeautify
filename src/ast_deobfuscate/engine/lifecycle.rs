@@ -54,6 +54,7 @@ impl AstDeobfuscator {
             parse_goal: ParseGoal::Auto,
             isolated: false,
             project: crate::ast_deobfuscate::project::ProjectSeeds::default(),
+            project_mode: false,
             keep_fn_names: false,
             short_export_names: false,
             window_alias_es5: false,
@@ -65,6 +66,7 @@ impl AstDeobfuscator {
     #[must_use]
     pub fn with_project_seeds(mut self, seeds: crate::ast_deobfuscate::project::ProjectSeeds) -> Self {
         self.project = seeds;
+        self.project_mode = true;
         self
     }
 

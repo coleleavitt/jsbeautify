@@ -192,6 +192,39 @@ fn project_names_agree_when_two_chunks_want_one_name() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Two builds of one program: new chunk hashes and new minified names, same
+/// code. An unexported top-level function gets the same name in both.
+#[test]
+fn project_names_unexported_functions_by_their_code() {
+    let build = |tag: &str, chunk: &str, helper: &str, export: &str| {
+        let dir = std::env::temp_dir().join(format!("jsb-project-local-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        fs::create_dir_all(&src).expect("create project dir");
+        let code = format!(
+            "function {helper}(e){{return e.settings.mode===\"auto\"}}function {export}(e){{return {helper}(e)?1:2}}export{{{export} as a}};"
+        );
+        fs::write(src.join(chunk), code).expect("write chunk");
+        fs::write(
+            src.join("entry.js"),
+            format!(r#"import{{a as q}}from"./{chunk}";console.log(q({{}}));"#),
+        )
+        .expect("write entry");
+        let out = dir.join("out");
+        let output = run(&src, &out);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        let text = fs::read_to_string(out.join(chunk)).expect("chunk output");
+        let _ = fs::remove_dir_all(&dir);
+        text
+    };
+    let first = build("one", "chunk-twre2vq3.js", "Wd", "Se");
+    let second = build("two", "chunk-0df0h4w8.js", "lN", "Mt");
+    assert_eq!(first, second);
+    assert!(first.contains("function fn_"), "{first}");
+    assert!(!first.contains("Wd"), "{first}");
+}
+
 /// A Bun standalone executable's chunks import each other by absolute
 /// `/$bunfs/root/` paths; the project root stands for that root.
 #[test]

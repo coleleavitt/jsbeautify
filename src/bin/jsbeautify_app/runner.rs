@@ -1,6 +1,6 @@
 use super::{
-    AlignArgs, AnalyzeVmArgs, BeautifyArgs, CfgFormat, Cli, Command, ExtractModulesArgs, InspectArgs, ReconstructArgs,
-    SplitChunksArgs, SplitSourcesArgs, align, project, sources,
+    AlignArgs, AnalyzeVmArgs, BeautifyArgs, CfgFormat, Cli, Command, DiffTreeArgs, ExtractModulesArgs, InspectArgs,
+    ReconstructArgs, SplitChunksArgs, SplitSourcesArgs, align, project, sources,
 };
 use clap::Parser;
 use jsbeautify::inspect::{self, Inspection};
@@ -18,6 +18,13 @@ pub(super) fn main() {
     let _dhat = dhat::Profiler::new_heap();
 
     if let Err(e) = run() {
+        // A reader of stdout that exited early (`| head`): end quietly, as
+        // `SIGPIPE` would (see `super::stdout`).
+        if e.downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+        {
+            std::process::exit(141);
+        }
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
@@ -32,6 +39,7 @@ fn run() -> Fallible {
         Some(Command::Reconstruct(a)) => run_reconstruct(a),
         Some(Command::Align(a)) => run_align(a),
         Some(Command::AnalyzeVm(a)) => run_analyze_vm(a),
+        Some(Command::DiffTree(a)) => run_diff_tree(a),
         Some(Command::Ast(a)) => run_inspect(
             a,
             |source| inspect::ast::estree(source, a.goal.parse_goal(&a.input), a.ts),
@@ -119,6 +127,37 @@ fn write_output(output: Option<&String>, text: &str) -> Fallible {
         eprintln!("Output written to {output_path}");
     } else {
         println!("{text}");
+    }
+    Ok(())
+}
+
+fn run_diff_tree(args: &DiffTreeArgs) -> Fallible {
+    use jsbeautify::cross_version::tree_diff::{TreeDiffOptions, diff_trees};
+    let options = TreeDiffOptions {
+        min_score: args.min_score,
+        ..TreeDiffOptions::default()
+    };
+    let diff = diff_trees(&args.old, &args.new, options)?;
+    let s = &diff.summary;
+    eprintln!(
+        "[DIFF-TREE] {} / {} files, {} / {} named functions: {} same, {} changed, {} moved, {} renamed (matched by content), {} added, {} removed",
+        s.files_old,
+        s.files_new,
+        s.functions_old,
+        s.functions_new,
+        s.same,
+        s.changed,
+        s.moved,
+        s.renamed,
+        s.added,
+        s.removed
+    );
+    let json = serde_json::to_string_pretty(&diff)?;
+    if let Some(path) = &args.output {
+        fs::write(path, format!("{json}\n"))?;
+        eprintln!("Report written to {}", path.display());
+    } else {
+        println!("{json}");
     }
     Ok(())
 }

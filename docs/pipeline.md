@@ -84,9 +84,30 @@ output is unchanged.
 
 A file that is not valid UTF-8 is read as Latin-1 (Bun emits `latin1`
 modules), with a warning naming the file and byte; a zstd or gzip file is
-reported as compressed. Minified locals that are not exported keep short
-names (`Wd`, `ef`) that repeat in other files: search for one only in the file
-that declares it.
+reported as compressed.
+
+Phase 12.4 (project mode, modules) names the rest the same way: each minified
+top-level function, class or initialized variable that is not exported, and
+each function or class declared inside a function, gets the shape of its own
+code (`fn_…`, `class_…`, `val_…`) unless an earlier phase found a real name.
+The shape ignores minified names and the shape names of other bindings, so an
+edit to one function does not rename its callers. Locals that are neither
+(parameters, nested variables) keep slot names (`v0`, `v1`) that repeat across
+files: search for one only in the function that declares it.
+
+To compare two versions of a build, run `jsbeautify diff-tree OLD NEW` on the
+two output folders. It pairs functions by name across all files (chunk files
+are renamed every build), then matches the rest, whose code and so whose
+shape name changed, by their strings, property names and named references:
+
+```bash
+jsbeautify diff-tree v1.deob v2.deob -o diff.json
+jq '.renamed[] | "\(.old.name) -> \(.new.name) \(.score)"' diff.json
+```
+
+On Claude Code 2.1.330 → 2.1.331, 84% of the functions that read a
+`tengu_` flag keep their name, and `diff-tree` pairs most of the rest
+(94% together; 35% before Phase 12.4).
 
 ## Tracing a run
 

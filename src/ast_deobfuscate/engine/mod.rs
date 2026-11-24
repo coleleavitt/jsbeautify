@@ -89,6 +89,8 @@ pub struct AstDeobfuscator {
     /// This file's part of a project naming plan (`--project`); empty for a
     /// single file.
     project: super::project::ProjectSeeds,
+    /// Deobfuscating one file of a `--project` run.
+    project_mode: bool,
     keep_fn_names: bool,
     short_export_names: bool,
     window_alias_es5: bool,

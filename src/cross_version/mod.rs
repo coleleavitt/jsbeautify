@@ -18,6 +18,7 @@ mod replacements;
 pub mod sourcemap_parser;
 #[cfg(test)]
 mod tests;
+pub mod tree_diff;
 
 pub use aligner::CrossVersionAligner;
 pub use ast_matcher::{StatementInfo, StatementMatcher};
