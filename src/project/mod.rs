@@ -16,7 +16,9 @@
 //!    while the code does. Two bindings one file sees never
 //!    share a name. Exports nobody in the project imports are the public
 //!    surface: their short names are names, while the one- to three-character
-//!    names chunks use only to reach each other are not. Mangled Turbopack
+//!    names chunks use only to reach each other are not. In a file named only
+//!    by a content hash every short name is minified, public or not, so its
+//!    bindings take their shape names. Mangled Turbopack
 //!    keys are named by the `esmReexport` lists of every chunk.
 //! 3. Each file is deobfuscated by the normal pipeline with its
 //!    [`ProjectSeeds`] (see [`crate::ast_deobfuscate::project`]). Import and
@@ -251,12 +253,13 @@ impl<'f> Graph<'f> {
                 }
             }
         }
-        graph.aliases = graph.collect_aliases();
+        // Before `collect_aliases`, which asks `is_informative_export`.
         graph.hashed_names = files
             .iter()
             .zip(&graph.idents)
             .map(|(f, ident)| ident == "chunk" || *ident != file_ident(&f.path, true))
             .collect();
+        graph.aliases = graph.collect_aliases();
         graph
     }
 
@@ -434,14 +437,17 @@ impl<'f> Graph<'f> {
         !self.opaque.contains(&file) && !self.imported.contains(&(file, name.to_string()))
     }
 
-    /// Whether export `name` of `file` can name its local.
+    /// Whether export `name` of `file` can name its local. A name of one to
+    /// three characters is one only when nothing in the project imports it
+    /// and the file's name says something (it is not a content hash): the
+    /// short names of a hashed chunk are minified, public or not.
     fn is_informative_export(&self, file: usize, name: &str) -> bool {
         if !is_valid_identifier(name) || is_reserved_word(name) || name == "default" {
             return false;
         }
         // One to three characters is what bundlers give the exports chunks
-        // use to reach each other.
-        name.chars().count() > 3 || self.is_public(file, name)
+        // use to reach each other, and every export of a hashed chunk.
+        name.chars().count() > 3 || (self.is_public(file, name) && !self.hashed_names[file])
     }
 
     /// The name of `origin` in every file, without a synthetic fallback.
@@ -515,8 +521,9 @@ impl<'f> Graph<'f> {
 
     /// The names of the minified locals every file exports, by file and
     /// local: their own name when the file keeps it ([`FileFacts::kept_locals`]),
-    /// their [`Self::linked_name`] when another file can read them, else their
-    /// [`Self::origin_name`].
+    /// their [`Self::linked_name`] when another file can read them or the file
+    /// is content-hashed (its short export names are minified, so the shape
+    /// names the binding), else their [`Self::origin_name`].
     ///
     /// Two bindings that one file sees (its own exports and its imports) never
     /// get one name: the later one, in name, file and local order, gets `$N`.
@@ -570,7 +577,8 @@ impl<'f> Graph<'f> {
                     names[file].insert(local.to_string(), (local.to_string(), NameSource::Kept));
                     continue;
                 }
-                let linked = self.export_names(&origin).any(|name| !self.is_public(file, name));
+                let linked =
+                    self.hashed_names[file] || self.export_names(&origin).any(|name| !self.is_public(file, name));
                 let name = if linked {
                     self.linked_name(&origin)
                 } else {

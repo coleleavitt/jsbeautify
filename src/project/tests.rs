@@ -156,6 +156,33 @@ fn short_exports_are_names_only_when_public() {
     assert_eq!((plan.stats.public_exports, plan.stats.internal_exports), (1, 1));
 }
 
+/// A content-hashed chunk's short export names are minified: `kc` is public
+/// (nothing imports it), yet the binding takes its shape name. A file whose
+/// name says something keeps the public short name.
+#[test]
+fn hashed_chunks_name_public_short_exports_by_shape() {
+    let code = "function Ab(e){return e.settings.mode}export{Ab as kc};";
+    let hashed = indexed(&[("chunk-aaaaaaaa.js", code)]);
+    let plan = plan_project(&hashed);
+    let exports: Vec<_> = plan.seeds[0]
+        .exports
+        .iter()
+        .map(|s| (s.exported.as_str(), s.name.as_str()))
+        .collect();
+    assert_eq!(exports.len(), 1, "{exports:?}");
+    assert_eq!(exports[0].0, "kc");
+    assert!(exports[0].1.starts_with("fn_"), "{exports:?}");
+
+    let named = indexed(&[("lib.js", code)]);
+    let plan = plan_project(&named);
+    let exports: Vec<_> = plan.seeds[0]
+        .exports
+        .iter()
+        .map(|s| (s.exported.as_str(), s.name.as_str()))
+        .collect();
+    assert_eq!(exports, vec![("kc", "kc")]);
+}
+
 #[test]
 fn dynamic_imports_make_every_export_internal() {
     let files = indexed(&[
