@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/how-it-works.svg" width="720" alt="A minified bundle is 10 MB of a, b, c, too much to hand straight to an AI agent such as Claude Code or Codex. jsbeautify turns it into readable, named code for the agent, and the agent sends back bugs, fixtures and fixes: find, reproduce, fix, verify, land.">
+  <img src="assets/how-it-works-0ffe7aa3.svg" width="720" alt="A minified bundle is 10 MB of a, b, c, too much to hand straight to an AI agent such as Claude Code or Codex. jsbeautify turns it into readable, named code for the agent, and the agent sends back bugs, fixtures and fixes: find, reproduce, fix, verify, land.">
 </p>
 
 These days agents, not people, read most deobfuscated code. jsbeautify is
