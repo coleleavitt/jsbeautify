@@ -105,7 +105,7 @@ jsbeautify diff-tree v1.deob v2.deob -o diff.json
 jq '.renamed[] | "\(.old.name) -> \(.new.name) \(.score)"' diff.json
 ```
 
-Functions whose code changed too much for that are still paired when they are each other's clear best candidate (`weak_renamed` in the report, `--weak-min-score`, 0.25 by default), and are kept apart from `renamed`.
+Functions whose code changed too much for that are still paired when they are each other's clear best candidate (`weak_renamed` in the report, `--weak-min-score`, 0.25 by default), and are kept apart from `renamed`. Top-level statements that carry a string, such as a `console.log("tengu_…")` call, are indexed too, under a `top_…` shape name, so the same one pairs by name across files.
 
 On Claude Code 2.1.330 → 2.1.331, 84% of the functions that read a
 `tengu_` flag keep their name, and `diff-tree` pairs most of the rest

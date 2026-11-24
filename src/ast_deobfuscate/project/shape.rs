@@ -69,6 +69,16 @@ pub fn local_shapes(program: &Program<'_>) -> BTreeMap<u32, String> {
     shapes
 }
 
+/// `top_…`: the shape of a top-level statement that declares no function or
+/// class, named by its code alone. A minified name inside it erases as it does
+/// in `declaration_shapes`, so the same statement in two builds keeps its name.
+#[must_use]
+pub fn statement_shape(source: &str, statement: &Statement<'_>) -> String {
+    let mut hasher = ShapeHasher::new(source);
+    hasher.visit_statement(statement);
+    format!("top_{:08x}", fold(hasher.hash))
+}
+
 /// Functions and classes declared with a minified name inside a function:
 /// `function f(){ function Wd(){…} const ef = () => …; }`. Their shape is their
 /// own code, not their parent's, so an edit to the parent leaves them named.
@@ -354,6 +364,21 @@ mod tests {
         assert_eq!(a.0, b.0);
         assert_eq!(a.1, b.1);
         assert!(!a.2, "nested values keep their slot names");
+    }
+
+    #[test]
+    fn top_level_statement_shape_ignores_minified_names() {
+        let shape_of = |code: &str| {
+            let allocator = Allocator::default();
+            let program = Parser::new(&allocator, code, SourceType::mjs()).parse().program;
+            statement_shape(code, &program.body[0])
+        };
+        let a = shape_of(r#"Yc(Xa.settings,"tengu_x");"#);
+        let b = shape_of(r#"Pq(Mt.settings,"tengu_x");"#);
+        let c = shape_of(r#"Pq(Mt.policies,"tengu_x");"#);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.starts_with("top_") && a.len() == "top_".len() + 8, "{a}");
     }
 
     #[test]

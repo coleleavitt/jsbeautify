@@ -27,7 +27,9 @@ use std::path::Path;
 
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
-use oxc_ast::ast::{Class, Expression, Function, VariableDeclarator};
+use oxc_ast::ast::{
+    Class, Declaration, ExportDefaultDeclarationKind, Expression, Function, Statement, VariableDeclarator,
+};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
@@ -35,6 +37,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
 use crate::ast_deobfuscate::default_export::is_minified;
+use crate::ast_deobfuscate::project::shape::statement_shape;
 use crate::project::{is_javascript, list_files, parallel_map};
 
 /// Options of [`diff_trees`].
@@ -196,7 +199,50 @@ fn index_source(file: &str, code: &str) -> Vec<Entry> {
         entries: Vec::new(),
     };
     collector.visit_program(&parsed.program);
+    // Top-level statements that carry a string: a `console.log("tengu_…")`
+    // call reads a flag outside any function, and its shape pairs it by name.
+    for statement in &parsed.program.body {
+        if !is_top_level_statement(statement) {
+            continue;
+        }
+        let mut probe = Tokens {
+            source: code,
+            set: FxHashSet::default(),
+        };
+        probe.visit_statement(statement);
+        if probe.set.iter().any(|token| token.starts_with("s:")) {
+            let span = statement.span();
+            collector.record(&statement_shape(code, statement), span.start, span, |tokens| {
+                tokens.visit_statement(statement);
+            });
+        }
+    }
     collector.entries
+}
+
+/// Whether a top-level statement is indexed as a `top_…` entry: not an import,
+/// not an export of only specifiers, and not a function or class declaration
+/// (those are indexed by name).
+fn is_top_level_statement(statement: &Statement<'_>) -> bool {
+    let declaration = match statement {
+        Statement::ImportDeclaration(_)
+        | Statement::ExportAllDeclaration(_)
+        | Statement::ExportNamedDeclaration(_)
+        | Statement::ExportFromDeclaration(_) => return false,
+        Statement::ExportDefaultDeclaration(export) => {
+            return !matches!(
+                export.declaration,
+                ExportDefaultDeclarationKind::FunctionDeclaration(_)
+                    | ExportDefaultDeclarationKind::ClassDeclaration(_)
+            );
+        }
+        Statement::ExportDeclaration(export) => Some(&export.declaration),
+        _ => statement.as_declaration(),
+    };
+    !matches!(
+        declaration,
+        Some(Declaration::FunctionDeclaration(_) | Declaration::ClassDeclaration(_))
+    )
 }
 
 /// Whether `name` carries meaning across versions: not minified, not a
@@ -659,6 +705,26 @@ mod tests {
         let diff = match_functions(&old, &new, TreeDiffOptions::default());
         assert!(diff.weak_renamed.is_empty(), "{diff:?}");
         assert_eq!(diff.summary.weak_renamed, 0);
+    }
+
+    #[test]
+    fn top_level_statements_pair_by_shape() {
+        let old = entries(&[
+            ("chunk-a.js", r#"console.log("tengu_x");"#),
+            ("chunk-b.js", r#"console.log("tengu_y");"#),
+        ]);
+        let new = entries(&[
+            ("chunk-c.js", r#"console.log("tengu_x");"#),
+            ("chunk-d.js", r#"console.log("tengu_y", 1);"#),
+        ]);
+        let diff = match_functions(&old, &new, TreeDiffOptions::default());
+        // The same statement in another file pairs by name; a changed one by content.
+        assert_eq!(diff.summary.same, 1, "{diff:?}");
+        assert_eq!(diff.moved.len(), 1, "{diff:?}");
+        assert_eq!(diff.renamed.len(), 1, "{diff:?}");
+        assert!(diff.renamed[0].changed, "{diff:?}");
+        assert!(diff.renamed[0].old.name.starts_with("top_"), "{diff:?}");
+        assert!(diff.renamed[0].new.name.starts_with("top_"), "{diff:?}");
     }
 
     #[test]
