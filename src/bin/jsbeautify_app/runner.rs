@@ -135,12 +135,13 @@ fn run_diff_tree(args: &DiffTreeArgs) -> Fallible {
     use jsbeautify::cross_version::tree_diff::{TreeDiffOptions, diff_trees};
     let options = TreeDiffOptions {
         min_score: args.min_score,
+        weak_min_score: args.weak_min_score,
         ..TreeDiffOptions::default()
     };
     let diff = diff_trees(&args.old, &args.new, options)?;
     let s = &diff.summary;
     eprintln!(
-        "[DIFF-TREE] {} / {} files, {} / {} named functions: {} same, {} changed, {} moved, {} renamed (matched by content), {} added, {} removed",
+        "[DIFF-TREE] {} / {} files, {} / {} named functions: {} same, {} changed, {} moved, {} renamed (matched by content), {} weak, {} added, {} removed",
         s.files_old,
         s.files_new,
         s.functions_old,
@@ -149,6 +150,7 @@ fn run_diff_tree(args: &DiffTreeArgs) -> Fallible {
         s.changed,
         s.moved,
         s.renamed,
+        s.weak_renamed,
         s.added,
         s.removed
     );
