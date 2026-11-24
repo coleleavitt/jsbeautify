@@ -8,10 +8,10 @@ edition = "2024"
 autobins = false
 autotests = false
 autobenches = false
-description = "A fast JavaScript beautifier and deobfuscator powered by oxc"
+description = "Agent-first JavaScript deobfuscator in Rust, built on Oxc and refined by AI agents."
 license = "MIT"
 repository = "https://github.com/coleleavitt/jsbeautify"
-keywords = ["javascript", "beautifier", "deobfuscator", "webpack", "oxc"]
+keywords = ["javascript", "deobfuscator", "reverse-engineering", "ai-agents", "oxc"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [
     ".research/",

@@ -14,7 +14,7 @@ mod project;
 mod runner;
 mod sources;
 
-/// A fast JavaScript beautifier and deobfuscator powered by oxc.
+/// Agent-first JavaScript deobfuscator in Rust, built on Oxc and refined by AI agents.
 ///
 /// With no subcommand, beautifies (and optionally deobfuscates) a single file
 /// or stdin. Bundle-splitting and cross-version alignment live under
