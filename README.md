@@ -127,6 +127,48 @@ Point your agent at the file and let it run the tool, not read the bundle:
    No input should make jsbeautify panic, hang, exhaust memory or write outside
    its output directory, and it never runs the code it reads.
 
+## How it works
+
+```mermaid
+flowchart TD
+    IN["minified, obfuscated or bundled JS"] --> DET["Detect the bundler or obfuscator<br/>webpack · Turbopack · esbuild · Bun · Angular · obfuscator.io · Akamai"]
+    DET --> S["Structural passes · Phases 0–12.5<br/>strings, control flow, proxies, dead code, naming"]
+    S --> C1[["Checkpoint 12.6 · codegen + strict re-parse"]]
+    C1 --> A["Cosmetic A · Phases 13–15<br/>split statements and declarations"]
+    A --> C2[["Checkpoint 15.6 · codegen + strict re-parse"]]
+    C2 --> B["Cosmetic B · Phases 16–19.5<br/>ternaries to if, IIFEs, JSON.parse, optional chaining"]
+    B --> F[["Final gate 19.6 / 21.5 · annotations + re-parse"]]
+    F --> OUT["readable JS, same behavior"]
+    C1 -. "invalid JS" .-> ERR["rejected, never reported as success"]
+    C2 -.-> ERR
+    F -.-> ERR
+```
+
+With `--project`, every chunk of a build is read first so a binding gets one
+name in every file:
+
+```mermaid
+flowchart LR
+    D["dist/<br/>every chunk"] --> I["Index<br/>imports, exports,<br/>helpers, shapes"]
+    I --> P["Plan<br/>resolve each import to its binding;<br/>one name per binding, no clashes"]
+    P --> J["Deobfuscate<br/>each file in its own process,<br/>seeded with its names"]
+    J --> C{"Check links<br/>exports unchanged,<br/>every import resolves"}
+    C --> O["deob/<br/>+ project-index.json"]
+```
+
+And agents keep improving it with one loop ([`docs/refinement.md`](docs/refinement.md)):
+
+```mermaid
+flowchart LR
+    R["real bundles"] --> F["Find<br/>crash, hang, failed re-parse,<br/>vuln-scan, CodeQL, reviewers"]
+    F --> P["Reproduce<br/>minimal fixture<br/>+ failing test"]
+    P --> X["Fix<br/>one pass,<br/>resolved symbols"]
+    X --> V{"Verify<br/>soundness review<br/>gate · output gate"}
+    V -- fails --> X
+    V -- passes --> L["Land<br/>commit with<br/>its fixture"]
+    L -- "new bundles,<br/>new obfuscators" --> R
+```
+
 ## Design
 
 - **Phase-based.** `-d` is an ordered list of small Oxc passes, grouped by
