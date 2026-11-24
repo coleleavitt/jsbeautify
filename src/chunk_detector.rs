@@ -1,5 +1,6 @@
 use crate::token::Token;
 use std::collections::HashMap;
+use std::path::{Component, Path};
 use thiserror::Error;
 
 #[cfg(debug_assertions)]
@@ -25,6 +26,18 @@ pub struct ChunkMetadata {
     pub modules: Vec<usize>,
     pub start_pos: usize,
     pub end_pos: usize,
+}
+
+/// Whether `{name}.chunk.{hash}.js` stays inside the chunk directory: the
+/// name is a relative path of plain components, the hash a single one.
+fn is_safe_chunk_filename(name: &str, hash: &str) -> bool {
+    let plain = |part: &str| {
+        !part.is_empty()
+            && Path::new(part)
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+    };
+    plain(name) && plain(hash) && !hash.contains(['/', '\\'])
 }
 
 impl ChunkMetadata {
@@ -90,6 +103,15 @@ pub enum ChunkDetectorError {
 
     #[error("no chunk map found in token stream")]
     NoChunkMapFound,
+
+    #[error(
+        "chunk {chunk_id} has name {name:?} and hash {hash:?}, which do not make a file name inside the chunk directory"
+    )]
+    UnsafeChunkFilename {
+        chunk_id: usize,
+        name: String,
+        hash: String,
+    },
 }
 
 pub struct ChunkDetector {
@@ -309,8 +331,6 @@ impl ChunkDetector {
         let name_map = self.extract_object_literal(tokens, 2)?;
         trace_chunk!("✓ extracted {} name mappings", name_map.len());
 
-        debug_assert!(!name_map.is_empty(), "name map must not be empty");
-
         trace_chunk!("step 2: finding hash map start position");
         let hash_map_start = self.find_hash_map_start(tokens)?;
         trace_chunk!("✓ hash map starts at position {}", hash_map_start);
@@ -318,8 +338,6 @@ impl ChunkDetector {
         trace_chunk!("step 3: extracting hash map");
         let hash_map = self.extract_object_literal(tokens, hash_map_start)?;
         trace_chunk!("✓ extracted {} hash mappings", hash_map.len());
-
-        debug_assert!(!hash_map.is_empty(), "hash map must not be empty");
 
         trace_chunk!("step 4: validating map sizes");
         trace_chunk!("name_map.len()={}, hash_map.len()={}", name_map.len(), hash_map.len());
@@ -347,7 +365,6 @@ impl ChunkDetector {
 
         // Iterate through hash map (authoritative source)
         for (chunk_id, hash) in &hash_map {
-            debug_assert!(!hash.is_empty(), "hash must not be empty");
             trace_chunk!("processing chunk_id={}, hash='{}'", chunk_id, hash);
 
             // Check if chunk has a friendly name
@@ -360,10 +377,16 @@ impl ChunkDetector {
                 },
                 |friendly_name| {
                     trace_chunk!("✓ found friendly name: '{}'", friendly_name);
-                    debug_assert!(!friendly_name.is_empty(), "name must not be empty");
                     friendly_name.clone()
                 },
             );
+            if !is_safe_chunk_filename(&name, hash) {
+                return Err(ChunkDetectorError::UnsafeChunkFilename {
+                    chunk_id: *chunk_id,
+                    name,
+                    hash: hash.clone(),
+                });
+            }
 
             trace_chunk!("creating metadata: id={}, name='{}', hash='{}'", chunk_id, name, hash);
 
@@ -418,8 +441,6 @@ impl ChunkDetector {
         tokens: &[Token],
         start: usize,
     ) -> Result<HashMap<usize, String>, ChunkDetectorError> {
-        const MAX_ITERATIONS: usize = 10_000;
-
         assert!(
             start < tokens.len(),
             "start position {} out of bounds (len={})",
@@ -438,7 +459,6 @@ impl ChunkDetector {
         let mut extracted_count: usize = 0;
 
         while i < tokens.len() {
-            assert!(iterations < MAX_ITERATIONS, "max iterations {MAX_ITERATIONS} exceeded");
             iterations = iterations
                 .checked_add(1)
                 .ok_or_else(|| ChunkDetectorError::BoundaryDetectionFailed {
@@ -508,7 +528,7 @@ impl ChunkDetector {
                             token.text
                         );
                         if let Ok(key) = token.text.parse::<usize>() {
-                            let value = tokens[value_idx].text.trim_matches('"').to_string();
+                            let value = tokens[value_idx].text.trim_matches(['"', '\'']).to_string();
                             trace_chunk!("✓ extracted mapping: {} -> '{}'", key, &value);
 
                             extracted_count = extracted_count.checked_add(1).ok_or_else(|| {
@@ -532,14 +552,11 @@ impl ChunkDetector {
                 })?;
         }
 
-        debug_assert!(!result.is_empty(), "extracted empty object literal");
         trace_chunk!("=== EXTRACTION COMPLETE ===");
         trace_chunk!("total iterations: {}", iterations);
         trace_chunk!("extracted entries: {}", extracted_count);
         trace_chunk!("final result size: {}", result.len());
         trace_chunk!("final depth: {}", depth);
-
-        assert_eq!(extracted_count, result.len(), "extracted count must match result size");
 
         Ok(result)
     }
@@ -758,20 +775,10 @@ impl ChunkDetector {
     }
 
     fn find_object_end(&self, tokens: &[Token], start: usize) -> Result<usize, ChunkDetectorError> {
-        const MAX_ITERATIONS: usize = 100_000;
-
         let mut depth: usize = 0;
         let mut i = start;
-        let mut iterations: usize = 0;
 
         while i < tokens.len() {
-            assert!(iterations < MAX_ITERATIONS, "max iterations exceeded");
-            iterations = iterations
-                .checked_add(1)
-                .ok_or_else(|| ChunkDetectorError::BoundaryDetectionFailed {
-                    reason: "iteration counter overflow".to_string(),
-                })?;
-
             if tokens[i].text == "{" {
                 depth = depth
                     .checked_add(1)
@@ -941,5 +948,63 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(&14), Some(&"LoginView".to_string()));
         assert_eq!(result.get(&68), Some(&"SearchResultsView".to_string()));
+    }
+
+    fn detect(code: &str) -> (ChunkDetector, Result<(), ChunkDetectorError>) {
+        let tokens = crate::tokenizer::Tokenizer::new(code).tokenize().expect("tokenizes");
+        let mut detector = ChunkDetector::new();
+        let result = detector.detect_chunks(&tokens);
+        (detector, result)
+    }
+
+    /// A webpack runtime chunk-URL function; the extra entries reach the
+    /// detector's minimum token count.
+    fn runtime(names: &str, hashes: &str) -> String {
+        let names = format!("{names},2:\"pad\"");
+        let hashes = format!("{hashes},2:\"def\"");
+        format!("function u(e){{return({{{names}}}[e]||e)+\".chunk.\"+{{{hashes}}}[e]+\".js\"}}\n")
+    }
+
+    #[test]
+    fn rejects_chunk_names_that_leave_the_chunk_directory() {
+        for name in ["../../escaped", "/tmp/escaped", "a/../../b", ""] {
+            let code = runtime(&format!("1:\"{name}\""), "1:\"abc\"");
+            let (_, result) = detect(&code);
+            assert!(
+                matches!(result, Err(ChunkDetectorError::UnsafeChunkFilename { chunk_id: 1, .. })),
+                "{name:?}: {result:?}"
+            );
+        }
+        let (_, result) = detect(&runtime("1:\"main\"", "1:\"../x\""));
+        assert!(matches!(result, Err(ChunkDetectorError::UnsafeChunkFilename { .. })));
+    }
+
+    #[test]
+    fn duplicate_map_keys_keep_the_last_value_like_javascript() {
+        let (detector, _) = detect(&runtime("1:\"a\",1:\"b\"", "1:\"abc\""));
+        assert_eq!(detector.get_chunk(1).map(|c| c.name.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn single_quoted_map_values_lose_their_quotes() {
+        let (detector, _) = detect(&runtime("1:'main'", "1:'abc'"));
+        assert_eq!(
+            detector.get_chunk(1).map(|c| c.filename.as_str()),
+            Some("main.chunk.abc.js")
+        );
+    }
+
+    #[test]
+    fn large_maps_and_chunks_are_read_to_the_end() {
+        let hashes = (1..3000).map(|i| format!("{i}:\"h{i}\"")).collect::<Vec<_>>().join(",");
+        let body = "x=1;".repeat(30_000);
+        let code = format!(
+            "{}self.webpackChunkapp.push([[1],{{1:function(m){{{body}}}}}]);\n",
+            runtime("1:\"main\"", &hashes)
+        );
+        let (detector, result) = detect(&code);
+        result.expect("detects");
+        assert_eq!(detector.chunk_count(), 2999);
+        assert!(detector.get_chunk(1).is_some_and(|c| c.end_pos > c.start_pos));
     }
 }
